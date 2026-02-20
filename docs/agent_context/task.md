@@ -43,6 +43,7 @@
 - [ ] Add target directory watch support (`--watch`)
 
 ## Phase VI: The Interactive TUI & Vibe
+- [ ] Review `UX.md` for interactive design guidelines and goals
 - [ ] Initialize `ratatui` dashboard (`-i` flag)
 - [ ] Implement "Hoard" Selector (Navigation, Prefix glowing, Preview Pane)
 - [ ] Implement The Progress Bar ("Teeth" jitter animation)
