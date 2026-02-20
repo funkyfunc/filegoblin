@@ -1,0 +1,22 @@
+[package]
+name = "filegoblin"
+version = "1.5.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+arboard = "3.6.1"
+clap = { version = "4.5.60", features = ["derive", "env"] }
+colored = "3.1.1"
+docx-rs = "0.4.19"
+oxidize-pdf = "1.7.1"
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"] }
+tokio = { version = "1.49.0", features = ["rt", "macros"] }
+tree-sitter = { version = "0.26.5", features = ["std"] }
+tree-sitter-rust = "0.24.0"
+url = "2.5.8"
+wasmtime = "41.0.3"
+
+[build-dependencies]
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"] }
+tokio = "1.49.0"
