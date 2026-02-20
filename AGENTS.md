@@ -30,3 +30,14 @@ We use Cargo Aliases for project shortcuts. A task is NOT complete until this co
 - **Data Normalization:** You MUST cross-reference **PRD Section 3.2** for all table parsing. Do not use standard Markdown tables; implement the 'Sequence of Records' format.
 - **Flavor Accuracy:** Strictly follow the XML/YAML templates provided in **PRD Section 3.1**. Do not deviate from the tag or metadata structures.
 - **WASM Standard:** If a required parser is not available in Pure Rust, you must implement it as a WASM component per **PRD Section 2.2**.
+
+## 7. Session Handoff Protocol
+Agents do not inherently know when a working session is ending. Therefore, the User will explicitly invoke a "Handoff" or "End of Session" prompt. 
+When the User requests a handoff, the Agent MUST:
+1. Review the progress made during the current session.
+2. Update the `docs/agent_context/task.md` file to reflect completed and pending items.
+3. Completely overwrite/update `docs/agent_context/HANDOFF.md` with:
+   - A summary of exactly what was just completed.
+   - Any broken tests, compilation errors, or pending bugs the next agent needs to know about.
+   - A clear list of the immediate next steps or tasks for the next session.
+4. Commit and push the changes to GitHub so the context is preserved for the next machine.
