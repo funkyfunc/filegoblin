@@ -25,6 +25,7 @@ We use Cargo Aliases for project shortcuts. A task is NOT complete until this co
 - **README Ownership:** You MUST maintain the "Project Structure" and "Current Capabilities" sections in `README.md`. Update them immediately upon adding any new feature or module.
 - **Lib/Main Split:** Maintain a strict split. All core logic must live in `lib.rs` (or modules) to ensure it is testable in isolation from the CLI.
 - **Modularity:** Parsers must be isolated in `src/parsers/` and implement a common `Gobble` trait.
+- **Architecture Decision Records (ADR):** Any time a significant technical choice or design decision is made, you MUST append an entry to `docs/ADR.md` to document the context, decision, and status.
 
 ## 6. Research & Data Integrity Mandate (CRITICAL)
 - **Data Normalization:** You MUST cross-reference **PRD Section 3.2** for all table parsing. Do not use standard Markdown tables; implement the 'Sequence of Records' format.
