@@ -6,20 +6,24 @@ pub struct CodeGobbler;
 
 impl Gobble for CodeGobbler {
     fn gobble(&self, path: &Path) -> Result<String> {
-        let source_code = std::fs::read_to_string(path)
-            .unwrap_or_else(|_| "pub fn gobble(&self, path: &Path) -> Result<String> {\n    let dummy = 1;\n}".to_string());
-            
+        let source_code = std::fs::read_to_string(path).unwrap_or_else(|_| {
+            "pub fn gobble(&self, path: &Path) -> Result<String> {\n    let dummy = 1;\n}"
+                .to_string()
+        });
+
         // Tree-sitter logic
         let mut parser = tree_sitter::Parser::new();
         // Since tree-sitter-rust 0.23+, LANGUAGE is available as a function
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into())
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
             .context("Error loading Rust grammar")?;
-            
-        let tree = parser.parse(&source_code, None)
+
+        let tree = parser
+            .parse(&source_code, None)
             .context("Failed to parse code with tree-sitter")?;
-            
+
         let mut block_spans = Vec::new();
-        
+
         // Let's do a simple recursive traversal
         // Since TreeCursor is annoying for rust closures, we'll use a stack
         let mut stack: Vec<tree_sitter::Node> = vec![tree.root_node()];
@@ -38,17 +42,17 @@ impl Gobble for CodeGobbler {
                 }
             }
         }
-        
+
         // Sort descending to not invalidate indices when replacing
         block_spans.sort_by(|a, b| b.0.cmp(&a.0));
-        
+
         let mut minified = source_code.into_bytes();
         for (start, end) in block_spans {
             // Replace minified[start..end] with replacement
             let replacement = b"{ /* body elided */ }";
             minified.splice(start..end, replacement.iter().cloned());
         }
-        
+
         Ok(String::from_utf8(minified).unwrap_or_else(|_| "UTF-8 Error".to_string()))
     }
 }
@@ -62,7 +66,7 @@ mod tests {
         let gobbler = CodeGobbler;
         let p = Path::new("dummy.rs");
         let result = gobbler.gobble(p).unwrap();
-        
+
         // Assert Structural Minification (PRD 3.3)
         assert!(result.contains("/* body elided */"));
         assert!(result.contains("pub fn gobble"));

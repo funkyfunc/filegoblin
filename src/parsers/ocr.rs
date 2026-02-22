@@ -11,10 +11,12 @@ pub struct OcrGobbler;
 impl Gobble for OcrGobbler {
     fn gobble(&self, _path: &Path) -> Result<String> {
         // MOCK IMPLEMENTATION: Awaiting tesseract-wasm / wasmtime integration
-        
+
         // Ensure that our build pipeline actually downloaded the brains.
         if TESSERACT_CORE_WASM.is_empty() {
-             anyhow::bail!("This one is too gristly! I need a password to chew on it. (Offline Mode: No OCR Brains)")
+            anyhow::bail!(
+                "This one is too gristly! I need a password to chew on it. (Offline Mode: No OCR Brains)"
+            )
         }
 
         anyhow::bail!("OCR Brains loaded! But the WASM bindings remain to be forged.")
@@ -31,7 +33,7 @@ mod tests {
         // Simulating passing an image or scanned pdf path
         let p = Path::new("dummy_scan.png");
         let result = gobbler.gobble(p);
-        
+
         // Assert mock extraction returns our vibe-spec error
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Brains loaded"));

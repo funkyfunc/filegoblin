@@ -17,7 +17,10 @@ impl std::str::FromStr for Flavor {
             "anthropic" => Ok(Flavor::Anthropic),
             "gpt" => Ok(Flavor::Gpt),
             "gemini" => Ok(Flavor::Gemini),
-            _ => anyhow::bail!("Invalid flavor: {}. Supported flavors: human, anthropic, gpt, gemini", s),
+            _ => anyhow::bail!(
+                "Invalid flavor: {}. Supported flavors: human, anthropic, gpt, gemini",
+                s
+            ),
         }
     }
 }
@@ -44,11 +47,7 @@ pub fn format_output(flavor: &Flavor, filename: &str, content: &str) -> String {
             )
         }
         Flavor::Gemini => {
-            format!(
-                "// --- FILE_START: {} ---\n{}\n",
-                filename,
-                content.trim()
-            )
+            format!("// --- FILE_START: {} ---\n{}\n", filename, content.trim())
         }
     }
 }

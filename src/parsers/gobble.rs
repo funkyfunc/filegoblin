@@ -1,5 +1,5 @@
-use std::path::Path;
 use anyhow::Result;
+use std::path::Path;
 
 /// The primary trait that all `filegoblin` document parsers must implement.
 ///
@@ -8,7 +8,7 @@ use anyhow::Result;
 pub trait Gobble {
     /// Consumes a file at the given path and returns the extracted, structured string.
     fn gobble(&self, path: &Path) -> Result<String>;
-    
+
     /// Consumes an in-memory string directly and returns the structured string.
     fn gobble_str(&self, _content: &str) -> Result<String> {
         anyhow::bail!("gobble_str natively unsupported by this target")

@@ -16,14 +16,14 @@ impl Gobble for PdfGobbler {
 
         use oxidize_pdf::parser::{PdfDocument, PdfReader};
         let mut text = String::new();
-        
+
         // Open the raw PDF Reader
-        let reader = PdfReader::open(path)
-            .context("Mischievous PDF Error: failed to open document")?;
-            
+        let reader =
+            PdfReader::open(path).context("Mischievous PDF Error: failed to open document")?;
+
         // Wrap into the high-level Document parser
         let document = PdfDocument::new(reader);
-            
+
         // Extract all text pages
         if let Ok(text_pages) = document.extract_text() {
             for page in text_pages {
@@ -31,7 +31,7 @@ impl Gobble for PdfGobbler {
                 text.push('\n');
             }
         }
-        
+
         Ok(text.trim().to_string())
     }
 }
@@ -45,7 +45,7 @@ mod tests {
         let gobbler = PdfGobbler;
         let p = Path::new("dummy.pdf");
         let result = gobbler.gobble(p).unwrap();
-        
+
         // Assert mandatory "Sequence of Records" structure (PRD 3.2)
         assert!(result.contains("Row 1: Date: 2026-01-01; Revenue: $10M; Growth: +5%;"));
         assert!(result.contains("Row 2: Date: 2026-02-01; Revenue: $12M; Growth: +20%;"));

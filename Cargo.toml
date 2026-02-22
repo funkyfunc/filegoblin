@@ -9,6 +9,7 @@ arboard = "3.6.1"
 clap = { version = "4.5.60", features = ["derive", "env"] }
 colored = "3.1.1"
 docx-rs = "0.4.19"
+html2md = "0.2.15"
 oxidize-pdf = "1.7.1"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"] }
 tokio = { version = "1.49.0", features = ["rt", "macros"] }

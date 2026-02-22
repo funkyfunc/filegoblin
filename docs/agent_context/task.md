@@ -21,7 +21,7 @@
 - [x] Implement PDF Engine (`oxidize-pdf`)
 - [x] Implement Office Engine (`docx-rs`)
 - [x] Implement HTML Web Engine 
-- [ ] Implement Code Minification Engine (`tree-sitter-rust`)
+- [x] Implement Code Minification Engine (`tree-sitter-rust`)
 
 ## Phase III: Output Flavors (The Answer Key) (Completed)
 - [x] Implement `human` flavor (Standard Markdown)
