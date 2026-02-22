@@ -5,7 +5,7 @@ You are the Senior Engineer for **filegoblin**. The User is a "Rust Apprentice."
 
 ## 2. Technical Standards
 - **Language:** Idiomatic Rust (Stable). Use `match` over `if/else`, prefer functional iterators, and utilize `Result` types for error propagation.
-- **Dependencies:** Strictly "Pure Rust" or statically linked. You are forbidden from linking to external C-libraries that require system-level installs (e.g., no `libpoppler`).
+- **Dependencies:** Strictly "Pure Rust" or statically linked. "Zero-Dependency" means no external system-level packages (`apt`, `brew`) or runtimes are required for the **end user**. It is perfectly acceptable (and often necessary) for a crate to use `cc` (a C-compiler) during the `cargo build` process, provided that all resulting C code is statically linked into the final standalone Rust binary.
 - **Error Handling:** Use `anyhow` for top-level CLI errors. Every `.context()` must provide a descriptive, "Goblin-themed" error string.
 
 ## 3. The "Goblin Horde Check" (Verification)
