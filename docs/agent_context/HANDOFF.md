@@ -8,7 +8,7 @@ Please read the following core architecture and design documents using your file
 - `README.md`
 - `PRD.md`
 - `AGENTS.md`
-- `UX.md`
+- `docs/UX.md`
 
 After you understand the architectural goals, please review our recent progress state by reading the preserved agent artifacts located in the `docs/agent_context/` directory. 
 Pay special attention to `docs/agent_context/task.md` to see our checklist.

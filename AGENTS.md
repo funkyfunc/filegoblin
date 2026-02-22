@@ -26,6 +26,10 @@ We use Cargo Aliases for project shortcuts. A task is NOT complete until this co
 - **Lib/Main Split:** Maintain a strict split. All core logic must live in `lib.rs` (or modules) to ensure it is testable in isolation from the CLI.
 - **Modularity:** Parsers must be isolated in `src/parsers/` and implement a common `Gobble` trait.
 - **Architecture Decision Records (ADR):** Any time a significant technical choice or design decision is made, you MUST append an entry to `docs/ADR.md` to document the context, decision, and status.
+- **Documentation Hierarchy:** Strictly enforce the following folder structure for all documentation:
+  - **Root (`/`)**: Public agreements and high-level entry points (`README.md`, `ARCHITECTURE.md`, `AGENTS.md`, `PRD.md`).
+  - **`docs/`**: Deep dives and logs that support the core system but aren't strictly required for first-time use (`docs/ADR.md`, `docs/UX.md`).
+  - **`docs/agent_context/`**: Ephemeral state strictly reserved for transferring context between agent sessions (`task.md`, `HANDOFF.md`). Do not place permanent architectural files here.
 
 ## 6. Research & Data Integrity Mandate (CRITICAL)
 - **Data Normalization:** You MUST cross-reference **PRD Section 3.2** for all table parsing. Do not use standard Markdown tables; implement the 'Sequence of Records' format.
