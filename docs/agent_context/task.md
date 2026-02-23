@@ -43,6 +43,10 @@
 - [ ] Add OS open support (`--open`)
 - [ ] Add target directory watch support (`--watch`)
 
+## Phase V.5: Output Organization
+- [x] Implement `--split` flag for local directory splitting
+- [x] Implement `--split` flag for web crawler splitting
+
 ## Phase VI: The Interactive TUI & Vibe
 - [ ] Review `docs/UX.md` for interactive design guidelines and goals
 - [ ] Initialize `ratatui` dashboard (`-i` flag)

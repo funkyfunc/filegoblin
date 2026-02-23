@@ -99,6 +99,9 @@ impl GoblinStomach {
 - **`fg <path>`**: Single file ingestion.
 - **`fg <url>`**: URL ingestion (fetches web page/file into memory for processing).
 - **`fg . --horde`**: Recursive directory ingestion with a top-level ASCII map.
+- **`--split`**: Modifier for `--horde`. Suppresses stdout, auto-generates a `target_gobbled` directory, and splits output into discrete mapping files.
+- **`-q, --quiet`**: Suppress auxiliary terminal output (progress/banners) for pristine pipeline execution.
+- **`--json`**: Convert the output format from Markdown into strictly formatted structured JSON arrays.
 - **`--scrub`**: Local PII/Secret redaction.
 - **`--tokens`**: Print estimated token counts for the specific model flavor.
 

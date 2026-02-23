@@ -1,52 +1,31 @@
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::Path;
+use clap::CommandFactory;
+use clap_complete::{generate_to, shells::Shell};
+use clap_mangen::Man;
+use std::fs;
+use std::path::PathBuf;
 
-const WASM_URL: &str = "https://unpkg.com/tesseract.js-core@6.1.2/tesseract-core-simd.wasm";
-const WASM_FILE: &str = "assets/tesseract-core-simd.wasm";
+include!("src/cli.rs");
 
-fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
+fn main() -> std::io::Result<()> {
+    // Generate explicitly into standard target structure
+    let generated_dir = PathBuf::from("target/generated");
+    fs::create_dir_all(&generated_dir)?;
 
-    // We only rerun if the asset is missing
-    println!("cargo:rerun-if-changed={}", WASM_FILE);
+    let mut cmd = Cli::command();
 
-    let asset_path = Path::new(WASM_FILE);
+    // Generate Manpage (filegoblin.1)
+    let man = Man::new(cmd.clone());
+    let mut buffer: Vec<u8> = Default::default();
+    man.render(&mut buffer)?;
+    fs::write(generated_dir.join("filegoblin.1"), buffer)?;
 
-    // Ensure assets directory exists
-    if let Some(parent) = asset_path.parent()
-        && !parent.exists()
-    {
-        let _ = fs::create_dir_all(parent);
-    }
+    // Generate Zsh Completion
+    generate_to(Shell::Zsh, &mut cmd, "filegoblin", &generated_dir)?;
+    
+    // Generate Bash Completion
+    generate_to(Shell::Bash, &mut cmd, "filegoblin", &generated_dir)?;
 
-    if !asset_path.exists() {
-        println!("cargo:warning=filegoblin: OCR WASM brains missing. Fetching from web...");
-        match fetch_wasm() {
-            Ok(bytes) => {
-                if let Ok(mut file) = File::create(asset_path) {
-                    let _ = file.write_all(&bytes);
-                    println!("cargo:warning=filegoblin: OCR Brains successfully deposited!");
-                }
-            }
-            Err(e) => {
-                // Warning, but don't fail the build to allow local offline dev
-                println!(
-                    "cargo:warning=filegoblin: Failed to fetch OCR WASM: {}. Falling back to gristly mocks.",
-                    e
-                );
-                // Create a dummy empty file so `include_bytes!` doesn't panic on compilation
-                if let Ok(mut file) = File::create(asset_path) {
-                    let _ = file.write_all(b"");
-                }
-            }
-        }
-    }
-}
+    println!("cargo:warning=Generated manpage and completions in {}", generated_dir.display());
 
-fn fetch_wasm() -> Result<Vec<u8>, reqwest::Error> {
-    let client = reqwest::blocking::Client::new();
-    let resp = client.get(WASM_URL).send()?;
-    let bytes = resp.bytes()?;
-    Ok(bytes.to_vec())
+    Ok(())
 }

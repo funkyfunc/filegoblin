@@ -33,8 +33,9 @@
 - [x] Core Library scaffolding & `Gobble` trait
 - [x] Core Parsers (PDF, Office, Web, Code) with TDD Mocks
 - [x] URL Ingestion Support & Recursive Crawling (`--horde`)
+- [x] Output Splitting & Auto-Directory Mapping (`--split`)
+- [x] Pipeline Isolation (`--quiet`) & Structured Data (`--json`)
 - [x] Token Estimation (`--tokens`)
-- [ ] Output Flavors (Human, GPT, Claude, Gemini)
 - [ ] PII Redaction (Local SLM)
 
 ---
@@ -75,6 +76,17 @@ fg my_notes.pdf > context.md
 **URL Ingestion (Web):**
 ```bash
 fg https://example.com/api-docs > context.md
+```
+
+**Web Horde (Split into mapping directory):**
+```bash
+fg https://bettercli.org/ --horde --split
+# Translates to -> ./bettercli.org_gobbled/
+```
+
+**Scripting Pipeline (JSON & Quiet):**
+```bash
+fg ./src/ --horde -q --json | jq '.[].path'
 ```
 
 ---

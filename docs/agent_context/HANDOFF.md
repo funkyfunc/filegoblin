@@ -16,14 +16,17 @@ After you understand the architectural goals (specifically the "Zero-Dependency"
 Pay special attention to `docs/agent_context/task.md` to see our checklist.
 
 ## 2. Where We Left Off
-During this session, we fully implemented Phase V: The "Horde Mode" recursive parsing functionality:
-- Added the `--horde` flag which invokes `ignore::Walk` for `.gitignore` respecting local directory traversal.
-- Added a high-performance, async `GoblinCrawler` utilizing `tokio` channels, a `DashSet` for lock-free deduplication, and `governor` for domain-level GCRA politeness routing.
-- Added `robotxt` integration dynamically pulled per-host to obey crawler boundaries.
-- Re-architected `src/lib.rs` to aggregate `route_and_gobble` outputs iteratively with exact `// --- FILE_START` LLM structural boundaries as defined in the `gemini` flavor spec.
-- Added `--tokens` logic for a rough footprint estimation.
-- Passing rigorous `cargo horde-check` requirements for idiomatic and completely safe Rust.
+During this session, we perfected the **Phase V: Output Organization & Pipeline Integration**:
+- Implemented the `--split` modifier to automatically map massive `--horde` targets into structured local directories.
+- Formalized a Master CLI Design Philosophy based on `clig.dev` and `bettercli.org`, which is now actively enforced via the Agent Skill: `.agents/workflows/cli_design.md`.
+- Enforced strict Unix Philosophy stream routing: All diagnostics (ASCII mascot, progress) pipe to `stderr`, guaranteeing that `stdout` exclusively contains structured data.
+- Added `-q, --quiet` to run silently.
+- Added `--json` to output perfectly structured JSON arrays for pipeline consumers (`jq`).
+- Set up `build.rs` to automatically generate `filegoblin.1` Unix manuals and Zsh/Bash autocompletions on every `cargo build`.
 
 ## 3. Your Immediate Next Steps
-1. Based on `task.md`, the next logical steps are either **Phase IV** (Privacy & Security via Regex PII Scrubbing and local SLM integration) or jumping to **Phase VI** (The `ratatui` interactive terminal UI).
-2. If beginning **Phase IV**, read the PRD carefully regarding ONNX runtime execution for `Distil-PII-1B` and review how that will integrate with our existing WASM architectural patterns to preserve the zero-dependency rule.
+1. The next logical step is to implement the **Phase V Utilities** as outlined in `task.md`:
+   - [ ] Add clipboard support (`--copy`) via `wl-clipboard-rs`/cross-platform native clipboards.
+   - [ ] Add OS open support (`--open`) to trigger Finder/Explorer.
+   - [ ] Add target directory watch support (`--watch`) to enable live-gobbling.
+2. If jumping to **Phase IV (Privacy & PII)** after the utilities are complete, the next agent **WILL** need a similar deep-dive research document to the one we just made for the Web Crawler. Integrating an ONNX Runtime SLM (`Distil-PII-1B`) as a static Rust binary is extremely complex and requires an architecture blueprint.

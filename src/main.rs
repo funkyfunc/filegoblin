@@ -10,29 +10,8 @@ const ASCII_MASCOT: &str = r#"
    --m-m--  filegoblin v1.5.0
 "#;
 
-/// The mischievous librarian - A high-performance, robust file ingester.
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Cli {
-    /// The target file, directory, or URL to ingest
-    path: String,
-
-    /// The specific LLM output flavor to bind the data with
-    #[arg(short, long, default_value = "human")]
-    flavor: String,
-
-    /// Extract the full document instead of attempting heuristic minification
-    #[arg(long)]
-    full: bool,
-
-    /// Recursive directory or website crawling
-    #[arg(long)]
-    horde: bool,
-
-    /// Print estimated token counts for the specific model flavor
-    #[arg(long)]
-    tokens: bool,
-}
+mod cli;
+use cli::Cli;
 
 fn main() -> Result<()> {
     // Parse arguments and emit the initial "Crunching..." or Goblinism
@@ -40,11 +19,13 @@ fn main() -> Result<()> {
 
     let parsed_flavor = Flavor::from_str(&args.flavor).unwrap_or(Flavor::Human);
 
-    println!("{}", ASCII_MASCOT.truecolor(167, 255, 0).bold());
-    println!("{}", "Hello Goblin!".truecolor(167, 255, 0).bold());
+    if !args.quiet {
+        eprintln!("{}", ASCII_MASCOT.truecolor(167, 255, 0).bold());
+        eprintln!("{}", "Hello Goblin!".truecolor(167, 255, 0).bold());
+    }
 
     // Initialize core library configurations
-    gobble_app(&args.path, &parsed_flavor, args.full, args.horde, args.tokens)?;
+    gobble_app(&args.path, &parsed_flavor, args.full, args.horde, args.split, args.tokens, args.quiet, args.json)?;
 
     Ok(())
 }

@@ -45,3 +45,12 @@ This document details the core architectural pillars and technical decisions tha
 
 **Justification:**
 - **The Linux Transition:** Major distributions (Ubuntu, RHEL) have deprecated X11. `filegoblin` utilizes `wl-clipboard-rs` to implement the `wl-data-device` protocol natively in pure Rust. This ensures the tool can silently and correctly pipe millions of tokens into the clipboard on modern Wayland desktop environments without requiring the user to install `libwayland-client` shared objects.
+
+## 6. Unix Philosophy & Pipeline Integration
+
+**Decision:** The CLI must absolutely respect the sanctity of standard streams. Diagnostic outputs (ASCII mascots, proxy warnings, progress logs) MUST go to `stderr`. Only perfectly formatted, target-file content may go to `stdout`.
+
+**Justification:**
+- **The Piped Ecosystem:** `filegoblin` is not an isolated GUI; it's a pipe component meant to be combined with `jq`, `grep`, or direct `curl` payloads to LLM APIs.
+- **Data Corruption:** Emitting a single byte of "Hello Goblin" or "Fetching URL..." into `stdout` instantly invalidates the resulting JSON array or Markdown stream for programmatic consumers.
+- **Zero-Config Quiet:** The addition of the `-q, --quiet` flag instantly silences `stderr` entirely, guaranteeing a completely silent operational footprint when orchestrated by CI/CD pipelines or background bash scripts.
