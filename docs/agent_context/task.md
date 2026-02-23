@@ -37,6 +37,7 @@
 ## Phase V: CLI Flags & UX Utilities
 - [x] Implement URL input fetching and ingestion
 - [ ] Implement recursive directory ingestion (`--horde`)
+- [ ] Implement recursive website crawling/ingestion
 - [ ] Implement token count estimation (`--tokens`)
 - [ ] Add clipboard support (`--copy`)
 - [ ] Add OS open support (`--open`)

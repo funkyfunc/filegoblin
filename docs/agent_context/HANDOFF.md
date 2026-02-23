@@ -8,15 +8,22 @@ Please read the following core architecture and design documents using your file
 - `README.md`
 - `PRD.md`
 - `AGENTS.md`
+- `ARCHITECTURE.md`
+- `docs/ADR.md`
 - `docs/UX.md`
 
-After you understand the architectural goals, please review our recent progress state by reading the preserved agent artifacts located in the `docs/agent_context/` directory. 
+After you understand the architectural goals (specifically the "Zero-Dependency" Rust mandate), please review our recent progress state by reading the preserved agent artifacts located in the `docs/agent_context/` directory. 
 Pay special attention to `docs/agent_context/task.md` to see our checklist.
 
 ## 2. Where We Left Off
-We successfully implemented the real parsing logic in Phase II.b for the Core Parsers (`PdfGobbler`, `OfficeGobbler`, `WebGobbler`, and `CodeGobbler`). We committed and pushed the code, but we had to stop before the final verification because the previous user's computer was taking too long to compile the C-bindings for `tree-sitter` and `rustls`.
+During this session, we significantly hardened the project's documentation and Web Ingestion capabilities:
+- Replaced naive HTML stripping with `html2md` for high-fidelity Markdown parsing.
+- Added a `--full` flag for Web extraction and implemented a custom link flattener to prevent LLM context bloat.
+- Built a comprehensive `ARCHITECTURE.md` file to preserve the founding technical decisions (WASM OCR, ONNX PII, strict Rust).
+- Formalized a clear Documentation Hierarchy (Root, `docs/`, `docs/agent_context/`) enforcing that ephemeral states never leak into the main repo.
+- Added "recursive website crawling/ingestion" to Phase V of `task.md`.
 
 ## 3. Your Immediate Next Steps
-1. Run `cargo horde-check` to compile the project and verify that the parser implementations pass the TDD test suite with zero warnings, confirming Phase II.b is officially complete.
-2. If `cargo horde-check` passes successfully, verify there is no remaining work for Phase II.b in `docs/agent_context/task.md`.
-3. If everything is green, notify the user, and prepare to move on to kicking off **Phase IV: Privacy & Security** (implementing Regex-based PII/Secret scrubbing and linking up the local SLM).
+1. The user has indicated they will provide a **new architecture file** containing specific design patterns for the newly added recursive website/directory crawling feature.
+2. Please ask the user to provide that document so you can review it.
+3. Once reviewed, you can proceed with implementing **Phase V** (Recursive directory/website ingestion) or **Phase IV** (Regex PII scrubbing) based on the user's immediate priority.
