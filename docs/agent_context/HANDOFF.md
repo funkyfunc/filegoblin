@@ -24,6 +24,5 @@ During this session, we significantly hardened the project's documentation and W
 - Added "recursive website crawling/ingestion" to Phase V of `task.md`.
 
 ## 3. Your Immediate Next Steps
-1. The user has indicated they will provide a **new architecture file** containing specific design patterns for the newly added recursive website/directory crawling feature.
-2. Please ask the user to provide that document so you can review it.
-3. Once reviewed, you can proceed with implementing **Phase V** (Recursive directory/website ingestion) or **Phase IV** (Regex PII scrubbing) based on the user's immediate priority.
+1. The user has provided a new architecture file containing specific design patterns for recursive website crawling. Please read `docs/agent_context/Rust Web Crawler Architecture Deep Dive.md` before starting work on that feature. (Note: traditional recursive directory search does not require an architecture deep dive).
+2. Once reviewed, you can proceed with implementing **Phase V** (Recursive directory/website ingestion) or **Phase IV** (Regex PII scrubbing) based on the user's immediate priority.
