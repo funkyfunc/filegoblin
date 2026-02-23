@@ -5,11 +5,12 @@ use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
 use std::path::Path;
 use url::Url;
+use colored::Colorize;
 
 /// filegoblin Core
 /// We keep logic in lib.rs to ensure the application is deeply testable
 /// independently from the `clap` CLI layer.
-pub fn gobble_app(target: &str, flavor: &flavors::Flavor, full: bool) -> Result<()> {
+pub fn gobble_app(target: &str, flavor: &flavors::Flavor, full: bool, horde: bool, tokens: bool) -> Result<()> {
     // Determine if the target is a URL or a Local Path
     let raw_content;
     let display_name;
@@ -18,26 +19,92 @@ pub fn gobble_app(target: &str, flavor: &flavors::Flavor, full: bool) -> Result<
         if url.scheme() == "http" || url.scheme() == "https" {
             println!("🌐 Gobbling network address: {}", url);
             display_name = target.to_string();
-            let html_content = fetch_url(&url)?;
-            raw_content = parsers::web::WebGobbler { extract_full: full }.gobble_str(&html_content)?;
+            if horde {
+                // TODO: Web crawler
+                raw_content = crate::parsers::crawler::crawl_web(&url, full)?;
+            } else {
+                let html_content = fetch_url(&url)?;
+                raw_content = parsers::web::WebGobbler { extract_full: full }.gobble_str(&html_content)?;
+            }
         } else {
             println!("📁 Gobbling local path: {}", target);
             display_name = target.to_string();
-            raw_content = route_and_gobble(target, full)?;
+            raw_content = gobble_local(target, full, horde)?;
         }
     } else {
         println!("📁 Gobbling local path: {}", target);
         display_name = target.to_string();
-        raw_content = route_and_gobble(target, full)?;
+        raw_content = gobble_local(target, full, horde)?;
     }
 
     // Format output via the flavors engine
     let output = flavors::format_output(flavor, &display_name, &raw_content);
 
+    // Print summary stats including tokens
+    if tokens {
+        // A very rough token approximation (~4 chars per token)
+        let approx_tokens = output.len() / 4;
+        println!("{}", format!("📊 Output Length: {} chars (~{} tokens)", output.len(), approx_tokens).truecolor(255, 191, 0));
+    }
+
     // TEMPORARY: output to stdout as placeholder
     println!("\n---\n{}", output);
 
     Ok(())
+}
+
+fn gobble_local(target: &str, full: bool, horde: bool) -> Result<String> {
+    if !horde {
+        return route_and_gobble(target, full);
+    }
+
+    // Process recursively
+    let mut combined_output = String::new();
+    let walker = ignore::WalkBuilder::new(target).build();
+    let root = std::path::Path::new(target);
+    
+    // Simple tree output as mentioned in the PRD Phase III Gemini flavor
+    combined_output.push_str("```tree\n.");
+    
+    let mut files_to_process = Vec::new();
+    
+    for result in walker {
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path = entry.path();
+        let depth = entry.depth();
+        
+        let prefix = " ".repeat(depth * 2);
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if path.is_dir() {
+            if depth > 0 {
+                combined_output.push_str(&format!("\n{}├── {}/", prefix, name));
+            }
+        } else {
+            combined_output.push_str(&format!("\n{}├── {}", prefix, name));
+            files_to_process.push(path.to_path_buf());
+        }
+    }
+    combined_output.push_str("\n```\n\n");
+
+    // Process all collected files
+    for file_path in files_to_process {
+        if let Ok(rel_path) = file_path.strip_prefix(if root.is_file() { root.parent().unwrap_or(root) } else { root }) {
+            let rel_str = rel_path.to_string_lossy();
+            combined_output.push_str(&format!("// --- FILE_START: {} ---\n", rel_str));
+            
+            match route_and_gobble(file_path.to_str().unwrap(), full) {
+                Ok(content) => combined_output.push_str(&content),
+                Err(e) => combined_output.push_str(&format!("Error summarizing file: {}", e)),
+            }
+            combined_output.push_str("\n\n");
+        }
+    }
+
+    Ok(combined_output)
 }
 
 fn route_and_gobble(path_str: &str, full: bool) -> Result<String> {

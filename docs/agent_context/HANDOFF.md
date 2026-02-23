@@ -16,13 +16,14 @@ After you understand the architectural goals (specifically the "Zero-Dependency"
 Pay special attention to `docs/agent_context/task.md` to see our checklist.
 
 ## 2. Where We Left Off
-During this session, we significantly hardened the project's documentation and Web Ingestion capabilities:
-- Replaced naive HTML stripping with `html2md` for high-fidelity Markdown parsing.
-- Added a `--full` flag for Web extraction and implemented a custom link flattener to prevent LLM context bloat.
-- Built a comprehensive `ARCHITECTURE.md` file to preserve the founding technical decisions (WASM OCR, ONNX PII, strict Rust).
-- Formalized a clear Documentation Hierarchy (Root, `docs/`, `docs/agent_context/`) enforcing that ephemeral states never leak into the main repo.
-- Added "recursive website crawling/ingestion" to Phase V of `task.md`.
+During this session, we fully implemented Phase V: The "Horde Mode" recursive parsing functionality:
+- Added the `--horde` flag which invokes `ignore::Walk` for `.gitignore` respecting local directory traversal.
+- Added a high-performance, async `GoblinCrawler` utilizing `tokio` channels, a `DashSet` for lock-free deduplication, and `governor` for domain-level GCRA politeness routing.
+- Added `robotxt` integration dynamically pulled per-host to obey crawler boundaries.
+- Re-architected `src/lib.rs` to aggregate `route_and_gobble` outputs iteratively with exact `// --- FILE_START` LLM structural boundaries as defined in the `gemini` flavor spec.
+- Added `--tokens` logic for a rough footprint estimation.
+- Passing rigorous `cargo horde-check` requirements for idiomatic and completely safe Rust.
 
 ## 3. Your Immediate Next Steps
-1. The user has provided a new architecture file containing specific design patterns for recursive website crawling. Please read `docs/agent_context/Rust Web Crawler Architecture Deep Dive.md` before starting work on that feature. (Note: traditional recursive directory search does not require an architecture deep dive).
-2. Once reviewed, you can proceed with implementing **Phase V** (Recursive directory/website ingestion) or **Phase IV** (Regex PII scrubbing) based on the user's immediate priority.
+1. Based on `task.md`, the next logical steps are either **Phase IV** (Privacy & Security via Regex PII Scrubbing and local SLM integration) or jumping to **Phase VI** (The `ratatui` interactive terminal UI).
+2. If beginning **Phase IV**, read the PRD carefully regarding ONNX runtime execution for `Distil-PII-1B` and review how that will integrate with our existing WASM architectural patterns to preserve the zero-dependency rule.

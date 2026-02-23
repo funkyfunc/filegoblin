@@ -32,9 +32,10 @@
 - [x] MVP CLI Setup with `clap`
 - [x] Core Library scaffolding & `Gobble` trait
 - [x] Core Parsers (PDF, Office, Web, Code) with TDD Mocks
+- [x] URL Ingestion Support & Recursive Crawling (`--horde`)
+- [x] Token Estimation (`--tokens`)
 - [ ] Output Flavors (Human, GPT, Claude, Gemini)
 - [ ] PII Redaction (Local SLM)
-- [ ] URL Ingestion Support
 
 ---
 

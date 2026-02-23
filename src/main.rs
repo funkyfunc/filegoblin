@@ -24,6 +24,14 @@ struct Cli {
     /// Extract the full document instead of attempting heuristic minification
     #[arg(long)]
     full: bool,
+
+    /// Recursive directory or website crawling
+    #[arg(long)]
+    horde: bool,
+
+    /// Print estimated token counts for the specific model flavor
+    #[arg(long)]
+    tokens: bool,
 }
 
 fn main() -> Result<()> {
@@ -36,7 +44,7 @@ fn main() -> Result<()> {
     println!("{}", "Hello Goblin!".truecolor(167, 255, 0).bold());
 
     // Initialize core library configurations
-    gobble_app(&args.path, &parsed_flavor, args.full)?;
+    gobble_app(&args.path, &parsed_flavor, args.full, args.horde, args.tokens)?;
 
     Ok(())
 }
