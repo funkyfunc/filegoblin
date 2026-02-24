@@ -107,8 +107,19 @@ impl Tier2Refiner {
         let mut redactions = Vec::new();
 
         // MOCK LOGIC: We simulate that the model natively identified specific words with high confidence.
-        // E.g. "Jane Doe" or "Seattle" if they appear contextually.
-        let sensitive_words = [("Jane Doe", 0.95), ("Seattle", 0.82), ("eyJhbG", 0.99)];
+        // E.g. "Jane Doe" or "Seattle" if they appear contextually, alongside API keys that have high entropy.
+        let sensitive_words = [
+            ("Jane Doe", 0.95), 
+            ("Seattle", 0.82), 
+            // Mocking high-entropy token detection by the neural network
+            ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", 0.99),
+            ("ghp_xYz123Abc456DeF789GHi012JkL345MnO", 0.98),
+            ("AKIAIOSFODNN7EXAMPLE", 0.99),
+            // Mocking crypto addresses
+            ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", 0.97),
+            // A name that is technically PII but mocked below threshold
+            ("Bob Smith", 0.75), 
+        ];
 
         for (word, conf) in sensitive_words {
             if conf >= self.confidence_threshold {
@@ -147,6 +158,7 @@ impl PrivacyShield {
             Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(), // SSN
             Regex::new(r"\b(?:\d[ -]*?){13,16}\b").unwrap(), // Credit Card
             Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b").unwrap(), // Email
+            Regex::new(r"\b(?i)api[_-]?key[^\w]{1,5}[a-zA-Z0-9]{20,}\b").unwrap(), // Generic API Key Assignment
         ];
 
         // Trigger Tier 3 Init
