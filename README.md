@@ -76,7 +76,7 @@ cargo horde-check
 fg my_notes.pdf > context.md
 
 # Output via native destination
-fg my_notes.pdf context.md
+fg my_notes.pdf --out context.md
 ```
 
 **URL Ingestion (Web):**

@@ -67,7 +67,7 @@ fn main() -> Result<()> {
                 args.full,
                 args.horde, // Horde is likely false if they selected a specific file, but pass the arg anyway
                 args.split,
-                args.destination.as_deref(),
+                args.out.as_deref(),
                 args.tokens,
                 args.quiet,
                 args.json,
@@ -92,7 +92,7 @@ fn main() -> Result<()> {
             args.full,
             args.horde,
             args.split,
-            args.destination.as_deref(),
+            args.out.as_deref(),
             args.tokens,
             args.quiet,
             args.json,

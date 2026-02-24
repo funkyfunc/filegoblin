@@ -10,9 +10,6 @@ pub struct Cli {
     /// The target file, directory, or URL to ingest
     pub path: Option<String>,
 
-    /// Optional output file or directory (when using --split) to write the results to
-    pub destination: Option<String>,
-
     // --- OUTPUT FORMATTING ---
     /// The specific LLM output flavor to bind the data with
     #[arg(
@@ -30,6 +27,10 @@ pub struct Cli {
     /// Split `--horde` output into individual files within an auto-generated directory
     #[arg(long, help_heading = "Output Formatting")]
     pub split: bool,
+
+    /// Write output directly to a combined file instead of standard output
+    #[arg(long, help_heading = "Output Formatting")]
+    pub out: Option<String>,
 
     /// Output strictly formatted struct data (JSON) instead of markdown
     #[arg(long, help_heading = "Output Formatting")]
