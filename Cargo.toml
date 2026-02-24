@@ -10,6 +10,7 @@ arboard = "3.6.1"
 candle-core = { version = "0.9", features = ["mkl"] }
 clap = { version = "4.5.60", features = ["derive", "env"] }
 colored = "3.1.1"
+crossterm = "0.29.0"
 dashmap = "6.1.0"
 docx-rs = "0.4.19"
 fst = { version = "0.4.7", features = ["levenshtein"] }
@@ -21,6 +22,7 @@ nonzero_ext = "0.3.0"
 notify = "8.2.0"
 open = "5.3.3"
 oxidize-pdf = "1.7.1"
+ratatui = "0.30.0"
 regex = "1.12.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"] }
 robotxt = "0.6.1"

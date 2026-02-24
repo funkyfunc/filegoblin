@@ -31,7 +31,7 @@ pub fn gobble_app(
     if let Ok(url) = Url::parse(target) {
         if url.scheme() == "http" || url.scheme() == "https" {
             if !quiet {
-                eprintln!("🌐 Gobbling network address: {}", url);
+                eprintln!("🌐 Sniffing the network for files: {}", url);
             }
             if horde {
                 raw_pairs = crate::parsers::crawler::crawl_web(&url, full)?;
@@ -43,13 +43,13 @@ pub fn gobble_app(
             }
         } else {
             if !quiet {
-                eprintln!("📁 Gobbling local path: {}", target);
+                eprintln!("📁 Sniffing for files at local path: {}", target);
             }
             raw_pairs = gobble_local(target, full, horde)?;
         }
     } else {
         if !quiet {
-            eprintln!("📁 Gobbling local path: {}", target);
+            eprintln!("📁 Sniffing for files at local path: {}", target);
         }
         raw_pairs = gobble_local(target, full, horde)?;
     }
@@ -59,7 +59,7 @@ pub fn gobble_app(
         if !quiet {
             eprintln!(
                 "{}",
-                "🛡️ Scrubbing PII/Secrets locally...".truecolor(255, 191, 0)
+                "🛡️ Scrubbed the secrets...".truecolor(255, 191, 0)
             );
         }
         let shield =
@@ -83,7 +83,7 @@ pub fn gobble_app(
         if !quiet {
             eprintln!(
                 "{}",
-                format!("💾 Splitting into directory: ./{}", root_dir).truecolor(0, 255, 100)
+                format!("💾 Stashing the split loot into directory: ./{}", root_dir).truecolor(0, 255, 100)
             );
         }
 
@@ -120,7 +120,7 @@ pub fn gobble_app(
             std::fs::write(&file_path, &flavored)?;
 
             if !quiet {
-                eprintln!("  ↳ Wrote {}", file_path.display());
+                eprintln!("  ↳ Spat out {}", file_path.display());
             }
 
             total_chars += flavored.len();
@@ -170,11 +170,12 @@ pub fn gobble_app(
             let mut clipboard = arboard::Clipboard::new()?;
             clipboard.set_text(serialized)?;
             if !quiet {
-                eprintln!("{}", "📋 Copied JSON to clipboard!".truecolor(0, 255, 100));
+                eprintln!("{}", "📋 Stashed the JSON loot in your clipboard!".truecolor(0, 255, 100));
             }
         }
     } else {
         let mut combined = String::new();
+        let file_count = final_pairs.len();
         for (path, content) in final_pairs {
             if path == "_tree.md" {
                 combined.push_str(&content);
@@ -186,21 +187,33 @@ pub fn gobble_app(
         }
 
         let output = flavors::format_output(flavor, &display_name, &combined);
+        let total_chars = output.len();
+        let total_tokens = total_chars / 4;
 
         if tokens && !quiet {
-            let approx_tokens = output.len() / 4;
             eprintln!(
                 "{}",
                 format!(
                     "📊 Output Length: {} chars (~{} tokens)",
-                    output.len(),
-                    approx_tokens
+                    total_chars, total_tokens
                 )
                 .truecolor(255, 191, 0)
             );
         }
 
+        // The actual markdown output
         println!("\n---\n{}", output);
+
+        // The Full Belch (Summary Table)
+        if !quiet {
+            eprintln!("\n{}", "╭──────────────────────────────────────╮".truecolor(139, 69, 19));
+            eprintln!("{} {}", "│".truecolor(139, 69, 19), "        THE FULL BELCH (SUMMARY)       ".truecolor(167, 255, 0).bold());
+            eprintln!("{}", "├──────────────────────────────────────┤".truecolor(139, 69, 19));
+            eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("📁 Files Gobbled: {}", file_count), "│".truecolor(139, 69, 19));
+            eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("📏 Total Characters: {}", total_chars), "│".truecolor(139, 69, 19));
+            eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("🪙 Estimated Tokens: {}", total_tokens), "│".truecolor(139, 69, 19));
+            eprintln!("{}", "╰──────────────────────────────────────╯\n".truecolor(139, 69, 19));
+        }
 
         if open_explorer {
             let file_prefix = target
@@ -217,7 +230,7 @@ pub fn gobble_app(
             std::fs::write(&temp_file, &output)?;
             
             if !quiet {
-                eprintln!("{}", format!("🚪 Opening temporary file: {}", temp_file.display()).truecolor(0, 200, 255));
+                eprintln!("{}", format!("🚪 Kicked open temporary file: {}", temp_file.display()).truecolor(0, 200, 255));
             }
             if let Err(e) = open::that(&temp_file) {
                  eprintln!("{} Failed to open temporary file: {}", "⚠️".yellow(), e);
@@ -228,7 +241,7 @@ pub fn gobble_app(
             let mut clipboard = arboard::Clipboard::new()?;
             clipboard.set_text(output)?;
             if !quiet {
-                eprintln!("{}", "📋 Copied to clipboard!".truecolor(0, 255, 100));
+                eprintln!("{}", "📋 Stashed the loot in your clipboard!".truecolor(0, 255, 100));
             }
         }
     }

@@ -48,12 +48,12 @@
 - [x] Implement `--split` flag for web crawler splitting
 
 ## Phase VI: The Interactive TUI & Vibe
-- [ ] Review `docs/UX.md` for interactive design guidelines and goals
-- [ ] Initialize `ratatui` dashboard (`-i` flag)
-- [ ] Implement "Hoard" Selector (Navigation, Prefix glowing, Preview Pane)
-- [ ] Implement The Progress Bar ("Teeth" jitter animation)
-- [ ] Add Error Personalities & Empty States
-- [ ] Add "Full" Belch Summary table
+- [x] Review `docs/UX.md` for interactive design guidelines and goals
+- [x] Initialize `ratatui` dashboard (`-i` flag)
+- [x] Implement "Hoard" Selector (Navigation, Prefix glowing, Preview Pane)
+- [x] Implement The Progress Bar ("Teeth" jitter animation)
+- [x] Add Error Personalities & Empty States
+- [x] Add "Full" Belch Summary table
 
 ## Phase VII: Extensibility
 - [ ] Implement WASM Plugin System for custom parsers via `wasmtime`

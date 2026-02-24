@@ -15,11 +15,39 @@ const ASCII_MASCOT: &str = r#"
 mod cli;
 use cli::Cli;
 
+mod ui;
+
 fn main() -> Result<()> {
     // Parse arguments and emit the initial "Crunching..." or Goblinism
     let args = Cli::parse();
 
     let parsed_flavor = Flavor::from_str(&args.flavor).unwrap_or(Flavor::Human);
+
+    if args.interactive {
+        // TUI Mode hijacks the execution
+        if let Some(selected_path) = ui::run_tui(&args.path)? {
+            // If the user selected a file and pressed enter, execute gobble on it
+            if !args.quiet {
+                eprintln!("{}", ASCII_MASCOT.truecolor(167, 255, 0).bold());
+                eprintln!("{}", "Hello Goblin!".truecolor(167, 255, 0).bold());
+            }
+
+            gobble_app(
+                &selected_path.to_string_lossy(),
+                &parsed_flavor,
+                args.full,
+                args.horde, // Horde is likely false if they selected a specific file, but pass the arg anyway
+                args.split,
+                args.tokens,
+                args.quiet,
+                args.json,
+                args.scrub,
+                args.copy,
+                args.open,
+            )?;
+        }
+        return Ok(());
+    }
 
     if !args.quiet {
         eprintln!("{}", ASCII_MASCOT.truecolor(167, 255, 0).bold());

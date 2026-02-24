@@ -58,6 +58,10 @@ pub struct Cli {
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub watch: bool,
 
+    /// Launch the interactive TUI "Hoard Selector" dashboard
+    #[arg(short, long, help_heading = "Developer Utilities")]
+    pub interactive: bool,
+
     /// Suppress all auxiliary output (mascots, progress logs, etc) to ensure clean pipeline usage
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub quiet: bool,

@@ -37,6 +37,8 @@
 - [x] Pipeline Isolation (`--quiet`) & Structured Data (`--json`)
 - [x] Token Estimation (`--tokens`)
 - [x] PII Redaction (`--scrub`)
+- [x] Interactive Terminal Dashboard (`-i`)
+- [x] The "Full Belch" Output Summary Table
 
 ---
 
@@ -92,6 +94,12 @@ fg ./src/api_keys.ts --scrub > safe_context.md
 **Scripting Pipeline (JSON & Quiet):**
 ```bash
 fg ./src/ --horde -q --json | jq '.[].path'
+```
+
+**Interactive Hoard Selector (TUI):**
+Use `j/k` to navigate and `Space` to select multiple files to ingest:
+```bash
+fg ./src/ -i
 ```
 
 ---
