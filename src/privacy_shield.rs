@@ -1,6 +1,7 @@
 use aho_corasick::{AhoCorasick, MatchKind};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use regex::Regex;
 
 /// Heuristic Trigger Component (Tier 3)
 pub struct PiiTrigger {
@@ -57,10 +58,10 @@ impl PiiTrigger {
     }
 }
 
-/// The Core Privacy Shield Engine
 pub struct PrivacyShield {
     trigger: PiiTrigger,
     ac: AhoCorasick,
+    regexes: Vec<Regex>,
 }
 
 impl PrivacyShield {
@@ -72,21 +73,33 @@ impl PrivacyShield {
             .build(&patterns)
             .context("Failed to build Aho-Corasick automaton")?;
 
+        // Standard PII Regexes for immediate scrubbing
+        let regexes = vec![
+            Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(), // SSN
+            Regex::new(r"\b(?:\d[ -]*?){13,16}\b").unwrap(), // Credit Card
+            Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b").unwrap(), // Email
+        ];
+
         // Trigger Tier 3 Init
         let trigger = PiiTrigger::new(64, 4.5); // Using 4.5 bits of entropy as high-risk threshold
 
         // Memory safety bounds as per `redation_extra_info.md`
         // let neural_semaphore = Arc::new(Semaphore::new(4)); // Max 4 concurrent neural inferences
 
-        Ok(Self { trigger, ac })
+        Ok(Self { trigger, ac, regexes })
     }
 
     /// Main entry point for scrubbing a string line/content
     pub fn redact(&self, input: &str) -> String {
         let mut output = input.to_string();
 
-        // Pass 1: Aho-Corasick Deterministic
+        // Pass 1a: Aho-Corasick Deterministic (Anchors)
         output = self.ac.replace_all(&output, &["[REDACTED]"; 3]);
+
+        // Pass 1b: Regex Patterns (Digits/Formats)
+        for re in &self.regexes {
+            output = re.replace_all(&output, "[REDACTED]").to_string();
+        }
 
         // Pass 3: Neural Trigger (For ambiguous soft PII)
         let triggers = self.trigger.scan(&output);
@@ -131,6 +144,9 @@ mod tests {
         assert_eq!(shield.redact(safe_text), safe_text);
 
         let ssn_text = "My SSN is 123-45-6789.";
-        assert_eq!(shield.redact(ssn_text), "My [REDACTED] is 123-45-6789.");
+        assert_eq!(shield.redact(ssn_text), "My [REDACTED] is [REDACTED].");
+
+        let email_text = "Contact me at dino@example.com quickly.";
+        assert_eq!(shield.redact(email_text), "Contact me at [REDACTED] quickly.");
     }
 }

@@ -1269,6 +1269,7 @@ dependencies = [
  "memmap2",
  "nonzero_ext",
  "oxidize-pdf",
+ "regex",
  "reqwest",
  "robotxt",
  "safetensors 0.4.5",
