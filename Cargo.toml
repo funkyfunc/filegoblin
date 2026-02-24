@@ -18,6 +18,8 @@ html2md = "0.2.15"
 ignore = "0.4.25"
 memmap2 = "0.9"
 nonzero_ext = "0.3.0"
+notify = "8.2.0"
+open = "5.3.3"
 oxidize-pdf = "1.7.1"
 regex = "1.12.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"] }

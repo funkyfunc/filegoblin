@@ -46,6 +46,18 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities")]
     pub scrub: bool,
 
+    /// Headless "Direct-to-Clipboard" support
+    #[arg(short, long, help_heading = "Developer Utilities")]
+    pub copy: bool,
+
+    /// OS native file explorer integration (Open the output file/dir)
+    #[arg(short, long, help_heading = "Developer Utilities")]
+    pub open: bool,
+
+    /// Watch a directory or file and automatically re-gobble on changes
+    #[arg(short, long, help_heading = "Developer Utilities")]
+    pub watch: bool,
+
     /// Suppress all auxiliary output (mascots, progress logs, etc) to ensure clean pipeline usage
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub quiet: bool,

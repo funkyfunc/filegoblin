@@ -22,6 +22,8 @@ pub fn gobble_app(
     quiet: bool,
     json: bool,
     scrub: bool,
+    copy_clipboard: bool,
+    open_explorer: bool,
 ) -> Result<()> {
     let display_name = target.to_string();
     let raw_pairs: Vec<(String, String)>;
@@ -135,6 +137,15 @@ pub fn gobble_app(
                 .truecolor(255, 191, 0)
             );
         }
+
+        if open_explorer {
+            if !quiet {
+                eprintln!("{}", format!("🚪 Opening directory: ./{}", root_dir).truecolor(0, 200, 255));
+            }
+            if let Err(e) = open::that(&root_dir) {
+                eprintln!("{} Failed to open directory: {}", "⚠️".yellow(), e);
+            }
+        }
     } else if json {
         // Build strictly structured JSON array format matching our (String, String) pairs
         #[derive(serde::Serialize)]
@@ -154,6 +165,14 @@ pub fn gobble_app(
 
         // Print strictly the JSON to standard out
         println!("{}", serialized);
+
+        if copy_clipboard {
+            let mut clipboard = arboard::Clipboard::new()?;
+            clipboard.set_text(serialized)?;
+            if !quiet {
+                eprintln!("{}", "📋 Copied JSON to clipboard!".truecolor(0, 255, 100));
+            }
+        }
     } else {
         let mut combined = String::new();
         for (path, content) in final_pairs {
@@ -182,6 +201,25 @@ pub fn gobble_app(
         }
 
         println!("\n---\n{}", output);
+
+        if open_explorer {
+            let temp_file = "gobbled_output.md";
+            std::fs::write(temp_file, &output)?;
+            if !quiet {
+                eprintln!("{}", format!("🚪 Opening temporary file: {}", temp_file).truecolor(0, 200, 255));
+            }
+            if let Err(e) = open::that(temp_file) {
+                 eprintln!("{} Failed to open temporary file: {}", "⚠️".yellow(), e);
+            }
+        }
+
+        if copy_clipboard {
+            let mut clipboard = arboard::Clipboard::new()?;
+            clipboard.set_text(output)?;
+            if !quiet {
+                eprintln!("{}", "📋 Copied to clipboard!".truecolor(0, 255, 100));
+            }
+        }
     }
 
     Ok(())

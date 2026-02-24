@@ -39,9 +39,9 @@
 - [x] Implement recursive directory ingestion (`--horde`)
 - [x] Implement recursive website crawling/ingestion
 - [x] Implement token count estimation (`--tokens`)
-- [ ] Add clipboard support (`--copy`)
-- [ ] Add OS open support (`--open`)
-- [ ] Add target directory watch support (`--watch`)
+- [x] Add clipboard support (`--copy`)
+- [x] Add OS open support (`--open`)
+- [x] Add target directory watch support (`--watch`)
 
 ## Phase V.5: Output Organization
 - [x] Implement `--split` flag for local directory splitting
