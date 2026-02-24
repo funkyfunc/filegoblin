@@ -58,10 +58,79 @@ impl PiiTrigger {
     }
 }
 
+/// Tier 3: Index Merger to reconcile overlapping or adjacent window spans
+pub struct IndexMerger;
+
+impl IndexMerger {
+    pub fn merge(windows: Vec<(usize, usize)>, look_back: usize) -> Vec<(usize, usize)> {
+        if windows.is_empty() {
+            return vec![];
+        }
+
+        let mut merged = Vec::new();
+        // Sort by start index
+        let mut sorted_windows = windows;
+        sorted_windows.sort_by_key(|&(start, _)| start);
+
+        let (mut current_start, mut current_end) = sorted_windows[0];
+
+        for &(start, end) in sorted_windows.iter().skip(1) {
+            // If the next window starts within `look_back` distance of the current end, merge them
+            if start <= current_end + look_back {
+                current_end = current_end.max(end);
+            } else {
+                merged.push((current_start, current_end));
+                current_start = start;
+                current_end = end;
+            }
+        }
+        merged.push((current_start, current_end));
+        merged
+    }
+}
+
+/// Tier 2: Refiner Component (Mocked SLM)
+pub struct Tier2Refiner {
+    confidence_threshold: f64,
+}
+
+impl Tier2Refiner {
+    pub fn new(threshold: f64) -> Self {
+        Self {
+            confidence_threshold: threshold,
+        }
+    }
+
+    /// Mocks processing a text window via candle-core / safetensors.
+    /// Returns a list of (start, end) byte indices relative to the chunk that contain PII.
+    pub fn process_chunk(&self, chunk: &str) -> Vec<(usize, usize)> {
+        let mut redactions = Vec::new();
+
+        // MOCK LOGIC: We simulate that the model natively identified specific words with high confidence.
+        // E.g. "Jane Doe" or "Seattle" if they appear contextually.
+        let sensitive_words = [("Jane Doe", 0.95), ("Seattle", 0.82), ("eyJhbG", 0.99)];
+
+        for (word, conf) in sensitive_words {
+            if conf >= self.confidence_threshold {
+                let mut start_idx = 0;
+                while let Some(idx) = chunk[start_idx..].find(word) {
+                    let absolute_idx = start_idx + idx;
+                    redactions.push((absolute_idx, absolute_idx + word.len()));
+                    start_idx = absolute_idx + word.len();
+                }
+            }
+        }
+
+        redactions
+    }
+}
+
 pub struct PrivacyShield {
     trigger: PiiTrigger,
+    refiner: Tier2Refiner,
     ac: AhoCorasick,
     regexes: Vec<Regex>,
+    neural_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl PrivacyShield {
@@ -83,10 +152,19 @@ impl PrivacyShield {
         // Trigger Tier 3 Init
         let trigger = PiiTrigger::new(64, 4.5); // Using 4.5 bits of entropy as high-risk threshold
 
-        // Memory safety bounds as per `redation_extra_info.md`
-        // let neural_semaphore = Arc::new(Semaphore::new(4)); // Max 4 concurrent neural inferences
+        // Refiner Tier 2 Init
+        let refiner = Tier2Refiner::new(0.85); // Default confidence threshold
 
-        Ok(Self { trigger, ac, regexes })
+        // Memory safety bounds as per `redation_extra_info.md`
+        let neural_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(4)); // Max 4 concurrent neural inferences
+
+        Ok(Self {
+            trigger,
+            refiner,
+            ac,
+            regexes,
+            neural_semaphore,
+        })
     }
 
     /// Main entry point for scrubbing a string line/content
@@ -103,11 +181,39 @@ impl PrivacyShield {
 
         // Pass 3: Neural Trigger (For ambiguous soft PII)
         let triggers = self.trigger.scan(&output);
-        if !triggers.is_empty() {
-            // In a real implementation, we would acquire the semaphore
-            // and pass the byte windows to Candle/Tract here.
-            // For the sake of the engine wrapper, we'll mark triggered zones to mock inference.
-            // _ = self.neural_semaphore.try_acquire();
+        let merged_triggers = IndexMerger::merge(triggers, 64); // 64-byte look-back buffer
+        
+        if !merged_triggers.is_empty() {
+            // As this is a synchronous function currently but tokio Semaphore is async,
+            // we use try_acquire to immediately grab a permit if available or skip/block.
+            // For production, if strict concurrency limits apply to synchronous ingestion,
+            // we should block thread or handle asynchronously. 
+            // In a blocking context, we can use `acquire` within a block_on or try_acquire.
+            let permit = self.neural_semaphore.try_acquire();
+            
+            if permit.is_ok() {
+                // We have a permit to use RAM for inference!
+                // Process the chunk back to front to avoid shifting indices
+                // Since this is just replacing text, we can build a list of replacements.
+                let mut chunk_replacements = Vec::new();
+
+                for (start, end) in &merged_triggers {
+                    let chunk = &output[*start..*end];
+                    let local_redactions = self.refiner.process_chunk(chunk);
+                    for (l_start, l_end) in local_redactions {
+                        chunk_replacements.push((start + l_start, start + l_end));
+                    }
+                }
+
+                // Apply Refiner redactions from back to front
+                chunk_replacements.sort_by_key(|&(s, _)| std::cmp::Reverse(s));
+                for (rs, re) in chunk_replacements {
+                    output.replace_range(rs..re, "[REDACTED]");
+                }
+            } else {
+                // In aggressive mode, we might drop the thread or queue it. 
+                // For now, if we hit RAM bounds, we skip (or fail-open).
+            }
         }
 
         output
