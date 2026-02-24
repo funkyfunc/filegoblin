@@ -1,16 +1,28 @@
 pub mod flavors;
 pub mod parsers;
+pub mod privacy_shield;
 
 use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
+use colored::Colorize;
 use std::path::Path;
 use url::Url;
-use colored::Colorize;
 
 /// filegoblin Core
 /// We keep logic in lib.rs to ensure the application is deeply testable
 /// independently from the `clap` CLI layer.
-pub fn gobble_app(target: &str, flavor: &flavors::Flavor, full: bool, horde: bool, split: bool, tokens: bool, quiet: bool, json: bool) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub fn gobble_app(
+    target: &str,
+    flavor: &flavors::Flavor,
+    full: bool,
+    horde: bool,
+    split: bool,
+    tokens: bool,
+    quiet: bool,
+    json: bool,
+    scrub: bool,
+) -> Result<()> {
     let display_name = target.to_string();
     let raw_pairs: Vec<(String, String)>;
 
@@ -23,7 +35,8 @@ pub fn gobble_app(target: &str, flavor: &flavors::Flavor, full: bool, horde: boo
                 raw_pairs = crate::parsers::crawler::crawl_web(&url, full)?;
             } else {
                 let html_content = fetch_url(&url, quiet)?;
-                let text = parsers::web::WebGobbler { extract_full: full }.gobble_str(&html_content)?;
+                let text =
+                    parsers::web::WebGobbler { extract_full: full }.gobble_str(&html_content)?;
                 raw_pairs = vec![(target.to_string(), text)];
             }
         } else {
@@ -39,88 +52,136 @@ pub fn gobble_app(target: &str, flavor: &flavors::Flavor, full: bool, horde: boo
         raw_pairs = gobble_local(target, full, horde)?;
     }
 
+    // Apply Privacy Shield if --scrub is requested
+    let final_pairs = if scrub {
+        if !quiet {
+            eprintln!(
+                "{}",
+                "🛡️ Scrubbing PII/Secrets locally...".truecolor(255, 191, 0)
+            );
+        }
+        let shield =
+            privacy_shield::PrivacyShield::init().context("Failed to initialize Privacy Shield")?;
+        raw_pairs
+            .into_iter()
+            .map(|(p, c)| (p, shield.redact(&c)))
+            .collect()
+    } else {
+        raw_pairs
+    };
+
     if split {
-        let root_dir_name = target.replace("https://", "").replace("http://", "").replace("/", "_");
+        let root_dir_name = target
+            .replace("https://", "")
+            .replace("http://", "")
+            .replace("/", "_");
         let root_dir = format!("{}_gobbled", root_dir_name);
         std::fs::create_dir_all(&root_dir)?;
-        
+
         if !quiet {
-            eprintln!("{}", format!("💾 Splitting into directory: ./{}", root_dir).truecolor(0, 255, 100));
+            eprintln!(
+                "{}",
+                format!("💾 Splitting into directory: ./{}", root_dir).truecolor(0, 255, 100)
+            );
         }
 
         let mut total_tokens = 0;
         let mut total_chars = 0;
 
-        for (path, content) in raw_pairs {
+        for (path, content) in final_pairs {
             // Safe pathing logic for urls and relative filepaths
             let safe_path = if let Ok(u) = Url::parse(&path) {
                 let mut p = u.path().trim_start_matches('/').to_string();
-                if p.is_empty() { p = "index".to_string(); }
-                if p.ends_with('/') { p.push_str("index"); }
+                if p.is_empty() {
+                    p = "index".to_string();
+                }
+                if p.ends_with('/') {
+                    p.push_str("index");
+                }
                 p.replace("..", "").replace(":", "_")
             } else {
                 path.replace("..", "")
             };
-            
-            let file_name = if safe_path.ends_with(".md") { safe_path } else { format!("{}.md", safe_path) };
+
+            let file_name = if safe_path.ends_with(".md") {
+                safe_path
+            } else {
+                format!("{}.md", safe_path)
+            };
             let file_path = std::path::Path::new(&root_dir).join(file_name);
-            
+
             if let Some(parent) = file_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            
+
             let flavored = flavors::format_output(flavor, &path, &content);
             std::fs::write(&file_path, &flavored)?;
 
             if !quiet {
                 eprintln!("  ↳ Wrote {}", file_path.display());
             }
-            
+
             total_chars += flavored.len();
             total_tokens += flavored.len() / 4;
         }
 
         if tokens && !quiet {
-            eprintln!("{}", format!("📊 Total Output Length: {} chars (~{} tokens)", total_chars, total_tokens).truecolor(255, 191, 0));
+            eprintln!(
+                "{}",
+                format!(
+                    "📊 Total Output Length: {} chars (~{} tokens)",
+                    total_chars, total_tokens
+                )
+                .truecolor(255, 191, 0)
+            );
         }
+    } else if json {
+        // Build strictly structured JSON array format matching our (String, String) pairs
+        #[derive(serde::Serialize)]
+        struct FileNode {
+            path: String,
+            content: String,
+        }
+
+        let mut out = Vec::new();
+        for (p, c) in final_pairs {
+            out.push(FileNode {
+                path: p,
+                content: c,
+            });
+        }
+        let serialized = serde_json::to_string_pretty(&out)?;
+
+        // Print strictly the JSON to standard out
+        println!("{}", serialized);
     } else {
-        if json {
-            // Build strictly structured JSON array format matching our (String, String) pairs
-            #[derive(serde::Serialize)]
-            struct FileNode {
-                path: String,
-                content: String,
+        let mut combined = String::new();
+        for (path, content) in final_pairs {
+            if path == "_tree.md" {
+                combined.push_str(&content);
+            } else {
+                combined.push_str(&format!("// --- FILE_START: {} ---\n", path));
+                combined.push_str(&content);
+                combined.push_str("\n\n");
             }
-            
-            let mut out = Vec::new();
-            for (p, c) in raw_pairs {
-                out.push(FileNode { path: p, content: c });
-            }
-            let serialized = serde_json::to_string_pretty(&out)?;
-            
-            // Print strictly the JSON to standard out
-            println!("{}", serialized);
-        } else {
-            let mut combined = String::new();
-            for (path, content) in raw_pairs {
-                if path == "_tree.md" {
-                    combined.push_str(&content);
-                } else {
-                    combined.push_str(&format!("// --- FILE_START: {} ---\n", path));
-                    combined.push_str(&content);
-                    combined.push_str("\n\n");
-                }
-            }
-
-            let output = flavors::format_output(flavor, &display_name, &combined);
-
-            if tokens && !quiet {
-                let approx_tokens = output.len() / 4;
-                eprintln!("{}", format!("📊 Output Length: {} chars (~{} tokens)", output.len(), approx_tokens).truecolor(255, 191, 0));
-            }
-
-            println!("\n---\n{}", output);
         }
+
+        let output = flavors::format_output(flavor, &display_name, &combined);
+
+        if tokens && !quiet {
+            let approx_tokens = output.len() / 4;
+            eprintln!(
+                "{}",
+                format!(
+                    "📊 Output Length: {} chars (~{} tokens)",
+                    output.len(),
+                    approx_tokens
+                )
+                .truecolor(255, 191, 0)
+            );
+        }
+
+        println!("\n---\n{}", output);
     }
 
     Ok(())
@@ -136,12 +197,12 @@ fn gobble_local(target: &str, full: bool, horde: bool) -> Result<Vec<(String, St
 
     let walker = ignore::WalkBuilder::new(target).build();
     let root = std::path::Path::new(target);
-    
+
     let mut tree_out = String::new();
     tree_out.push_str("```tree\n.");
-    
+
     let mut files_to_process = Vec::new();
-    
+
     for result in walker {
         let entry = match result {
             Ok(e) => e,
@@ -150,7 +211,7 @@ fn gobble_local(target: &str, full: bool, horde: bool) -> Result<Vec<(String, St
 
         let path = entry.path();
         let depth = entry.depth();
-        
+
         let prefix = " ".repeat(depth * 2);
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         if path.is_dir() {
@@ -167,14 +228,18 @@ fn gobble_local(target: &str, full: bool, horde: bool) -> Result<Vec<(String, St
 
     // Process all collected files
     for file_path in files_to_process {
-        if let Ok(rel_path) = file_path.strip_prefix(if root.is_file() { root.parent().unwrap_or(root) } else { root }) {
+        if let Ok(rel_path) = file_path.strip_prefix(if root.is_file() {
+            root.parent().unwrap_or(root)
+        } else {
+            root
+        }) {
             let rel_str = rel_path.to_string_lossy().into_owned();
-            
+
             let content = match route_and_gobble(file_path.to_str().unwrap(), full) {
                 Ok(c) => c,
                 Err(e) => format!("Error summarizing file: {}", e),
             };
-            
+
             files.push((rel_str, content));
         }
     }
@@ -209,10 +274,10 @@ fn route_and_gobble(path_str: &str, full: bool) -> Result<String> {
 
 fn fetch_url(url: &Url, quiet: bool) -> Result<String> {
     // reqwest::blocking::Client automatically respects HTTP_PROXY and HTTPS_PROXY
-    if let Ok(proxy) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("HTTP_PROXY")) {
-        if !quiet {
-            eprintln!("🔒 Corporate proxy detected: routing through {}", proxy);
-        }
+    if let Ok(proxy) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("HTTP_PROXY"))
+        && !quiet
+    {
+        eprintln!("🔒 Corporate proxy detected: routing through {}", proxy);
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -250,9 +315,12 @@ mod tests {
                 use std::io::Read;
                 let mut buf = [0; 1024];
                 let _ = stream.read(&mut buf);
-                
+
                 let body = b"<html><body><article>Goblin network testing!</article></body></html>";
-                let header = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
                 let _ = stream.write_all(header.as_bytes());
                 let _ = stream.write_all(body);
             }
@@ -262,7 +330,11 @@ mod tests {
         let html_content = fetch_url(&parsed_url, true).unwrap();
         assert!(html_content.contains("Goblin network testing!"));
 
-        let parsed_content = crate::parsers::web::WebGobbler { extract_full: false }.gobble_str(&html_content).unwrap();
+        let parsed_content = crate::parsers::web::WebGobbler {
+            extract_full: false,
+        }
+        .gobble_str(&html_content)
+        .unwrap();
         assert!(parsed_content.contains("Goblin network testing!"));
     }
 

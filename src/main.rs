@@ -25,7 +25,17 @@ fn main() -> Result<()> {
     }
 
     // Initialize core library configurations
-    gobble_app(&args.path, &parsed_flavor, args.full, args.horde, args.split, args.tokens, args.quiet, args.json)?;
+    gobble_app(
+        &args.path,
+        &parsed_flavor,
+        args.full,
+        args.horde,
+        args.split,
+        args.tokens,
+        args.quiet,
+        args.json,
+        args.scrub,
+    )?;
 
     Ok(())
 }

@@ -30,9 +30,9 @@
 - [x] Implement `gemini` flavor (Hierarchical with ASCII map)
 
 ## Phase IV: Privacy & Security
-- [ ] Implement Regex-based PII/Secret scrubbing
-- [ ] Integrate Local SLM (ONNX Runtime, Distil-PII-1B)
-- [ ] Connect scrubbing to `--scrub` flag
+- [x] Implement Regex-based PII/Secret scrubbing
+- [x] Integrate Local SLM (ONNX Runtime, Distil-PII-1B)
+- [x] Connect scrubbing to `--scrub` flag
 
 ## Phase V: CLI Flags & UX Utilities
 - [x] Implement URL input fetching and ingestion

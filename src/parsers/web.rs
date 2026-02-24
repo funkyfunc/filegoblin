@@ -33,7 +33,7 @@ impl WebGobbler {
                 let tag_end_idx = start + tag_end + 1;
                 // Delete the `<a href="...">`
                 html.replace_range(start..tag_end_idx, "");
-                
+
                 // Now find the next `</a>` and delete it
                 // We use replace instead of replace_range on the first occurrence
                 // so we don't have to perfectly track the shift in indices
@@ -75,15 +75,14 @@ impl Gobble for WebGobbler {
 
         if self.extract_full {
             // In full extraction, just remove scripts/styles that aren't content
-            clean = self.strip_tags(
-                clean,
-                &["script", "style", "svg", "noscript", "iframe"],
-            );
+            clean = self.strip_tags(clean, &["script", "style", "svg", "noscript", "iframe"]);
         } else {
             // Strip out noisy tags natively
             clean = self.strip_tags(
                 clean,
-                &["script", "style", "nav", "svg", "noscript", "iframe", "header"],
+                &[
+                    "script", "style", "nav", "svg", "noscript", "iframe", "header",
+                ],
             );
 
             // Try to find <article> or <main>
@@ -114,7 +113,9 @@ mod tests {
 
     #[test]
     fn test_web_heuristic_extraction() {
-        let gobbler = WebGobbler { extract_full: false };
+        let gobbler = WebGobbler {
+            extract_full: false,
+        };
         let html = r#"
             <html><body>
                 <nav>Ignore me</nav>

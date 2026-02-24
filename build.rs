@@ -21,11 +21,14 @@ fn main() -> std::io::Result<()> {
 
     // Generate Zsh Completion
     generate_to(Shell::Zsh, &mut cmd, "filegoblin", &generated_dir)?;
-    
+
     // Generate Bash Completion
     generate_to(Shell::Bash, &mut cmd, "filegoblin", &generated_dir)?;
 
-    println!("cargo:warning=Generated manpage and completions in {}", generated_dir.display());
+    println!(
+        "cargo:warning=Generated manpage and completions in {}",
+        generated_dir.display()
+    );
 
     Ok(())
 }

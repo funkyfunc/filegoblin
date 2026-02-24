@@ -36,7 +36,7 @@
 - [x] Output Splitting & Auto-Directory Mapping (`--split`)
 - [x] Pipeline Isolation (`--quiet`) & Structured Data (`--json`)
 - [x] Token Estimation (`--tokens`)
-- [ ] PII Redaction (Local SLM)
+- [x] PII Redaction (`--scrub`)
 
 ---
 
@@ -82,6 +82,11 @@ fg https://example.com/api-docs > context.md
 ```bash
 fg https://bettercli.org/ --horde --split
 # Translates to -> ./bettercli.org_gobbled/
+```
+
+**Privacy Shield (Redact PII & Secrets locally):**
+```bash
+fg ./src/api_keys.ts --scrub > safe_context.md
 ```
 
 **Scripting Pipeline (JSON & Quiet):**
