@@ -65,5 +65,9 @@
 - [x] Implement `std::io::IsTerminal` pipe detection
 - [x] Support `"-"` target inside `gobble_app`
 
+## Phase VI.80: Output File Flag
+- [x] Add `--out` target file flag in `cli.rs`
+- [x] Pipe serialized combined outputs to the file path in `lib.rs`
+
 ## Phase VII: Extensibility
 - [ ] Implement WASM Plugin System for custom parsers via `wasmtime`

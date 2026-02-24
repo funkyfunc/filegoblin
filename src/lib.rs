@@ -19,6 +19,7 @@ pub fn gobble_app(
     full: bool,
     horde: bool,
     split: bool,
+    out_file: Option<&str>,
     tokens: bool,
     quiet: bool,
     json: bool,
@@ -193,8 +194,15 @@ pub fn gobble_app(
         }
         let serialized = serde_json::to_string_pretty(&out)?;
 
-        // Print strictly the JSON to standard out
-        println!("{}", serialized);
+        if let Some(file_path) = out_file {
+            std::fs::write(file_path, &serialized)?;
+            if !quiet {
+                eprintln!("{}", format!("💾 Saved JSON output to {}", file_path).truecolor(0, 255, 100));
+            }
+        } else {
+            // Print strictly the JSON to standard out
+            println!("{}", serialized);
+        }
 
         if copy_clipboard {
             let mut clipboard = arboard::Clipboard::new()?;
@@ -231,8 +239,15 @@ pub fn gobble_app(
             );
         }
 
-        // The actual markdown output
-        println!("\n---\n{}", output);
+        if let Some(file_path) = out_file {
+            std::fs::write(file_path, &output)?;
+            if !quiet {
+                eprintln!("{}", format!("💾 Saved output to {}", file_path).truecolor(0, 255, 100));
+            }
+        } else {
+            // The actual markdown output
+            println!("\n---\n{}", output);
+        }
 
         // The Full Belch (Summary Table)
         if !quiet {
