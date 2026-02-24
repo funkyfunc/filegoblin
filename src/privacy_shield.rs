@@ -267,4 +267,41 @@ mod tests {
         let email_text = "Contact me at dino@example.com quickly.";
         assert_eq!(shield.redact(email_text), "Contact me at [REDACTED] quickly.");
     }
+
+    #[test]
+    fn test_comprehensive_pii_dataset() {
+        let shield = PrivacyShield::init().unwrap();
+
+        // Part 1A: Literal Anchors
+        assert_eq!(shield.redact("We found a printed Passport left on the train."), "We found a printed [REDACTED] left on the train.");
+        assert_eq!(shield.redact("Please enter your Credit Card details."), "Please enter your [REDACTED] details.");
+        
+        // Part 1B: Standardized Numeric Patterns (Regex)
+        assert_eq!(shield.redact("my SSN is 123-45-6789."), "my [REDACTED] is [REDACTED].");
+        assert_eq!(shield.redact("Visa card ending in 4111-1111-1111-1111,"), "Visa card ending in [REDACTED],");
+        assert_eq!(shield.redact("Always email admin@filegoblin.io before"), "Always email [REDACTED] before");
+
+        // Part 1C: Standardized Secrets (Regex)
+        assert_eq!(shield.redact("const api_key = \"aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA\";"), "const [REDACTED]=\"aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA\";");
+        assert_eq!(shield.redact("export const apiKey : string = \"vW3xY5zAaB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v\";"), "export const [REDACTED]: string = \"vW3xY5zAaB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v\";");
+
+        // Part 2A: High Confidence SLM Triggers
+        assert_eq!(shield.redact("The meeting is scheduled with Jane Doe for Tuesday"), "The meeting is scheduled with [REDACTED] for Tuesday");
+        assert_eq!(shield.redact("AWS token: AKIAIOSFODNN7EXAMPLE in the file"), "AWS token: [REDACTED] in the file");
+        assert_eq!(shield.redact("crypto wallet: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"), "crypto wallet: [REDACTED]");
+        assert_eq!(shield.redact("using token: ghp_xYz123Abc456DeF789GHi012JkL345MnO"), "using token: [REDACTED]");
+        assert_eq!(shield.redact("JWT token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."), "JWT token: [REDACTED]...");
+
+        // Part 2B: Low Confidence Bypass
+        let safe_text1 = "office in Seattle next month.";
+        assert_eq!(shield.redact(safe_text1), safe_text1);
+        let safe_text2 = "I spoke to Bob Smith yesterday";
+        assert_eq!(shield.redact(safe_text2), safe_text2);
+
+        // Part 2C: Index Merging
+        assert_eq!(
+            shield.redact("Token1: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 Token2: ghp_xYz123Abc456DeF789GHi012JkL345MnO"),
+            "Token1: [REDACTED] Token2: [REDACTED]"
+        );
+    }
 }
