@@ -28,3 +28,8 @@
 **Context:** The Phase IV specification requires zero-dependency, local-only PII redaction. Linking a standard ONNX Runtime would bloat the binary beyond the 50MB constraint.
 **Decision:** The Privacy Shield (`--scrub`) is implemented as a 3-tier engine. The "Sentinel" pass uses the `aho-corasick` crate for immediate <100ms algorithmic redaction. The "Trigger" uses Shannon Entropy (`sliding_features`) to isolate ambiguous windows. Finally, the "Refiner" neural pass uses a pure-Rust inference engine (`candle-core`) loading zero-copy memory-mapped `safetensors`. This fulfills all structural constraints without sacrificing accuracy. 
 **Status:** Accepted
+
+## 2026-02-23: Redaction String Standardization
+**Context:** Following the implementation of the Privacy Shield engine, the default replacement string for redacted entities was initially set to `[CONFIDENTIAL]`. However, this deviated from standard industry nomenclature and user expectations for sanitized documents.
+**Decision:** Updated the engine and associated tests to use the string `[REDACTED]` for all PII and secret scrubbing. This aligns with standard redaction terminology and provides a clearer, universally understood visual cue that information has been explicitly removed for privacy reasons.
+**Status:** Accepted

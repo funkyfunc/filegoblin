@@ -86,7 +86,7 @@ impl PrivacyShield {
         let mut output = input.to_string();
 
         // Pass 1: Aho-Corasick Deterministic
-        output = self.ac.replace_all(&output, &["[CONFIDENTIAL]"; 3]);
+        output = self.ac.replace_all(&output, &["[REDACTED]"; 3]);
 
         // Pass 3: Neural Trigger (For ambiguous soft PII)
         let triggers = self.trigger.scan(&output);
@@ -131,6 +131,6 @@ mod tests {
         assert_eq!(shield.redact(safe_text), safe_text);
 
         let ssn_text = "My SSN is 123-45-6789.";
-        assert_eq!(shield.redact(ssn_text), "My [CONFIDENTIAL] is 123-45-6789.");
+        assert_eq!(shield.redact(ssn_text), "My [REDACTED] is 123-45-6789.");
     }
 }
