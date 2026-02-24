@@ -71,3 +71,16 @@
 
 ## Phase VII: Extensibility
 - [ ] Implement WASM Plugin System for custom parsers via `wasmtime`
+
+## Phase VIII: Expanded Core Parsers
+- [ ] Presentation Gobbler (`.pptx`) via `quick-xml` or `oxml`
+- [ ] Image OCR Gobbler (`.png`, `.jpg`) via `ocrs` or `tesseract`
+- [ ] Excel / Spreadsheet Gobbler (`.xlsx`, `.csv`)
+
+## Phase IX: Advanced Output Structures
+- [ ] Implement standard XML Output Flavor (optimized for Anthropic models)
+- [ ] Implement YAML Output Flavor (optimized for strict data-schema models)
+
+## Phase X: Token Compression & Stripping
+- [ ] Implement `--compress` flag with multiple heuristic levels (whitespace, stopwords, etc)
+- [ ] Display total LLM tokens saved in the Full Belch terminal summary
