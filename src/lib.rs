@@ -13,7 +13,7 @@ use url::Url;
 /// independently from the `clap` CLI layer.
 #[allow(clippy::too_many_arguments)]
 pub fn gobble_app(
-    target: &str,
+    targets: &[String],
     flavor: &flavors::Flavor,
     full: bool,
     horde: bool,
@@ -25,33 +25,46 @@ pub fn gobble_app(
     copy_clipboard: bool,
     open_explorer: bool,
 ) -> Result<()> {
-    let display_name = target.to_string();
-    let raw_pairs: Vec<(String, String)>;
+    if targets.is_empty() {
+        return Ok(());
+    }
 
-    if let Ok(url) = Url::parse(target) {
-        if url.scheme() == "http" || url.scheme() == "https" {
-            if !quiet {
-                eprintln!("🌐 Sniffing the network for files: {}", url);
-            }
-            if horde {
-                raw_pairs = crate::parsers::crawler::crawl_web(&url, full)?;
+    let display_name = if targets.len() == 1 {
+        targets[0].clone()
+    } else if targets.len() == 2 {
+        format!("{} & {}", targets[0], targets[1])
+    } else {
+        format!("{} and {} others", targets[0], targets.len() - 1)
+    };
+    
+    let mut raw_pairs: Vec<(String, String)> = Vec::new();
+
+    for target in targets {
+        if let Ok(url) = Url::parse(target) {
+            if url.scheme() == "http" || url.scheme() == "https" {
+                if !quiet {
+                    eprintln!("🌐 Sniffing the network for files: {}", url);
+                }
+                if horde {
+                    raw_pairs.extend(crate::parsers::crawler::crawl_web(&url, full)?);
+                } else {
+                    let html_content = fetch_url(&url, quiet)?;
+                    let text =
+                        parsers::web::WebGobbler { extract_full: full }.gobble_str(&html_content)?;
+                    raw_pairs.push((target.to_string(), text));
+                }
             } else {
-                let html_content = fetch_url(&url, quiet)?;
-                let text =
-                    parsers::web::WebGobbler { extract_full: full }.gobble_str(&html_content)?;
-                raw_pairs = vec![(target.to_string(), text)];
+                if !quiet {
+                    eprintln!("📁 Sniffing for files at local path: {}", target);
+                }
+                raw_pairs.extend(gobble_local(target, full, horde)?);
             }
         } else {
             if !quiet {
                 eprintln!("📁 Sniffing for files at local path: {}", target);
             }
-            raw_pairs = gobble_local(target, full, horde)?;
+            raw_pairs.extend(gobble_local(target, full, horde)?);
         }
-    } else {
-        if !quiet {
-            eprintln!("📁 Sniffing for files at local path: {}", target);
-        }
-        raw_pairs = gobble_local(target, full, horde)?;
     }
 
     // Apply Privacy Shield if --scrub is requested
@@ -73,10 +86,12 @@ pub fn gobble_app(
     };
 
     if split {
-        let root_dir_name = target
+        let root_dir_name = display_name
             .replace("https://", "")
             .replace("http://", "")
-            .replace("/", "_");
+            .replace("/", "_")
+            .replace(" ", "_")
+            .replace("&", "and");
         let root_dir = format!("{}_gobbled", root_dir_name);
         std::fs::create_dir_all(&root_dir)?;
 
@@ -216,12 +231,14 @@ pub fn gobble_app(
         }
 
         if open_explorer {
-            let file_prefix = target
+            let file_prefix = display_name
                 .replace("https://", "")
                 .replace("http://", "")
                 .replace("/", "_")
                 .replace("..", "")
-                .replace(":", "_");
+                .replace(":", "_")
+                .replace(" ", "_")
+                .replace("&", "and");
             
             // Write to the OS temporary directory to prevent accidental local file overwrites
             let temp_dir = std::env::temp_dir();

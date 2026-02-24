@@ -11,7 +11,7 @@ use ratatui::{
 use std::{io, path::PathBuf};
 
 /// The internal state of our TUI Application.
-pub struct App {
+pub struct App<'a> {
     pub files: Vec<PathBuf>,
     pub selected_index: usize,
     pub selected_files: std::collections::HashSet<usize>,
@@ -19,11 +19,11 @@ pub struct App {
     pub view_scroll: u16,
     pub should_quit: bool,
     pub should_execute: bool,
-    pub target_path: String,
+    pub active_flags: &'a mut crate::cli::Cli,
 }
 
-impl App {
-    pub fn new(target_path: String) -> Self {
+impl<'a> App<'a> {
+    pub fn new(flags: &'a mut crate::cli::Cli) -> Self {
         Self {
             files: Vec::new(),
             selected_index: 0,
@@ -32,14 +32,14 @@ impl App {
             view_scroll: 0,
             should_quit: false,
             should_execute: false,
-            target_path,
+            active_flags: flags,
         }
     }
 
     /// Sniffs (reads) the target path and populates the initial Hoard.
     pub fn sniff(&mut self) -> Result<()> {
         self.files.clear();
-        let path = std::path::Path::new(&self.target_path);
+        let path = std::path::Path::new(&self.active_flags.path);
         
         if !path.exists() {
             return Ok(());
@@ -113,7 +113,7 @@ impl App {
     }
 }
 
-pub fn run_tui(target_path: &str) -> Result<Option<PathBuf>> {
+pub fn run_tui(args: &mut crate::cli::Cli) -> Result<Option<Vec<PathBuf>>> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -122,7 +122,7 @@ pub fn run_tui(target_path: &str) -> Result<Option<PathBuf>> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app and load files
-    let mut app = App::new(target_path.to_string());
+    let mut app = App::new(args);
     app.sniff()?;
 
     let res = run_app(&mut terminal, &mut app);
@@ -141,15 +141,14 @@ pub fn run_tui(target_path: &str) -> Result<Option<PathBuf>> {
     }
 
     if app.should_execute {
-        // If they multi-selected, we could theoretically return ALL selected files, 
-        // but for MVP, we just return the currently highlighted one if selected_files is empty.
-        // If they selected files, we'll just return the first selected one for now 
-        // (handling true multi-file ingestion requires modifying gobble_app signature).
         if !app.selected_files.is_empty() {
-             let first_selected = app.selected_files.iter().next().unwrap();
-             return Ok(Some(app.files[*first_selected].clone()));
+             let mut selected = Vec::new();
+             for &idx in &app.selected_files {
+                 selected.push(app.files[idx].clone());
+             }
+             return Ok(Some(selected));
         } else if !app.files.is_empty() {
-             return Ok(Some(app.files[app.selected_index].clone()));
+             return Ok(Some(vec![app.files[app.selected_index].clone()]));
         }
     }
     
@@ -181,10 +180,15 @@ where
         }
 
         terminal.draw(|f| {
+            let main_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
+                .split(f.area());
+
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
-                .split(f.area());
+                .split(main_chunks[0]);
 
             // Render The Hoard (Left Pane)
             let items: Vec<ListItem> = app
@@ -231,6 +235,29 @@ where
                 .scroll((app.view_scroll, 0))
                 .style(Style::default().fg(Color::White));
             f.render_widget(preview_block, chunks[1]);
+
+            // Render Bottom Bar (Options)
+            let copy_color = if app.active_flags.copy { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
+            let open_color = if app.active_flags.open { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
+            let scrub_color = if app.active_flags.scrub { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
+            let tokens_color = if app.active_flags.tokens { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
+
+            let bottom_text = Line::from(vec![
+                Span::raw(" Toggles: "),
+                Span::styled("[c]opy", Style::default().fg(copy_color).add_modifier(Modifier::BOLD)),
+                Span::raw(" | "),
+                Span::styled("[o]pen", Style::default().fg(open_color).add_modifier(Modifier::BOLD)),
+                Span::raw(" | "),
+                Span::styled("[s]crub", Style::default().fg(scrub_color).add_modifier(Modifier::BOLD)),
+                Span::raw(" | "),
+                Span::styled("[t]okens", Style::default().fg(tokens_color).add_modifier(Modifier::BOLD)),
+                Span::raw("      "),
+                Span::styled(" [Space] Select | [Enter] Gobble | [q] Quit ", Style::default().fg(Color::Rgb(139, 69, 19)).add_modifier(Modifier::BOLD)),
+            ]);
+
+            let bottom_block = Paragraph::new(bottom_text)
+                .block(Block::default().borders(Borders::ALL));
+            f.render_widget(bottom_block, main_chunks[1]);
         })?;
 
         // Poll with a timeout so the loop iter runs fast enough to render the jitter animation
@@ -242,6 +269,10 @@ where
                     app.should_quit = true;
                 }
                 KeyCode::Char(' ') => app.toggle_selection(),
+                KeyCode::Char('c') => app.active_flags.copy = !app.active_flags.copy,
+                KeyCode::Char('o') => app.active_flags.open = !app.active_flags.open,
+                KeyCode::Char('s') => app.active_flags.scrub = !app.active_flags.scrub,
+                KeyCode::Char('t') => app.active_flags.tokens = !app.active_flags.tokens,
                 KeyCode::Down | KeyCode::Char('j') => app.next(),
                 KeyCode::Up | KeyCode::Char('k') => app.previous(),
                 // Page down preview

@@ -55,5 +55,10 @@
 - [x] Add Error Personalities & Empty States
 - [x] Add "Full" Belch Summary table
 
+## Phase VI.5: Interactive Mode Improvements
+- [x] Refactor `gobble_app` to accept `targets: &[String]` array
+- [x] Add TUI Bottom Bar with Toggleable Flags (`c`, `o`, `s`, `t`)
+- [x] Enable TUI Multi-File Execution returning dynamic arrays into pipeline
+
 ## Phase VII: Extensibility
 - [ ] Implement WASM Plugin System for custom parsers via `wasmtime`

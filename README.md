@@ -97,7 +97,11 @@ fg ./src/ --horde -q --json | jq '.[].path'
 ```
 
 **Interactive Hoard Selector (TUI):**
-Use `j/k` to navigate and `Space` to select multiple files to ingest:
+A full, snappy `ratatui` dashboard wrapper around the engine.
+- Navigate with `j / k` and page with `u / d`.
+- Toggle multiple files for ingestion using `Space`.
+- Toggle pipeline flags directly from the bottom bar (`c` for copy, `s` for scrub secrets, etc.).
+- Hit `Enter` to belch out the results!
 ```bash
 fg ./src/ -i
 ```
