@@ -30,7 +30,7 @@ pub struct Cli {
 
     /// Write output directly to a combined file instead of standard output
     #[arg(long, help_heading = "Output Formatting")]
-    pub out: Option<String>,
+    pub write: Option<String>,
 
     /// Output strictly formatted struct data (JSON) instead of markdown
     #[arg(long, help_heading = "Output Formatting")]

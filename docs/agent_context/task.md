@@ -66,7 +66,7 @@
 - [x] Support `"-"` target inside `gobble_app`
 
 ## Phase VI.80: Output File Flag
-- [x] Add `--out` target file flag in `cli.rs`
+- [x] Add `--write` target file flag in `cli.rs`
 - [x] Pipe serialized combined outputs to the file path in `lib.rs`
 
 ## Phase VII: Extensibility
