@@ -84,3 +84,8 @@
 ## Phase X: Token Compression & Stripping
 - [ ] Implement `--compress` flag with multiple heuristic levels (whitespace, stopwords, etc)
 - [ ] Display total LLM tokens saved in the Full Belch terminal summary
+
+## Phase XI: Remote Data Hooks
+- [ ] Native Git Cloning via `git2` (e.g., `fg https://github.com/user/repo`)
+- [ ] Remote Cloud Storage Fetching (AWS S3 / GCS URIs)
+- [ ] Local Database Connection String Ingestion (SQLite `.db`, Postgres)
