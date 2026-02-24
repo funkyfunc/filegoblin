@@ -209,10 +209,15 @@ pub fn gobble_app(
                 .replace("/", "_")
                 .replace("..", "")
                 .replace(":", "_");
-            let temp_file = format!("{}_gobbled.md", file_prefix);
+            
+            // Write to the OS temporary directory to prevent accidental local file overwrites
+            let temp_dir = std::env::temp_dir();
+            let temp_file = temp_dir.join(format!("{}_gobbled.md", file_prefix));
+            
             std::fs::write(&temp_file, &output)?;
+            
             if !quiet {
-                eprintln!("{}", format!("🚪 Opening temporary file: {}", temp_file).truecolor(0, 200, 255));
+                eprintln!("{}", format!("🚪 Opening temporary file: {}", temp_file.display()).truecolor(0, 200, 255));
             }
             if let Err(e) = open::that(&temp_file) {
                  eprintln!("{} Failed to open temporary file: {}", "⚠️".yellow(), e);
