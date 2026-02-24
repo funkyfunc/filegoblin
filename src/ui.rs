@@ -239,6 +239,7 @@ where
             // Render Bottom Bar (Options)
             let copy_color = if app.active_flags.copy { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
             let open_color = if app.active_flags.open { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
+            let split_color = if app.active_flags.split { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
             let scrub_color = if app.active_flags.scrub { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
             let tokens_color = if app.active_flags.tokens { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
 
@@ -247,6 +248,8 @@ where
                 Span::styled("[c]opy", Style::default().fg(copy_color).add_modifier(Modifier::BOLD)),
                 Span::raw(" | "),
                 Span::styled("[o]pen", Style::default().fg(open_color).add_modifier(Modifier::BOLD)),
+                Span::raw(" | "),
+                Span::styled("s[p]lit", Style::default().fg(split_color).add_modifier(Modifier::BOLD)),
                 Span::raw(" | "),
                 Span::styled("[s]crub", Style::default().fg(scrub_color).add_modifier(Modifier::BOLD)),
                 Span::raw(" | "),
@@ -271,6 +274,7 @@ where
                 KeyCode::Char(' ') => app.toggle_selection(),
                 KeyCode::Char('c') => app.active_flags.copy = !app.active_flags.copy,
                 KeyCode::Char('o') => app.active_flags.open = !app.active_flags.open,
+                KeyCode::Char('p') => app.active_flags.split = !app.active_flags.split,
                 KeyCode::Char('s') => app.active_flags.scrub = !app.active_flags.scrub,
                 KeyCode::Char('t') => app.active_flags.tokens = !app.active_flags.tokens,
                 KeyCode::Down | KeyCode::Char('j') => app.next(),
