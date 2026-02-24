@@ -19,7 +19,7 @@ pub fn gobble_app(
     full: bool,
     horde: bool,
     split: bool,
-    out_file: Option<&str>,
+    destination: Option<&str>,
     tokens: bool,
     quiet: bool,
     json: bool,
@@ -108,7 +108,7 @@ pub fn gobble_app(
             .replace("/", "_")
             .replace(" ", "_")
             .replace("&", "and");
-        let root_dir = format!("{}_gobbled", root_dir_name);
+        let root_dir = destination.map(|d| d.to_string()).unwrap_or_else(|| format!("{}_gobbled", root_dir_name));
         std::fs::create_dir_all(&root_dir)?;
 
         if !quiet {
@@ -194,7 +194,7 @@ pub fn gobble_app(
         }
         let serialized = serde_json::to_string_pretty(&out)?;
 
-        if let Some(file_path) = out_file {
+        if let Some(file_path) = destination {
             std::fs::write(file_path, &serialized)?;
             if !quiet {
                 eprintln!("{}", format!("💾 Saved JSON output to {}", file_path).truecolor(0, 255, 100));
@@ -239,7 +239,7 @@ pub fn gobble_app(
             );
         }
 
-        if let Some(file_path) = out_file {
+        if let Some(file_path) = destination {
             std::fs::write(file_path, &output)?;
             if !quiet {
                 eprintln!("{}", format!("💾 Saved output to {}", file_path).truecolor(0, 255, 100));

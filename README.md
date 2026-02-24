@@ -72,7 +72,11 @@ cargo horde-check
 
 **Basic Gobble (File):**
 ```bash
+# Output to stdout
 fg my_notes.pdf > context.md
+
+# Output via native destination
+fg my_notes.pdf context.md
 ```
 
 **URL Ingestion (Web):**
