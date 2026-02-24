@@ -7,8 +7,8 @@ use clap::Parser;
     after_help = "EXAMPLES:\n  # Ingest a single file\n  filegoblin src/main.rs\n\n  # Recursively crawl a website and split into separate files\n  filegoblin https://bettercli.org --horde --split\n\n  # Parse a codebase silently and output JSON for a script\n  filegoblin ./my_project --horde -q --json\n"
 )]
 pub struct Cli {
-    /// The target file, directory, or URL to ingest
-    pub path: Option<String>,
+    /// The target files, directories, or URLs to ingest
+    pub paths: Vec<String>,
 
     // --- OUTPUT FORMATTING ---
     /// The specific LLM output flavor to bind the data with

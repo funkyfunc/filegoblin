@@ -70,13 +70,13 @@ All code must pass the ritual before being merged:
 cargo horde-check
 ```
 
-**Basic Gobble (File):**
+**Basic Gobble (Files):**
 ```bash
-# Output to stdout
+# Output a single file to stdout
 fg my_notes.pdf > context.md
 
-# Output via native destination
-fg my_notes.pdf --write context.md
+# Merge multiple files natively
+fg src/main.rs src/lib.rs README.md --write context.md
 ```
 
 **URL Ingestion (Web):**

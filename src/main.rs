@@ -29,10 +29,8 @@ fn main() -> Result<()> {
         targets.push("-".to_string());
     }
 
-    // 2. Add the positional path argument if it exists
-    if let Some(p) = &args.path {
-        targets.push(p.clone());
-    }
+    // 2. Add the positional path arguments if they exist
+    targets.extend(args.paths.clone());
 
     // 3. Prevent running with no targets
     if targets.is_empty() && !args.interactive {
