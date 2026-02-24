@@ -39,7 +39,8 @@ impl<'a> App<'a> {
     /// Sniffs (reads) the target path and populates the initial Hoard.
     pub fn sniff(&mut self) -> Result<()> {
         self.files.clear();
-        let path = std::path::Path::new(&self.active_flags.path);
+        let path_str = self.active_flags.path.as_deref().unwrap_or("");
+        let path = std::path::Path::new(path_str);
         
         if !path.exists() {
             return Ok(());

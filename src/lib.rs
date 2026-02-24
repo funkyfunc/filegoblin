@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::Path;
 use url::Url;
+use std::io::Read;
 
 /// filegoblin Core
 /// We keep logic in lib.rs to ensure the application is deeply testable
@@ -40,6 +41,20 @@ pub fn gobble_app(
     let mut raw_pairs: Vec<(String, String)> = Vec::new();
 
     for target in targets {
+        if target == "-" {
+            if !quiet {
+                eprintln!("📥 Sniffing stream from stdin...");
+            }
+            let mut buffer = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut buffer) {
+                eprintln!("{} Error reading stdin: {}", "⚠️".yellow(), e);
+            }
+            if !buffer.is_empty() {
+                raw_pairs.push(("stdin".to_string(), buffer));
+            }
+            continue;
+        }
+
         if let Ok(url) = Url::parse(target) {
             if url.scheme() == "http" || url.scheme() == "https" {
                 if !quiet {

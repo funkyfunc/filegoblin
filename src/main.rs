@@ -4,6 +4,7 @@ use colored::*;
 use filegoblin::{flavors::Flavor, gobble_app};
 use std::str::FromStr;
 use std::sync::mpsc::channel;
+use std::io::IsTerminal;
 use notify::{Watcher, RecursiveMode};
 
 const ASCII_MASCOT: &str = r#"
@@ -23,7 +24,30 @@ fn main() -> Result<()> {
 
     let parsed_flavor = Flavor::from_str(&args.flavor).unwrap_or(Flavor::Human);
 
+    let mut targets = Vec::new();
+
+    // 1. Detect if we have a piped stdin stream
+    if !std::io::stdin().is_terminal() {
+        targets.push("-".to_string());
+    }
+
+    // 2. Add the positional path argument if it exists
+    if let Some(p) = &args.path {
+        targets.push(p.clone());
+    }
+
+    // 3. Prevent running with no targets
+    if targets.is_empty() && !args.interactive {
+        eprintln!("{} Error: No target path provided and no stdin stream detected.", "❌".red());
+        eprintln!("Usage: fg <target>  --OR--  cat <file> | fg");
+        std::process::exit(1);
+    }
+
     if args.interactive {
+        if targets.contains(&"-".to_string()) {
+            eprintln!("{} Error: Cannot run the Interactive TUI (-i) while piping stdin data.", "❌".red());
+            std::process::exit(1);
+        }
         // TUI Mode hijacks the execution
         if let Some(selected_paths) = ui::run_tui(&mut args)? {
             // If the user selected files and pressed enter, execute gobble on them
@@ -62,7 +86,7 @@ fn main() -> Result<()> {
     // Establish core invocation closure
     let run = || -> Result<()> {
         gobble_app(
-            std::slice::from_ref(&args.path),
+            &targets,
             &parsed_flavor,
             args.full,
             args.horde,
@@ -90,14 +114,19 @@ fn main() -> Result<()> {
         // A simple debounced watcher is preferred, but standard watcher is fine for Phase V MVP
         let mut watcher = notify::recommended_watcher(tx)?;
         
-        let target_path = std::path::Path::new(&args.path);
+        let target_path = args.path.as_deref().map(std::path::Path::new);
         
         // Ensure path exists before watching
-        if target_path.exists() {
-             watcher.watch(target_path, RecursiveMode::Recursive)?;
+        if let Some(path) = target_path {
+            if path.exists() {
+                 watcher.watch(path, RecursiveMode::Recursive)?;
+            } else {
+                 // Handle web URLs which we obviously can't "watch" locally
+                 eprintln!("{} Cannot watch a non-local path or non-existent file.", "⚠️".yellow());
+                 return Ok(());
+            }
         } else {
-             // Handle web URLs which we obviously can't "watch" locally
-             eprintln!("{} Cannot watch a non-local path or non-existent file.", "⚠️".yellow());
+             eprintln!("{} Cannot watch a stdin stream.", "⚠️".yellow());
              return Ok(());
         }
 

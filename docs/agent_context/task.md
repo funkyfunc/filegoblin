@@ -60,5 +60,10 @@
 - [x] Add TUI Bottom Bar with Toggleable Flags (`c`, `o`, `s`, `t`)
 - [x] Enable TUI Multi-File Execution returning dynamic arrays into pipeline
 
+## Phase VI.75: Stdin Pipeline Support
+- [x] Make `path` optional in the CLI
+- [x] Implement `std::io::IsTerminal` pipe detection
+- [x] Support `"-"` target inside `gobble_app`
+
 ## Phase VII: Extensibility
 - [ ] Implement WASM Plugin System for custom parsers via `wasmtime`

@@ -96,6 +96,9 @@ fg ./src/api_keys.ts --scrub > safe_context.md
 fg ./src/ --horde -q --json | jq '.[].path'
 ```
 
+# Pipe directly from other programs using stdin
+curl -s "https://api.github.com/users/octocat" | fg -q --json
+
 **Interactive Hoard Selector (TUI):**
 A full, snappy `ratatui` dashboard wrapper around the engine.
 - Navigate with `j / k` and page with `u / d`.

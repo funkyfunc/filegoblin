@@ -8,7 +8,7 @@ use clap::Parser;
 )]
 pub struct Cli {
     /// The target file, directory, or URL to ingest
-    pub path: String,
+    pub path: Option<String>,
 
     // --- OUTPUT FORMATTING ---
     /// The specific LLM output flavor to bind the data with
