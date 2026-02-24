@@ -29,7 +29,7 @@ pub struct Cli {
     pub split: bool,
 
     /// Write output directly to a combined file instead of standard output
-    #[arg(long, help_heading = "Output Formatting")]
+    #[arg(short = 'w', long, help_heading = "Output Formatting")]
     pub write: Option<String>,
 
     /// Output strictly formatted struct data (JSON) instead of markdown
@@ -58,9 +58,6 @@ pub struct Cli {
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub open: bool,
 
-    /// Watch a directory or file and automatically re-gobble on changes
-    #[arg(short, long, help_heading = "Developer Utilities")]
-    pub watch: bool,
 
     /// Launch the interactive TUI "Hoard Selector" dashboard
     #[arg(short, long, help_heading = "Developer Utilities")]
