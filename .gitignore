@@ -25,3 +25,6 @@ target
 
 /target
 .DS_Store
+
+# Invisible files
+/invisible

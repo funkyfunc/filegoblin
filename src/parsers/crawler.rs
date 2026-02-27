@@ -133,7 +133,7 @@ impl GoblinCrawler {
                                                     // Normalization constraints: Only HTTP/HTTPS, matches base domain, no fragments.
                                                     let scheme = next_url.scheme();
                                                     if (scheme == "http" || scheme == "https") &&
-                                                        next_url.host_str() == Some(&target_domain_clone) {
+                                                        next_url.host_str() == Some(target_domain_clone.as_str()) {
 
                                                             let mut clean_url = next_url.clone();
                                                             clean_url.set_fragment(None);

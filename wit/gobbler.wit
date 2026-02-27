@@ -1,0 +1,11 @@
+package filegoblin:plugin@0.1.0;
+
+interface parser {
+    /// Attempt to parse the given byte stream for a specific file extension.
+    /// Returns the formatted Markdown string if successful, or an error message if parsing failed.
+    gobble: func(data: list<u8>, extension: string) -> result<string, string>;
+}
+
+world gobbler {
+    export parser;
+}

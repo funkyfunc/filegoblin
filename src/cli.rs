@@ -1,4 +1,14 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
+pub enum CompressionLevel {
+    /// Deterministic structural normalization. Aggressively folds whitespace and newlines without breaking code or prose structure.
+    Safe,
+    /// Semantic lexical pruning. Uses language-aware lexing to strip code comments while preserving docstrings. Minifies JSON/HTML.
+    Contextual,
+    /// Lossy linguistic distillation. Strips stopwords from English prose and optimizes text to maximize token density.
+    Aggressive,
+}
 
 /// The mischievous librarian - A high-performance, robust file ingester.
 #[derive(Parser, Debug, Clone)]
@@ -20,23 +30,35 @@ pub struct Cli {
     )]
     pub flavor: String,
 
+    /// Aggressively strip non-semantic characters from the final output to reduce LLM tokens
+    #[arg(long, help_heading = "Output Formatting")]
+    pub compress: Option<CompressionLevel>,
+
     /// Extract the full document instead of attempting heuristic minification
     #[arg(long, help_heading = "Output Formatting")]
     pub full: bool,
 
     /// Split `--horde` output into individual files within an auto-generated directory
-    #[arg(long, help_heading = "Output Formatting")]
+    #[arg(long, help_heading = "Output Formatting", conflicts_with_all = ["chunk", "json"])]
     pub split: bool,
+
+    /// Chunk combined output into multiple files based on an estimated token limit (e.g. --chunk 100k)
+    #[arg(long, help_heading = "Output Formatting", conflicts_with_all = ["split", "json"])]
+    pub chunk: Option<String>,
 
     /// Write output directly to a combined file instead of standard output
     #[arg(short = 'w', long, help_heading = "Output Formatting")]
     pub write: Option<String>,
 
     /// Output strictly formatted struct data (JSON) instead of markdown
-    #[arg(long, help_heading = "Output Formatting")]
+    #[arg(long, help_heading = "Output Formatting", conflicts_with_all = ["split", "chunk", "compress"])]
     pub json: bool,
 
     // --- CRAWLING & INGESTION ---
+    /// Force all ingested files through a specific WASM Component Model plugin (e.g. --plugin my_parser)
+    #[arg(long, help_heading = "Crawling & Ingestion")]
+    pub plugin: Option<String>,
+
     /// Recursive directory or website crawling
     #[arg(long, help_heading = "Crawling & Ingestion")]
     pub horde: bool,

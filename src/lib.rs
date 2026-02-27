@@ -1,6 +1,8 @@
+pub mod cli;
 pub mod flavors;
 pub mod parsers;
 pub mod privacy_shield;
+pub mod compressor;
 
 use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
@@ -9,6 +11,10 @@ use std::path::Path;
 use url::Url;
 use std::io::Read;
 
+// The pulldown-cmark imports are needed for pipeline processing
+use pulldown_cmark::{Parser, Event, Tag, TagEnd};
+use pulldown_cmark_to_cmark::cmark;
+
 /// filegoblin Core
 /// We keep logic in lib.rs to ensure the application is deeply testable
 /// independently from the `clap` CLI layer.
@@ -16,9 +22,11 @@ use std::io::Read;
 pub fn gobble_app(
     targets: &[String],
     flavor: &flavors::Flavor,
+    compress: Option<&crate::cli::CompressionLevel>,
     full: bool,
     horde: bool,
     split: bool,
+    chunk: Option<&str>,
     out_file: Option<&str>,
     tokens: bool,
     quiet: bool,
@@ -26,6 +34,7 @@ pub fn gobble_app(
     scrub: bool,
     copy_clipboard: bool,
     open_explorer: bool,
+    plugin: Option<&str>,
 ) -> Result<()> {
     if targets.is_empty() {
         return Ok(());
@@ -73,13 +82,13 @@ pub fn gobble_app(
                 if !quiet {
                     eprintln!("📁 Sniffing for files at local path: {}", target);
                 }
-                raw_pairs.extend(gobble_local(target, full, horde)?);
+                raw_pairs.extend(gobble_local(target, full, horde, plugin)?);
             }
         } else {
             if !quiet {
                 eprintln!("📁 Sniffing for files at local path: {}", target);
             }
-            raw_pairs.extend(gobble_local(target, full, horde)?);
+            raw_pairs.extend(gobble_local(target, full, horde, plugin)?);
         }
     }
 
@@ -101,6 +110,68 @@ pub fn gobble_app(
         raw_pairs
     };
 
+    // Calculate baseline tokens BEFORE compression for savings metric
+    let pre_compression_tokens: usize = final_pairs
+        .iter()
+        .map(|(path, content)| crate::compressor::heuristic::estimate_tokens(content, path))
+        .sum();
+
+    // Apply Compression Pipeline if --compress is flag
+    let compressed_pairs = if let Some(level) = compress {
+        if !quiet {
+            eprintln!("{}", format!("🗜️ Shrinking the loot (Level: {:?})...", level).truecolor(0, 200, 255));
+        }
+        final_pairs.into_iter().map(|(path, content)| {
+             // Avoid double-compressing the _tree.md as the ASCII structure breaks easily
+            if path == "_tree.md" {
+                 return (path, content);
+            }
+
+            let mut mapped_events = Vec::new();
+            let parser = Parser::new(&content);
+            let mut current_lang = None;
+            
+            // Build the default pipeline for prose/mixed content
+            let default_pipeline = crate::compressor::CompressionPipeline::new(level, None);
+
+            for event in parser {
+                match event {
+                    Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(ref lang))) => {
+                        current_lang = Some(lang.to_string());
+                        mapped_events.push(event.clone());
+                    }
+                    Event::End(TagEnd::CodeBlock) => {
+                        current_lang = None;
+                        mapped_events.push(event.clone());
+                    }
+                    Event::Text(ref text) => {
+                         // Apply code-block specific compression or default prose compression
+                         let transformed = if let Some(lang) = &current_lang {
+                              let pipeline = crate::compressor::CompressionPipeline::new(level, Some(lang));
+                              pipeline.process(text)
+                         } else {
+                              default_pipeline.process(text)
+                         };
+                         mapped_events.push(Event::Text(pulldown_cmark::CowStr::Boxed(transformed.into_boxed_str())));
+                    }
+                    _ => {
+                        mapped_events.push(event.clone());
+                    }
+                }
+            }
+            
+            let mut minified_markdown = String::with_capacity(content.len());
+            cmark(mapped_events.into_iter(), &mut minified_markdown).unwrap();
+            
+            // Always run Level 1 folder globally on the final markdown output String to clean up layout markers
+            let final_pipeline = crate::compressor::CompressionPipeline::new(level, None);
+            let fully_compressed = final_pipeline.process(&minified_markdown);
+            (path, fully_compressed)
+        }).collect()
+    } else {
+        final_pairs
+    };
+
     if split {
         let root_dir_name = display_name
             .replace("https://", "")
@@ -118,12 +189,12 @@ pub fn gobble_app(
             );
         }
 
-        let mut total_tokens = 0;
+        let mut post_compression_tokens = 0;
         let mut total_chars = 0;
 
-        for (path, content) in final_pairs {
+        for (path, content) in compressed_pairs.iter() {
             // Safe pathing logic for urls and relative filepaths
-            let safe_path = if let Ok(u) = Url::parse(&path) {
+            let safe_path = if let Ok(u) = Url::parse(path) {
                 let mut p = u.path().trim_start_matches('/').to_string();
                 if p.is_empty() {
                     p = "index".to_string();
@@ -147,7 +218,7 @@ pub fn gobble_app(
                 std::fs::create_dir_all(parent)?;
             }
 
-            let flavored = flavors::format_output(flavor, &path, &content);
+            let flavored = flavors::format_output(flavor, path, content);
             std::fs::write(&file_path, &flavored)?;
 
             if !quiet {
@@ -155,7 +226,7 @@ pub fn gobble_app(
             }
 
             total_chars += flavored.len();
-            total_tokens += flavored.len() / 4;
+            post_compression_tokens += crate::compressor::heuristic::estimate_tokens(&flavored, path);
         }
 
         if tokens && !quiet {
@@ -163,7 +234,7 @@ pub fn gobble_app(
                 "{}",
                 format!(
                     "📊 Total Output Length: {} chars (~{} tokens)",
-                    total_chars, total_tokens
+                    total_chars, post_compression_tokens
                 )
                 .truecolor(255, 191, 0)
             );
@@ -186,7 +257,7 @@ pub fn gobble_app(
         }
 
         let mut out = Vec::new();
-        for (p, c) in final_pairs {
+        for (p, c) in compressed_pairs {
             out.push(FileNode {
                 path: p,
                 content: c,
@@ -212,9 +283,122 @@ pub fn gobble_app(
             }
         }
     } else {
+        // Parse token threshold if chunk is enabled
+        let token_threshold: Option<usize> = chunk.and_then(|c| {
+            let c = c.trim().to_lowercase();
+            if c.ends_with('k') {
+                c.trim_end_matches('k').parse::<f64>().ok().map(|n| (n * 1_000.0) as usize)
+            } else if c.ends_with('m') {
+                c.trim_end_matches('m').parse::<f64>().ok().map(|n| (n * 1_000_000.0) as usize)
+            } else {
+                c.parse::<usize>().ok()
+            }
+        });
+
+        if let Some(threshold) = token_threshold {
+            if !quiet {
+                eprintln!("{}", format!("🍰 Chunking output at ~{} tokens per file", threshold).truecolor(0, 200, 255));
+            }
+            
+            let mut part_number = 1;
+            let mut current_combined = String::new();
+            let mut current_tokens = 0;
+            let mut post_compression_tokens = 0;
+            let mut total_chars = 0;
+            let file_count = compressed_pairs.len();
+            
+            for (i, (path, content)) in compressed_pairs.into_iter().enumerate() {
+                let file_tokens = crate::compressor::heuristic::estimate_tokens(&content, &path);
+                post_compression_tokens += file_tokens;
+                
+                // If adding this file pushes us over the threshold AND we already have content in this chunk
+                if current_tokens + file_tokens > threshold && !current_combined.is_empty() {
+                    // Flush current chunk
+                    let output = flavors::format_output(flavor, &display_name, &current_combined);
+                    total_chars += output.len();
+                    
+                    let part_file_name = out_file
+                        .map(|o| format!("{}.part{}.md", o.trim_end_matches(".md"), part_number))
+                        .unwrap_or_else(|| format!("gobbled.part{}.md", part_number));
+                        
+                    std::fs::write(&part_file_name, &output)?;
+                    if !quiet {
+                        eprintln!("{}", format!("  ↳ Baked {}", part_file_name).truecolor(0, 255, 100));
+                    }
+                    
+                    // Reset for next chunk
+                    part_number += 1;
+                    current_combined.clear();
+                    current_tokens = 0;
+                }
+                
+                // Append current file to the chunk
+                if path == "_tree.md" {
+                    current_combined.push_str(&content);
+                } else {
+                    current_combined.push_str(&format!("// --- FILE_START: {} ---\n", path));
+                    current_combined.push_str(&content);
+                    current_combined.push_str("\n\n");
+                }
+                current_tokens += file_tokens;
+                
+                // If it's the last file, flush the remaining chunk
+                if i == file_count - 1 && !current_combined.is_empty() {
+                    let output = flavors::format_output(flavor, &display_name, &current_combined);
+                    total_chars += output.len();
+                    
+                    let part_file_name = out_file
+                        .map(|o| format!("{}.part{}.md", o.trim_end_matches(".md"), part_number))
+                        .unwrap_or_else(|| format!("gobbled.part{}.md", part_number));
+                        
+                    std::fs::write(&part_file_name, &output)?;
+                    if !quiet {
+                        eprintln!("{}", format!("  ↳ Baked {}", part_file_name).truecolor(0, 255, 100));
+                    }
+                }
+            }
+            
+            // Print chunking summary
+            if tokens && !quiet {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "📊 Output Length: {} chars (~{} tokens across {} parts)",
+                        total_chars, post_compression_tokens, part_number
+                    )
+                    .truecolor(255, 191, 0)
+                );
+            }
+            
+            let tokens_saved = if compress.is_some() && pre_compression_tokens > post_compression_tokens {
+                 pre_compression_tokens - post_compression_tokens
+            } else {
+                 0
+            };
+
+            // The Full Belch (Summary Table)
+            if !quiet {
+                eprintln!("\n{}", "╭──────────────────────────────────────╮".truecolor(139, 69, 19));
+                eprintln!("{} {}", "│".truecolor(139, 69, 19), "        THE FULL BELCH (SUMMARY)       ".truecolor(167, 255, 0).bold());
+                eprintln!("{}", "├──────────────────────────────────────┤".truecolor(139, 69, 19));
+                eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("📁 Files Gobbled: {}", file_count), "│".truecolor(139, 69, 19));
+                eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("📏 Total Characters: {}", total_chars), "│".truecolor(139, 69, 19));
+                eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("🪙 Estimated Tokens: {}", post_compression_tokens), "│".truecolor(139, 69, 19));
+                if tokens_saved > 0 {
+                    eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("📉 Tokens Saved:   {} 📉", tokens_saved).truecolor(0, 255, 150), "│".truecolor(139, 69, 19));
+                }
+                eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("🍰 Parts Baked: {}", part_number), "│".truecolor(139, 69, 19));
+                eprintln!("{}", "╰──────────────────────────────────────╯".truecolor(139, 69, 19));
+            }
+            return Ok(());
+        }
+
+        // Original Unchunked Pipeline
         let mut combined = String::new();
-        let file_count = final_pairs.len();
-        for (path, content) in final_pairs {
+        let file_count = compressed_pairs.len();
+        let mut post_compression_tokens = 0;
+        
+        for (path, content) in compressed_pairs {
             if path == "_tree.md" {
                 combined.push_str(&content);
             } else {
@@ -222,18 +406,18 @@ pub fn gobble_app(
                 combined.push_str(&content);
                 combined.push_str("\n\n");
             }
+            post_compression_tokens += crate::compressor::heuristic::estimate_tokens(&content, &path);
         }
 
         let output = flavors::format_output(flavor, &display_name, &combined);
         let total_chars = output.len();
-        let total_tokens = total_chars / 4;
 
         if tokens && !quiet {
             eprintln!(
                 "{}",
                 format!(
                     "📊 Output Length: {} chars (~{} tokens)",
-                    total_chars, total_tokens
+                    total_chars, post_compression_tokens
                 )
                 .truecolor(255, 191, 0)
             );
@@ -249,6 +433,12 @@ pub fn gobble_app(
             println!("\n---\n{}", output);
         }
 
+        let tokens_saved = if compress.is_some() && pre_compression_tokens > post_compression_tokens {
+             pre_compression_tokens - post_compression_tokens
+        } else {
+             0
+        };
+
         // The Full Belch (Summary Table)
         if !quiet {
             eprintln!("\n{}", "╭──────────────────────────────────────╮".truecolor(139, 69, 19));
@@ -256,8 +446,11 @@ pub fn gobble_app(
             eprintln!("{}", "├──────────────────────────────────────┤".truecolor(139, 69, 19));
             eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("📁 Files Gobbled: {}", file_count), "│".truecolor(139, 69, 19));
             eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("📏 Total Characters: {}", total_chars), "│".truecolor(139, 69, 19));
-            eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("🪙 Estimated Tokens: {}", total_tokens), "│".truecolor(139, 69, 19));
-            eprintln!("{}", "╰──────────────────────────────────────╯\n".truecolor(139, 69, 19));
+            eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("🪙 Estimated Tokens: {}", post_compression_tokens), "│".truecolor(139, 69, 19));
+            if tokens_saved > 0 {
+                eprintln!("{} {:<37} {}", "│".truecolor(139, 69, 19), format!("📉 Tokens Saved:   {} 📉", tokens_saved).truecolor(0, 255, 150), "│".truecolor(139, 69, 19));
+            }
+            eprintln!("{}", "╰──────────────────────────────────────╯".truecolor(139, 69, 19));
         }
 
         if open_explorer {
@@ -296,11 +489,11 @@ pub fn gobble_app(
     Ok(())
 }
 
-fn gobble_local(target: &str, full: bool, horde: bool) -> Result<Vec<(String, String)>> {
+fn gobble_local(target: &str, full: bool, horde: bool, plugin_override: Option<&str>) -> Result<Vec<(String, String)>> {
     let mut files = Vec::new();
 
     if !horde {
-        files.push((target.to_string(), route_and_gobble(target, full)?));
+        files.push((target.to_string(), route_and_gobble(target, full, plugin_override)?));
         return Ok(files);
     }
 
@@ -344,7 +537,7 @@ fn gobble_local(target: &str, full: bool, horde: bool) -> Result<Vec<(String, St
         }) {
             let rel_str = rel_path.to_string_lossy().into_owned();
 
-            let content = match route_and_gobble(file_path.to_str().unwrap(), full) {
+            let content = match route_and_gobble(file_path.to_str().unwrap(), full, plugin_override) {
                 Ok(c) => c,
                 Err(e) => format!("Error summarizing file: {}", e),
             };
@@ -356,7 +549,7 @@ fn gobble_local(target: &str, full: bool, horde: bool) -> Result<Vec<(String, St
     Ok(files)
 }
 
-fn route_and_gobble(path_str: &str, full: bool) -> Result<String> {
+fn route_and_gobble(path_str: &str, full: bool, plugin_override: Option<&str>) -> Result<String> {
     let path = Path::new(path_str);
     let extension = path
         .extension()
@@ -364,13 +557,35 @@ fn route_and_gobble(path_str: &str, full: bool) -> Result<String> {
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
 
+    // EXPLICIT OVERRIDE: If the user passed `--plugin <NAME>`, force execution through that WASM component.
+    if let Some(plugin_name) = plugin_override {
+        if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(plugin_name) {
+            match (parsers::wasm::WasmGobbler { wasm_path: plugin_path }).gobble(path) {
+                Ok(markdown) => return Ok(markdown),
+                Err(e) => anyhow::bail!("Explicit WASM Plugin '{}' failed: {}", plugin_name, e),
+            }
+        } else {
+            anyhow::bail!("Requested explicit --plugin '{}' could not be found in ~/.filegoblin/plugins/ or ./plugins/", plugin_name);
+        }
+    }
+
     match extension.as_str() {
         "pdf" => parsers::pdf::PdfGobbler.gobble(path),
-        "docx" | "xlsx" => parsers::office::OfficeGobbler.gobble(path),
+        "docx" => parsers::office::OfficeGobbler.gobble(path),
+        "xlsx" | "xls" | "ods" | "csv" => parsers::sheet::SheetGobbler.gobble(path),
+        "pptx" => parsers::powerpoint::PptxGobbler.gobble(path),
         "html" | "htm" => parsers::web::WebGobbler { extract_full: full }.gobble(path),
         "rs" | "js" | "py" | "ts" | "go" | "c" | "cpp" => parsers::code::CodeGobbler.gobble(path),
         _ => {
-            // Default to OCR or raw text read for unknown formats
+            // Priority 1: Check if a user provided a dynamic WASM plugin for this extension
+            #[allow(clippy::collapsible_if)]
+            if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(&extension) {
+                if let Ok(markdown) = (parsers::wasm::WasmGobbler { wasm_path: plugin_path }).gobble(path) {
+                    return Ok(markdown);
+                }
+            }
+
+            // Priority 2: Fall back to core heuristics
             // If it's an image, pass to ocr. If text, just read.
             if ["png", "jpg", "jpeg", "webp"].contains(&extension.as_str()) {
                 parsers::ocr::OcrGobbler.gobble(path)
@@ -452,7 +667,7 @@ mod tests {
         // Fallback for an unknown extension (.xyz)
         let test_file = "dummy.xyz";
         std::fs::write(test_file, "Plaintext fallback text").unwrap();
-        let res = route_and_gobble(test_file, false).unwrap();
+        let res = route_and_gobble(test_file, false, None).unwrap();
         assert_eq!(res, "Plaintext fallback text");
         std::fs::remove_file(test_file).ok();
     }

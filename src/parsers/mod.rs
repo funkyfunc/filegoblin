@@ -4,4 +4,7 @@ pub mod gobble;
 pub mod ocr;
 pub mod office;
 pub mod pdf;
+pub mod powerpoint;
+pub mod sheet;
+pub mod wasm;
 pub mod web;

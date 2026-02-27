@@ -104,6 +104,7 @@ impl GoblinStomach {
 - **`--json`**: Convert the output format from Markdown into strictly formatted structured JSON arrays.
 - **`--scrub`**: Local PII/Secret redaction.
 - **`--tokens`**: Print estimated token counts for the specific model flavor.
+- **`--compress <safe|contextual|aggressive>`**: Token compression engine for reducing LLM overhead.
 
 ### 4.2 UX Utilities
 - **`--copy`**: Headless "Direct-to-Clipboard" support for Wayland, X11, macOS, and Windows.

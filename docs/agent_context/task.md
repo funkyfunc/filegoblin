@@ -69,21 +69,27 @@
 - [x] Add `--write` target file flag in `cli.rs`
 - [x] Pipe serialized combined outputs to the file path in `lib.rs`
 
+## Phase VI.90: UI/UX Polish and "Delight"
+- [x] Implement dynamic, multi-frame animated mascot in `main.rs`
+- [x] Add color gradients to the ratatui interface in `ui.rs`
+- [x] Improve the progress "teeth" animation in `ui.rs`
+- [x] Update `main.rs` to print the mascot dynamically instead of a static string
+
 ## Phase VII: Extensibility
 - [ ] Implement WASM Plugin System for custom parsers via `wasmtime`
 
 ## Phase VIII: Expanded Core Parsers
-- [ ] Presentation Gobbler (`.pptx`) via `quick-xml` or `oxml`
-- [ ] Image OCR Gobbler (`.png`, `.jpg`) via `ocrs` or `tesseract`
-- [ ] Excel / Spreadsheet Gobbler (`.xlsx`, `.csv`)
+- [x] Presentation Gobbler (`.pptx`) via `quick-xml` or `oxml`
+- [x] Image OCR Gobbler (`.png`, `.jpg`) via `ocrs`
+- [x] Excel / Spreadsheet Gobbler (`.xlsx`, `.csv`)
 
 ## Phase IX: Advanced Output Structures
 - [ ] Implement standard XML Output Flavor (optimized for Anthropic models)
 - [ ] Implement YAML Output Flavor (optimized for strict data-schema models)
 
 ## Phase X: Token Compression & Stripping
-- [ ] Implement `--compress` flag with multiple heuristic levels (whitespace, stopwords, etc)
-- [ ] Display total LLM tokens saved in the Full Belch terminal summary
+- [x] Implement `--compress <safe|contextual|aggressive>` flag with descriptive help docs (`src/cli.rs`)
+- [x] Display total LLM tokens saved in the Full Belch terminal summary
 
 ## Phase XI: Remote Data Hooks
 - [ ] Native Git Cloning via `git2` (e.g., `fg https://github.com/user/repo`)

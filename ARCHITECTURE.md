@@ -13,14 +13,15 @@ This document details the core architectural pillars and technical decisions tha
 - **Binary Size vs. Go:** While Go also produces static binaries, its 20MB+ runtime (garbage collector, scheduler) bloats the executable. Rust allows us to package a full PDF/HTML/Office parser into a deeply optimized binary often half the size.
 - **Deterministic Memory:** Traversing complex, malformed files (like 1,000-page broken PDFs) in "Horde Mode" requires granular memory control to avoid the sudden latency spikes and RAM bloat associated with garbage-collected languages.
 
-## 2. WASM-Based Extensibility & OCR
+## 2. Platform-Native Hooks & Extensibility
 
-**Decision:** Extensibility and heavy logic (like Optical Character Recognition) that traditionally require system-level C libraries (e.g., Leptonica, Tesseract) are strictly managed via WebAssembly (WASM).
+**Decision:** Heavy logic (like Optical Character Recognition) that traditionally require fragile system-level C libraries (e.g., Leptonica, Tesseract) are managed via a **Hybrid Architecture** prioritizing OS-Native Frameworks when universally available. Third-party extensibility utilizes WebAssembly (WASM).
 
 **Justification:**
-- **The Tesseract Problem:** Traditional OCR breaks the zero-dependency rule. By compiling `tesseract-wasm` and embedding it as an asset, or executing it via `wasmtime`, we achieve native OCR entirely within the host boundary.
-- **WASM Performance:** Rust-to-WASM compilation incurs minimal overhead compared to Go-to-WASM, where the Go garbage collector must constantly run inside the VM, causing severe latency spikes.
-- **Secure Modularity:** The WASM Component Model (via WebAssembly Interface Types or WIT) allows third parties to write parsers in any language that run in a highly restricted sandbox, with zero unauthorized access to the host's filesystem or network.
+- **The Tesseract Problem:** Traditional OCR breaks the zero-dependency rule. We pivoted away from bloated C++ libraries and sluggish WASM equivalents to a native approach:
+  - **macOS:** Pure-Rust `objc2` bindings connect directly into Apple's native Vision Framework. This harnesses the hardware Neural Engine for instantaneous (<50ms) zero-dependency OCR.
+  - **Linux/Windows:** A pure-Rust fallback leverages the `ocrs` crate and `rten` (Rust Tensor) inference engine, executing locally purely via CPU math without external installations.
+- **WASM Sandboxing:** For custom user parsers, the WASM Component Model (via WebAssembly Interface Types or WIT) allows third parties to write tools in any language that run in a highly restricted sandbox, with zero unauthorized access to the host machine.
 
 ## 3. LLM-Native Formatting Engine
 

@@ -5,14 +5,55 @@ use filegoblin::{flavors::Flavor, gobble_app};
 use std::str::FromStr;
 use std::io::IsTerminal;
 
-const ASCII_MASCOT: &str = r#"
-    (o_o)  <-- "I'm hungry for files."
-     (W)
-   --m-m--  filegoblin v1.5.0
-"#;
+fn print_mascot() {
+    use std::{thread, time::Duration};
 
-mod cli;
-use cli::Cli;
+    let is_tty = std::io::stderr().is_terminal();
+
+    let frames = [
+        vec![
+            r#"    (-_-)  <-- "...""#,
+            r#"     (W)"#,
+            r#"   --m-m--  filegoblin v1.5.0"#,
+        ],
+        vec![
+            r#"    (o_o)  <-- "I'm hungry for files.""#,
+            r#"     (W)"#,
+            r#"   --m-m--  filegoblin v1.5.0"#,
+        ],
+        vec![
+            r#"    (^w^)  <-- "Crunching time!""#,
+            r#"     (V)"#,
+            r#"   --m-m--  filegoblin v1.5.0"#,
+        ],
+    ];
+
+    if !is_tty {
+        // Fallback for non-TTY
+        for line in &frames[1] {
+            eprintln!("{}", line);
+        }
+        return;
+    }
+
+    for (i, frame) in frames.iter().enumerate() {
+        if i > 0 {
+            eprint!("\x1b[3A");
+        }
+        for line in frame.iter() {
+            let r = 167 + ((255 - 167) / 2) * (i as u8);
+            let g = 255 - (20 * i as u8);
+            let b = 0;
+            eprintln!("\x1b[2K{}", line.truecolor(r, g, b).bold());
+        }
+        if i < frames.len() - 1 {
+            thread::sleep(Duration::from_millis(150));
+        }
+    }
+    eprintln!("\x1b[2K{}", "Hello Goblin!".truecolor(167, 255, 0).bold());
+}
+
+use filegoblin::cli::Cli;
 
 mod ui;
 
@@ -48,8 +89,7 @@ fn main() -> Result<()> {
         if let Some(selected_paths) = ui::run_tui(&mut args)? {
             // If the user selected files and pressed enter, execute gobble on them
             if !args.quiet {
-                eprintln!("{}", ASCII_MASCOT.truecolor(167, 255, 0).bold());
-                eprintln!("{}", "Hello Goblin!".truecolor(167, 255, 0).bold());
+                print_mascot();
             }
 
             let targets: Vec<String> = selected_paths
@@ -60,9 +100,11 @@ fn main() -> Result<()> {
             gobble_app(
                 &targets,
                 &parsed_flavor,
+                args.compress.as_ref(),
                 args.full,
                 args.horde, // Horde is likely false if they selected a specific file, but pass the arg anyway
                 args.split,
+                args.chunk.as_deref(),
                 args.write.as_deref(),
                 args.tokens,
                 args.quiet,
@@ -70,22 +112,24 @@ fn main() -> Result<()> {
                 args.scrub,
                 args.copy,
                 args.open,
+                args.plugin.as_deref(),
             )?;
         }
         return Ok(());
     }
 
     if !args.quiet {
-        eprintln!("{}", ASCII_MASCOT.truecolor(167, 255, 0).bold());
-        eprintln!("{}", "Hello Goblin!".truecolor(167, 255, 0).bold());
+        print_mascot();
     }
 
     gobble_app(
         &targets,
         &parsed_flavor,
+        args.compress.as_ref(),
         args.full,
         args.horde,
         args.split,
+        args.chunk.as_deref(),
         args.write.as_deref(),
         args.tokens,
         args.quiet,
@@ -93,6 +137,7 @@ fn main() -> Result<()> {
         args.scrub,
         args.copy,
         args.open,
+        args.plugin.as_deref(),
     )?;
 
     Ok(())

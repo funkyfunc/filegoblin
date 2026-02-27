@@ -31,19 +31,22 @@
 - [x] `cargo horde-check` Alias Configuration
 - [x] MVP CLI Setup with `clap`
 - [x] Core Library scaffolding & `Gobble` trait
-- [x] Core Parsers (PDF, Office, Web, Code) with TDD Mocks
+- [x] Initial Core Parsers (PDF, Office, Web, Code) with TDD Mocks
+- [x] Add Image OCR support (Apple Vision Native Hooks & `ocrs` fallback)
 - [x] URL Ingestion Support & Recursive Crawling (`--horde`)
 - [x] Output Splitting & Auto-Directory Mapping (`--split`)
 - [x] Pipeline Isolation (`--quiet`) & Structured Data (`--json`)
 - [x] Token Estimation (`--tokens`)
 - [x] PII Redaction (`--scrub`)
+- [x] Token Compression & Stripping (`--compress`)
 - [x] Interactive Terminal Dashboard (`-i`)
 - [x] The "Full Belch" Output Summary Table
 
 ---
 
 ## ✨ Key Features
-- **Parsers:** `oxidize-pdf`, `docx-rs`, `tree-sitter` (Statically Linked).
+- **Parsers:** `oxidize-pdf`, `docx-rs`, `tree-sitter`, `quick-xml`, `calamine` (Statically Linked).
+- **Hybrid OCR:** Instantaneous macOS Vision Framework integration (`objc2`) with pure-Rust `rten` inference as fallback.
 - **WASM Extensibility:** `wasmtime` for pure-rust statically-linked component execution.
 - **LLM-Native:** Specific structural anchors (XML/YAML) to prevent "Attention Drift."
 - **Privacy First:** Local-only PII/Secret scrubbing using Distil-PII-1B.
@@ -51,9 +54,9 @@
 
 ## ⚙️ Development & Asset Pipeline
 
-`filegoblin` maintains a strict zero-dependency profile for the end user. However, building the project requires assembling several WASM engines. 
+`filegoblin` maintains a strict zero-dependency profile for the end user. However, building the project requires assembling several logic assets. 
 
-This process is completely automated via `build.rs`. During `cargo build`, the project will automatically fetch the pinned `tesseract-core-simd` WASM module (v6.1.2) from the web and place it in the `/assets` directory so that `include_bytes!` can statically link it into the final binary. 
+This process is automated via `build.rs`. During `cargo build`, the project downloads the required `.rten` tensor arrays from the web (e.g., `text-detection.rten`) and places them cleanly in the `/assets` directory for pure-Rust OCR fallback inference on Linux/Windows. (Note: On macOS, the tool inherently uses Apple's Vision hardware, making inference weights largely optional for average use).
 
 If you prefer to manually fetch or override these assets, a `justfile` is provided:
 ```bash
@@ -98,6 +101,18 @@ fg ./src/api_keys.ts --scrub > safe_context.md
 **Scripting Pipeline (JSON & Quiet):**
 ```bash
 fg ./src/ --horde -q --json | jq '.[].path'
+```
+
+**Token Compression (Reduce LLM context sizes):**
+```bash
+# Strip comments from code, remove stop words, collapse whitespace
+fg ./src/main.rs --compress aggressive > context.md
+```
+
+**Multi-Part Splitting (Chunk output by tokens):**
+```bash
+# Automatically break massive repositories into `partN` files at a 50k token threshold
+fg ./src/ --horde --chunk 50k
 ```
 
 # Pipe directly from other programs using stdin
