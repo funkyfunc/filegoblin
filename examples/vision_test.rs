@@ -1,4 +1,4 @@
-use objc2::{rc::Retained, ClassType, AnyThread};
+use objc2::{rc::Retained, AnyThread};
 use objc2_foundation::{NSArray, NSData, NSDictionary};
 use objc2_vision::{VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedTextObservation, VNRecognizedText};
 use std::fs;

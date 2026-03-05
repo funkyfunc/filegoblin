@@ -1956,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "filegoblin"
-version = "1.5.0"
+version = "1.5.2"
 dependencies = [
  "aho-corasick",
  "anyhow",

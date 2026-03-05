@@ -162,8 +162,7 @@ impl<'a> App<'a> {
     }
 
     pub fn leave_directory(&mut self) {
-        if self.current_dir != self.root_dir {
-            if let Some(parent) = self.current_dir.parent() {
+        if self.current_dir != self.root_dir && let Some(parent) = self.current_dir.parent() {
                 self.current_dir = parent.to_path_buf();
                 let _ = self.sniff();
                 
@@ -183,7 +182,6 @@ impl<'a> App<'a> {
                 
                 self.update_preview();
             }
-        }
     }
 
     pub fn scroll_down(&mut self) {
@@ -461,9 +459,7 @@ where
         })?;
 
         // Poll with a timeout so the loop iter runs fast enough to render the jitter animation
-        if event::poll(std::time::Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == event::KeyEventKind::Press {
+        if event::poll(std::time::Duration::from_millis(16))? && let Event::Key(key) = event::read()? && key.kind == event::KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
                         KeyCode::Enter => {
@@ -515,8 +511,6 @@ where
                         }
                         _ => {}
                     }
-                }
-            }
         }
 
         if app.should_quit {
