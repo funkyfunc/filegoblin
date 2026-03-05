@@ -329,25 +329,11 @@ where
                         // Check if ANY file inside this directory is selected
                         is_selected_partial = app.selected_paths.iter().any(|s| s.starts_with(p));
                         
-                        // To check if FULLY selected, we'd need to walk it. For UI speed, 
-                        // if it's partially selected, we'll just check if it's fully selected
-                        // by checking if the total count of walked files matches the count of selected files starting with this path.
-                        // (Simplified approach: just walk it to see if all are selected)
-                        if is_selected_partial {
-                            let mut all_selected = true;
-                            for entry in ignore::WalkBuilder::new(p).build().flatten() {
-                                if entry.file_type().is_some_and(|ft| ft.is_file()) {
-                                    if !app.selected_paths.contains(entry.path()) {
-                                        all_selected = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            if all_selected {
-                                is_selected_full = true;
-                                is_selected_partial = false;
-                            }
-                        }
+                        // PERFORMANCE FIX: 
+                        // We previously locked up the UI by using WalkBuilder here 8 times a second
+                        // to check if the directory was EXACTLY fully selected. 
+                        // For the UI's sake, if it has any selected children, we show the partial `~` state.
+                        // Full selection validation happens at the execution step anyway.
                     }
                     
                     let is_highlighted = i == app.selected_index;
