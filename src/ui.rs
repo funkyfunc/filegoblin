@@ -273,6 +273,13 @@ where
         widgets::{Block, Borders, List, ListItem, Paragraph},
     };
 
+    // --- Goblincore Theme Palette ---
+    const C_PRIMARY: Color = Color::Rgb(167, 255, 0);   // Acid Green
+    const C_SECONDARY: Color = Color::Rgb(139, 69, 19); // Earthy Brown
+    const C_ACCENT: Color = Color::Rgb(255, 191, 0);    // Warning Amber
+    const C_MUTED: Color = Color::Rgb(112, 128, 144);   // Stone Gray
+    // --------------------------------
+
     let mut last_tick = std::time::Instant::now();
     let tick_rate = std::time::Duration::from_millis(125); // 8Hz Snappy Jitter
     let mut jitter_state: u8 = 0;
@@ -286,13 +293,21 @@ where
         terminal.draw(|f| {
             let main_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
+                .constraints([Constraint::Length(2), Constraint::Min(0), Constraint::Length(3)].as_ref())
                 .split(f.area());
 
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
-                .split(main_chunks[0]);
+                .split(main_chunks[1]);
+
+            // Render Header (Top Bar)
+            let header_text = Line::from(vec![
+                Span::styled(" (o_o) filegoblin ", Style::default().fg(C_PRIMARY).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(":: {}", app.current_dir.display()), Style::default().fg(C_MUTED).add_modifier(Modifier::ITALIC)),
+            ]);
+            let header_block = Paragraph::new(header_text);
+            f.render_widget(header_block, main_chunks[0]);
 
             // Render The Hoard (Left Pane)
             let items: Vec<ListItem> = app
@@ -341,36 +356,36 @@ where
 
                     if is_selected_full {
                         let (teeth, color) = match jitter_state % 4 {
-                            0 => ("v ", Color::Rgb(167, 255, 0)),  // Acid Green
-                            1 => ("vw", Color::Rgb(200, 255, 50)),
-                            2 => ("wW", Color::Rgb(255, 255, 0)),  // Yellow warning flash
-                            _ => ("Wv", Color::Rgb(200, 255, 50)),
+                            0 => ("v ", C_PRIMARY),
+                            1 => ("vw", C_PRIMARY),
+                            2 => ("wW", C_ACCENT),  // Yellow warning flash
+                            _ => ("Wv", C_PRIMARY),
                         };
                         spans.push(Span::styled(teeth, Style::default().fg(color).add_modifier(Modifier::BOLD)));
                     } else if is_selected_partial {
                          // Partially selected directory
-                         spans.push(Span::styled("~ ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+                         spans.push(Span::styled("~ ", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)));
                     } else if is_highlighted {
-                        spans.push(Span::styled("► ", Style::default().fg(Color::Rgb(139, 69, 19)).add_modifier(Modifier::BOLD)));
+                        spans.push(Span::styled("► ", Style::default().fg(C_SECONDARY).add_modifier(Modifier::BOLD)));
                     } else {
                         spans.push(Span::raw("  "));
                     }
 
                     if is_highlighted && is_selected_full {
                          // Selected AND Highlighted: Glowing Green Background, Black text
-                         spans.push(Span::styled(name, Style::default().bg(Color::Rgb(167, 255, 0)).fg(Color::Black).add_modifier(Modifier::BOLD)));
+                         spans.push(Span::styled(name, Style::default().bg(C_PRIMARY).fg(Color::Black).add_modifier(Modifier::BOLD)));
                     } else if is_highlighted && is_selected_partial {
-                         // Partially Selected AND Highlighted: Yellow Background, Black text
-                         spans.push(Span::styled(name, Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)));
+                         // Partially Selected AND Highlighted: Accent Background, Black text
+                         spans.push(Span::styled(name, Style::default().bg(C_ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD)));
                     } else if is_highlighted {
                          // Just Highlighted: Brown Background, White text
-                         spans.push(Span::styled(name, Style::default().bg(Color::Rgb(139, 69, 19)).fg(Color::White).add_modifier(Modifier::BOLD)));
+                         spans.push(Span::styled(name, Style::default().bg(C_SECONDARY).fg(Color::White).add_modifier(Modifier::BOLD)));
                     } else if is_selected_full {
                          // Just Selected: Green text
-                         spans.push(Span::styled(name, Style::default().fg(Color::Rgb(167, 255, 0))));
+                         spans.push(Span::styled(name, Style::default().fg(C_PRIMARY).add_modifier(Modifier::BOLD)));
                     } else if is_selected_partial {
                          // Just Partially Selected: Yellow text
-                         spans.push(Span::styled(name, Style::default().fg(Color::Yellow)));
+                         spans.push(Span::styled(name, Style::default().fg(C_ACCENT)));
                     } else {
                          // Normal
                          spans.push(Span::raw(name));
@@ -384,11 +399,12 @@ where
             let hoard_block = List::new(items)
                 .highlight_symbol("► ")
                 .block(Block::default()
+                    .padding(ratatui::widgets::Padding::horizontal(1))
                     .borders(Borders::ALL)
                     .border_type(ratatui::widgets::BorderType::Rounded)
                     .title(hoard_title)
-                    .title_style(Style::default().fg(Color::Rgb(167, 255, 0)).add_modifier(Modifier::BOLD))
-                    .border_style(Style::default().fg(Color::Rgb(139, 69, 19)))
+                    .title_style(Style::default().fg(C_PRIMARY).add_modifier(Modifier::BOLD))
+                    .border_style(Style::default().fg(C_SECONDARY))
                 );
             f.render_widget(hoard_block, chunks[0]);
 
@@ -403,11 +419,12 @@ where
 
             let preview_block = Paragraph::new(app.preview_content.as_str())
                 .block(Block::default()
+                    .padding(ratatui::widgets::Padding::horizontal(1))
                     .borders(Borders::ALL)
                     .border_type(ratatui::widgets::BorderType::Rounded)
                     .title(preview_title)
-                    .title_style(Style::default().fg(Color::Rgb(200, 255, 100)).add_modifier(Modifier::BOLD))
-                    .border_style(Style::default().fg(Color::Rgb(139, 69, 19)))
+                    .title_style(Style::default().fg(C_PRIMARY).add_modifier(Modifier::BOLD))
+                    .border_style(Style::default().fg(C_SECONDARY))
                 )
                 .scroll((app.view_scroll, 0))
                 .style(Style::default().fg(Color::White));
@@ -415,13 +432,13 @@ where
 
             // Render Bottom Bar (Options)
             // Render Bottom Bar (Options)
-            let copy_color = if app.active_flags.copy { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
-            let open_color = if app.active_flags.open { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
-            let split_color = if app.active_flags.split { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
-            let chunk_color = if app.active_flags.chunk.is_some() { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
-            let scrub_color = if app.active_flags.scrub { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
-            let tokens_color = if app.active_flags.tokens { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
-            let compress_color = if app.active_flags.compress.is_some() { Color::Rgb(167, 255, 0) } else { Color::DarkGray };
+            let copy_color = if app.active_flags.copy { C_PRIMARY } else { C_MUTED };
+            let open_color = if app.active_flags.open { C_PRIMARY } else { C_MUTED };
+            let split_color = if app.active_flags.split { C_PRIMARY } else { C_MUTED };
+            let chunk_color = if app.active_flags.chunk.is_some() { C_PRIMARY } else { C_MUTED };
+            let scrub_color = if app.active_flags.scrub { C_PRIMARY } else { C_MUTED };
+            let tokens_color = if app.active_flags.tokens { C_PRIMARY } else { C_MUTED };
+            let compress_color = if app.active_flags.compress.is_some() { C_PRIMARY } else { C_MUTED };
             let compress_label = match &app.active_flags.compress {
                 Some(filegoblin::cli::CompressionLevel::Contextual) => "co[m]press:CTX",
                 Some(filegoblin::cli::CompressionLevel::Aggressive) => "co[m]press:AGG",
@@ -445,16 +462,16 @@ where
                 Span::raw(" | "),
                 Span::styled(compress_label, Style::default().fg(compress_color).add_modifier(Modifier::BOLD)),
                 Span::raw("      "),
-                Span::styled(" [Space] Select | [Enter] Gobble | [q] Quit ", Style::default().fg(Color::Rgb(139, 69, 19)).add_modifier(Modifier::BOLD)),
+                Span::styled(" [Space] Select | [Enter] Gobble | [q] Quit ", Style::default().fg(C_SECONDARY).add_modifier(Modifier::BOLD)),
             ]);
 
             let bottom_block = Paragraph::new(bottom_text)
                 .block(Block::default()
                     .borders(Borders::ALL)
                     .border_type(ratatui::widgets::BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(Style::default().fg(C_MUTED))
                 );
-            f.render_widget(bottom_block, main_chunks[1]);
+            f.render_widget(bottom_block, main_chunks[2]);
         })?;
 
         // Poll with a timeout so the loop iter runs fast enough to render the jitter animation
