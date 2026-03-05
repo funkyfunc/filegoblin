@@ -85,9 +85,7 @@ windows = { version = "0.62.2", features = ["Media_Ocr", "Storage", "Graphics_Im
 [profile.release]
 lto = "fat"
 codegen-units = 1
-panic = "abort"
 opt-level = 3
-
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
