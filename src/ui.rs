@@ -23,6 +23,7 @@ pub struct App<'a> {
     pub should_quit: bool,
     pub should_execute: bool,
     pub active_flags: &'a mut filegoblin::cli::Cli,
+    pub dir_file_counts: std::collections::HashMap<PathBuf, usize>,
 }
 
 impl<'a> App<'a> {
@@ -43,6 +44,7 @@ impl<'a> App<'a> {
             should_quit: false,
             should_execute: false,
             active_flags: flags,
+            dir_file_counts: std::collections::HashMap::new(),
         }
     }
 
@@ -128,6 +130,8 @@ impl<'a> App<'a> {
                         nested_files.push(entry.into_path());
                     }
                 }
+                
+                self.dir_file_counts.insert(path.clone(), nested_files.len());
                 
                 // Check if ALL nested files are already selected
                 let all_selected = nested_files.iter().all(|f| self.selected_paths.contains(f));
@@ -288,6 +292,22 @@ where
             last_tick = std::time::Instant::now();
         }
 
+        // Lazy-load file counts for partially selected directories to avoid doing it in the draw loop
+        let mut missing_counts = Vec::new();
+        for p in &app.current_items {
+            if p.is_dir() && !app.dir_file_counts.contains_key(p) && app.selected_paths.iter().any(|s| s.starts_with(p)) {
+                missing_counts.push(p.clone());
+            }
+        }
+        for p in missing_counts {
+            let count = ignore::WalkBuilder::new(&p)
+                .build()
+                .flatten()
+                .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
+                .count();
+            app.dir_file_counts.insert(p, count);
+        }
+
         terminal.draw(|f| {
             let main_chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -328,10 +348,15 @@ where
                         is_selected_partial = app.selected_paths.iter().any(|s| s.starts_with(p));
                         
                         // PERFORMANCE FIX: 
-                        // We previously locked up the UI by using WalkBuilder here 8 times a second
-                        // to check if the directory was EXACTLY fully selected. 
-                        // For the UI's sake, if it has any selected children, we show the partial `~` state.
-                        // Full selection validation happens at the execution step anyway.
+                        // Instead of running WalkBuilder 8 times a second in the draw loop,
+                        // we compare the number of selected files to our cached directory file count.
+                        if is_selected_partial && let Some(&total_files) = app.dir_file_counts.get(p) {
+                            let selected_count = app.selected_paths.iter().filter(|s| s.starts_with(p)).count();
+                            if selected_count == total_files && total_files > 0 {
+                                is_selected_full = true;
+                                is_selected_partial = false;
+                            }
+                        }
                     }
                     
                     let is_highlighted = i == app.selected_index;
