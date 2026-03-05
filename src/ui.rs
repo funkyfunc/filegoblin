@@ -311,20 +311,73 @@ where
         terminal.draw(|f| {
             let main_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(2), Constraint::Min(0), Constraint::Length(3)].as_ref())
+                .constraints([Constraint::Length(6), Constraint::Min(0), Constraint::Length(3)].as_ref())
                 .split(f.area());
 
             let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
-                .split(main_chunks[1]);
+                 .direction(Direction::Horizontal)
+                 .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+                 .split(main_chunks[1]);
 
-            // Render Header (Top Bar)
-            let header_text = Line::from(vec![
-                Span::styled(" (o_o) filegoblin ", Style::default().fg(C_PRIMARY).add_modifier(Modifier::BOLD)),
-                Span::styled(format!(":: {}", app.current_dir.display()), Style::default().fg(C_MUTED).add_modifier(Modifier::ITALIC)),
-            ]);
-            let header_block = Paragraph::new(header_text);
+            // --- Dynamic Mascot Logic ---
+            let is_eating = !app.selected_paths.is_empty();
+            let eyes = match (is_eating, jitter_state) {
+                (true, 0..=1) => "(^w^)", // Happy
+                (true, 2..=7) => "(>_<)", // Chewing hard
+                (false, 0..=6) => "(o_o)", // Staring
+                (false, 7)     => "(-_-)", // Blinking
+                _ => "(o_o)",
+            };
+            
+            let mouth = if is_eating && jitter_state % 2 == 0 { "(V)" } else { "(W)" };
+
+            // --- Situational Goblin Quote ---
+            let mut goblin_quote = "I'm hungry for files...".to_string();
+            if !app.current_items.is_empty() {
+                let hovered = &app.current_items[app.selected_index];
+                if hovered.is_dir() {
+                    let known_count = app.dir_file_counts.get(hovered).copied().unwrap_or(0);
+                    if known_count > 50 {
+                         goblin_quote = "A massive hoard! It will take ages to chew...".to_string();
+                    } else {
+                         goblin_quote = "A juicy cave! We'll chew through the whole thing.".to_string();
+                    }
+                } else if let Some(ext) = hovered.extension().and_then(|e| e.to_str()) {
+                    match ext {
+                        "md" | "txt" | "json" | "csv" => goblin_quote = "Ah, crunchy text. Easy to digest.".to_string(),
+                        "pdf" => goblin_quote = "A PDF? Grr... tough rind, but I'll crack it.".to_string(),
+                        "rs" | "go" | "py" | "js" | "ts" => goblin_quote = "Code! Sweet, structured code.".to_string(),
+                        "png" | "jpg" | "jpeg" | "webp" => goblin_quote = "An image? Let me get my reading glasses...".to_string(),
+                        _ => goblin_quote = "Looks exotic. I wonder what it tastes like...".to_string(),
+                    }
+                }
+            } else {
+                goblin_quote = "Nothing here but dust and spiders. Pah!".to_string();
+            }
+
+            // Render Header (Top Bar with Mascot)
+            let header_text = vec![
+                Line::from(vec![
+                    Span::styled(format!("    {}  ", eyes), Style::default().fg(C_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("\"{}\"", goblin_quote), Style::default().fg(C_ACCENT).add_modifier(Modifier::ITALIC)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("     {}   ", mouth), Style::default().fg(C_PRIMARY).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled("   --m-m-- ", Style::default().fg(C_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(" filegoblin v1.5 ", Style::default().fg(C_SECONDARY).add_modifier(Modifier::BOLD)),
+                    Span::raw(" | "),
+                    Span::styled(format!(":: {}", app.current_dir.display()), Style::default().fg(C_MUTED)),
+                ]),
+            ];
+
+            let header_block = Paragraph::new(header_text)
+                .block(Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_style(Style::default().fg(C_SECONDARY))
+                );
             f.render_widget(header_block, main_chunks[0]);
 
             // Render The Hoard (Left Pane)
