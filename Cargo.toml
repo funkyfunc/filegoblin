@@ -21,6 +21,7 @@ members = ["examples/dummy_plugin"]
 aho-corasick = { version = "1.1.4", features = ["perf-literal", "std"] }
 anyhow = "1.0.102"
 arboard = "3.6.1"
+base64 = "0.22.1"
 calamine = "0.33.0"
 candle-core = { version = "0.9", features = ["mkl"] }
 clap = { version = "4.5.60", features = ["derive", "env"] }
@@ -48,7 +49,7 @@ pulldown-cmark-to-cmark = "22.0.0"
 quick-xml = "0.39.2"
 ratatui = "0.30.0"
 regex = "1.12.3"
-reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls", "json", "cookies"] }
 robotxt = "0.6.1"
 rten = "0.24.0"
 rten-tensor = "0.24.0"
@@ -56,12 +57,14 @@ safetensors = "0.4"
 scraper = "0.25.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+sha2 = "0.10.9"
 sliding_features = "7.1"
 stop-words = "0.10.0"
 tokio = { version = "1.49.0", features = ["rt", "macros"] }
 tree-sitter = { version = "0.26.5", features = ["std"] }
 tree-sitter-rust = "0.24.0"
 url = "2.5.8"
+urlencoding = "2.1.3"
 wasmtime = { version = "41.0.3", features = ["component-model"] }
 wasmtime-wasi = "42.0.0"
 zip = "8.1.0"

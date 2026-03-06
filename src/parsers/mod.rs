@@ -6,5 +6,6 @@ pub mod office;
 pub mod pdf;
 pub mod powerpoint;
 pub mod sheet;
+pub mod twitter;
 pub mod wasm;
 pub mod web;

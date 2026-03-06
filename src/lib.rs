@@ -72,6 +72,13 @@ pub fn gobble_app(
                 }
                 if horde {
                     raw_pairs.extend(crate::parsers::crawler::crawl_web(&url, full)?);
+                } else if url.domain().map_or(false, |d| d.ends_with("twitter.com") || d.ends_with("x.com")) {
+                    if !quiet {
+                        eprintln!("🐦 Diverting to TwitterGobbler for deep context extraction...");
+                    }
+                    let twitter = parsers::twitter::TwitterGobbler { flavor: flavor.clone() };
+                    let text = twitter.gobble_str(target)?;
+                    raw_pairs.push((target.to_string(), text));
                 } else {
                     let html_content = fetch_url(&url, quiet)?;
                     let text =

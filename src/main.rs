@@ -86,16 +86,13 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
         // TUI Mode hijacks the execution
-        if let Some(selected_paths) = ui::run_tui(&mut args)? {
+        if let Some(selected_targets) = ui::run_tui(&mut args)? {
             // If the user selected files and pressed enter, execute gobble on them
             if !args.quiet {
                 print_mascot();
             }
 
-            let targets: Vec<String> = selected_paths
-                .iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect();
+            let targets: Vec<String> = selected_targets;
 
             gobble_app(
                 &targets,
