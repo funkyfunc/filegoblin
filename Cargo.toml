@@ -1,6 +1,6 @@
 [package]
 name = "filegoblin"
-version = "1.5.2"
+version = "1.6.0"
 edition = "2024"
 description = "A zero-dependency, high-performance CLI tool to convert messy file formats into high-fidelity, LLM-optimized Markdown/XML/YAML."
 repository = "https://github.com/funkyfunc/filegoblin"
