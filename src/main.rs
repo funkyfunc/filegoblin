@@ -97,19 +97,7 @@ fn main() -> Result<()> {
             gobble_app(
                 &targets,
                 &parsed_flavor,
-                args.compress.as_ref(),
-                args.full,
-                args.horde, // Horde is likely false if they selected a specific file, but pass the arg anyway
-                args.split,
-                args.chunk.as_deref(),
-                args.write.as_deref(),
-                args.tokens,
-                args.quiet,
-                args.json,
-                args.scrub,
-                args.copy,
-                args.open,
-                args.plugin.as_deref(),
+                &args,
             )?;
         }
         return Ok(());
@@ -122,19 +110,7 @@ fn main() -> Result<()> {
     gobble_app(
         &targets,
         &parsed_flavor,
-        args.compress.as_ref(),
-        args.full,
-        args.horde,
-        args.split,
-        args.chunk.as_deref(),
-        args.write.as_deref(),
-        args.tokens,
-        args.quiet,
-        args.json,
-        args.scrub,
-        args.copy,
-        args.open,
-        args.plugin.as_deref(),
+        &args,
     )?;
 
     Ok(())

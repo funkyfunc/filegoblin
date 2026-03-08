@@ -7,7 +7,7 @@ pub struct PptxGobbler;
 
 impl Gobble for PptxGobbler {
 
-    fn gobble(&self, path: &Path) -> Result<String> {
+    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> anyhow::Result<String> {
         let file = std::fs::File::open(path)?;
         let mut archive = zip::ZipArchive::new(file)?;
         

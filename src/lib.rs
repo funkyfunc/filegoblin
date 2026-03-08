@@ -22,19 +22,7 @@ use pulldown_cmark_to_cmark::cmark;
 pub fn gobble_app(
     targets: &[String],
     flavor: &flavors::Flavor,
-    compress: Option<&crate::cli::CompressionLevel>,
-    full: bool,
-    horde: bool,
-    split: bool,
-    chunk: Option<&str>,
-    out_file: Option<&str>,
-    tokens: bool,
-    quiet: bool,
-    json: bool,
-    scrub: bool,
-    copy_clipboard: bool,
-    open_explorer: bool,
-    plugin: Option<&str>,
+    args: &crate::cli::Cli,
 ) -> Result<()> {
     if targets.is_empty() {
         return Ok(());
@@ -52,9 +40,7 @@ pub fn gobble_app(
 
     for target in targets {
         if target == "-" {
-            if !quiet {
-                eprintln!("📥 Sniffing stream from stdin...");
-            }
+            // Read all bytes from stdin
             let mut buffer = String::new();
             if let Err(e) = std::io::stdin().read_to_string(&mut buffer) {
                 eprintln!("{} Error reading stdin: {}", "⚠️".yellow(), e);
@@ -67,41 +53,41 @@ pub fn gobble_app(
 
         if let Ok(url) = Url::parse(target) {
             if url.scheme() == "http" || url.scheme() == "https" {
-                if !quiet {
+                if !args.quiet {
                     eprintln!("🌐 Sniffing the network for files: {}", url);
                 }
-                if horde {
-                    raw_pairs.extend(crate::parsers::crawler::crawl_web(&url, full)?);
+                if args.horde {
+                    raw_pairs.extend(crate::parsers::crawler::crawl_web(&url, args)?);
                 } else if url.domain().map_or(false, |d| d.ends_with("twitter.com") || d.ends_with("x.com")) {
-                    if !quiet {
+                    if !args.quiet {
                         eprintln!("🐦 Diverting to TwitterGobbler for deep context extraction...");
                     }
                     let twitter = parsers::twitter::TwitterGobbler { flavor: flavor.clone() };
-                    let text = twitter.gobble_str(target)?;
+                    let text = twitter.gobble_str(target, args)?;
                     raw_pairs.push((target.to_string(), text));
                 } else {
-                    let html_content = fetch_url(&url, quiet)?;
+                    let html_content = fetch_url(&url, args.quiet)?;
                     let text =
-                        parsers::web::WebGobbler { extract_full: full }.gobble_str(&html_content)?;
+                        parsers::web::WebGobbler { extract_full: args.full }.gobble_str(&html_content, args)?;
                     raw_pairs.push((target.to_string(), text));
                 }
             } else {
-                if !quiet {
+                if !args.quiet {
                     eprintln!("📁 Sniffing for files at local path: {}", target);
                 }
-                raw_pairs.extend(gobble_local(target, full, horde, plugin)?);
+                raw_pairs.extend(gobble_local(target, args)?);
             }
         } else {
-            if !quiet {
+            if !args.quiet {
                 eprintln!("📁 Sniffing for files at local path: {}", target);
             }
-            raw_pairs.extend(gobble_local(target, full, horde, plugin)?);
+            raw_pairs.extend(gobble_local(target, args)?);
         }
     }
 
     // Apply Privacy Shield if --scrub is requested
-    let final_pairs = if scrub {
-        if !quiet {
+    let final_pairs = if args.scrub {
+        if !args.quiet {
             eprintln!(
                 "{}",
                 "🛡️ Scrubbed the secrets...".truecolor(255, 191, 0)
@@ -124,8 +110,8 @@ pub fn gobble_app(
         .sum();
 
     // Apply Compression Pipeline if --compress is flag
-    let compressed_pairs = if let Some(level) = compress {
-        if !quiet {
+    let compressed_pairs = if let Some(level) = args.compress.as_ref() {
+        if !args.quiet {
             eprintln!("{}", format!("🗜️ Shrinking the loot (Level: {:?})...", level).truecolor(0, 200, 255));
         }
         final_pairs.into_iter().map(|(path, content)| {
@@ -179,17 +165,17 @@ pub fn gobble_app(
         final_pairs
     };
 
-    if split {
+    if args.split {
         let root_dir_name = display_name
             .replace("https://", "")
             .replace("http://", "")
             .replace("/", "_")
             .replace(" ", "_")
             .replace("&", "and");
-        let root_dir = out_file.map(|d| d.to_string()).unwrap_or_else(|| format!("{}_gobbled", root_dir_name));
+        let root_dir = args.write.clone().unwrap_or_else(|| format!("{}_gobbled", root_dir_name));
         std::fs::create_dir_all(&root_dir)?;
 
-        if !quiet {
+        if !args.quiet {
             eprintln!(
                 "{}",
                 format!("💾 Stashing the split loot into directory: ./{}", root_dir).truecolor(0, 255, 100)
@@ -228,7 +214,7 @@ pub fn gobble_app(
             let flavored = flavors::format_output(flavor, path, content);
             std::fs::write(&file_path, &flavored)?;
 
-            if !quiet {
+            if !args.quiet {
                 eprintln!("  ↳ Spat out {}", file_path.display());
             }
 
@@ -236,26 +222,30 @@ pub fn gobble_app(
             post_compression_tokens += crate::compressor::heuristic::estimate_tokens(&flavored, path);
         }
 
-        if tokens && !quiet {
-            eprintln!(
-                "{}",
-                format!(
-                    "📊 Total Output Length: {} chars (~{} tokens)",
-                    total_chars, post_compression_tokens
-                )
-                .truecolor(255, 191, 0)
-            );
+        if args.tokens {
+            if args.quiet {
+                eprintln!("{}", post_compression_tokens);
+            } else {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "📊 Total Output Length: {} chars (~{} tokens)",
+                        total_chars, post_compression_tokens
+                    )
+                    .truecolor(255, 191, 0)
+                );
+            }
         }
 
-        if open_explorer {
-            if !quiet {
+        if args.open {
+            if !args.quiet {
                 eprintln!("{}", format!("🚪 Opening directory: ./{}", root_dir).truecolor(0, 200, 255));
             }
             if let Err(e) = open::that(&root_dir) {
                 eprintln!("{} Failed to open directory: {}", "⚠️".yellow(), e);
             }
         }
-    } else if json {
+    } else if args.json {
         // Build strictly structured JSON array format matching our (String, String) pairs
         #[derive(serde::Serialize)]
         struct FileNode {
@@ -272,9 +262,9 @@ pub fn gobble_app(
         }
         let serialized = serde_json::to_string_pretty(&out)?;
 
-        if let Some(file_path) = out_file {
+        if let Some(file_path) = args.write.as_deref() {
             std::fs::write(file_path, &serialized)?;
-            if !quiet {
+            if !args.quiet {
                 eprintln!("{}", format!("💾 Saved JSON output to {}", file_path).truecolor(0, 255, 100));
             }
         } else {
@@ -282,16 +272,16 @@ pub fn gobble_app(
             println!("{}", serialized);
         }
 
-        if copy_clipboard {
+        if args.copy {
             let mut clipboard = arboard::Clipboard::new()?;
             clipboard.set_text(serialized)?;
-            if !quiet {
+            if !args.quiet {
                 eprintln!("{}", "📋 Stashed the JSON loot in your clipboard!".truecolor(0, 255, 100));
             }
         }
     } else {
         // Parse token threshold if chunk is enabled
-        let token_threshold: Option<usize> = chunk.and_then(|c| {
+        let token_threshold: Option<usize> = args.chunk.as_deref().and_then(|c| {
             let c = c.trim().to_lowercase();
             if c.ends_with('k') {
                 c.trim_end_matches('k').parse::<f64>().ok().map(|n| (n * 1_000.0) as usize)
@@ -303,7 +293,7 @@ pub fn gobble_app(
         });
 
         if let Some(threshold) = token_threshold {
-            if !quiet {
+            if !args.quiet {
                 eprintln!("{}", format!("🍰 Chunking output at ~{} tokens per file", threshold).truecolor(0, 200, 255));
             }
             
@@ -324,12 +314,13 @@ pub fn gobble_app(
                     let output = flavors::format_output(flavor, &display_name, &current_combined);
                     total_chars += output.len();
                     
-                    let part_file_name = out_file
+                    let part_file_name = args.write
+                        .as_deref()
                         .map(|o| format!("{}.part{}.md", o.trim_end_matches(".md"), part_number))
                         .unwrap_or_else(|| format!("gobbled.part{}.md", part_number));
                         
                     std::fs::write(&part_file_name, &output)?;
-                    if !quiet {
+                    if !args.quiet {
                         eprintln!("{}", format!("  ↳ Baked {}", part_file_name).truecolor(0, 255, 100));
                     }
                     
@@ -354,37 +345,42 @@ pub fn gobble_app(
                     let output = flavors::format_output(flavor, &display_name, &current_combined);
                     total_chars += output.len();
                     
-                    let part_file_name = out_file
+                    let part_file_name = args.write
+                        .as_deref()
                         .map(|o| format!("{}.part{}.md", o.trim_end_matches(".md"), part_number))
                         .unwrap_or_else(|| format!("gobbled.part{}.md", part_number));
                         
                     std::fs::write(&part_file_name, &output)?;
-                    if !quiet {
+                    if !args.quiet {
                         eprintln!("{}", format!("  ↳ Baked {}", part_file_name).truecolor(0, 255, 100));
                     }
                 }
             }
             
             // Print chunking summary
-            if tokens && !quiet {
-                eprintln!(
-                    "{}",
-                    format!(
-                        "📊 Output Length: {} chars (~{} tokens across {} parts)",
-                        total_chars, post_compression_tokens, part_number
-                    )
-                    .truecolor(255, 191, 0)
-                );
+            if args.tokens {
+                if args.quiet {
+                    eprintln!("{}", post_compression_tokens);
+                } else {
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "📊 Output Length: {} chars (~{} tokens across {} parts)",
+                            total_chars, post_compression_tokens, part_number
+                        )
+                        .truecolor(255, 191, 0)
+                    );
+                }
             }
             
-            let tokens_saved = if compress.is_some() && pre_compression_tokens > post_compression_tokens {
+            let tokens_saved = if args.compress.is_some() && pre_compression_tokens > post_compression_tokens {
                  pre_compression_tokens - post_compression_tokens
             } else {
                  0
             };
 
             // The Full Belch (Summary Table)
-            if !quiet {
+            if !args.quiet {
                 eprintln!("\n{}", "╭──────────────────────────────────────╮".truecolor(139, 69, 19));
                 eprintln!("{} {}", "│".truecolor(139, 69, 19), "        THE FULL BELCH (SUMMARY)       ".truecolor(167, 255, 0).bold());
                 eprintln!("{}", "├──────────────────────────────────────┤".truecolor(139, 69, 19));
@@ -419,20 +415,24 @@ pub fn gobble_app(
         let output = flavors::format_output(flavor, &display_name, &combined);
         let total_chars = output.len();
 
-        if tokens && !quiet {
-            eprintln!(
-                "{}",
-                format!(
-                    "📊 Output Length: {} chars (~{} tokens)",
-                    total_chars, post_compression_tokens
-                )
-                .truecolor(255, 191, 0)
-            );
+        if args.tokens {
+            if args.quiet {
+                eprintln!("{}", post_compression_tokens);
+            } else {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "📊 Output Length: {} chars (~{} tokens)",
+                        total_chars, post_compression_tokens
+                    )
+                    .truecolor(255, 191, 0)
+                );
+            }
         }
 
-        if let Some(file_path) = out_file {
+        if let Some(file_path) = args.write.as_deref() {
             std::fs::write(file_path, &output)?;
-            if !quiet {
+            if !args.quiet {
                 eprintln!("{}", format!("💾 Saved output to {}", file_path).truecolor(0, 255, 100));
             }
         } else {
@@ -440,14 +440,14 @@ pub fn gobble_app(
             println!("\n---\n{}", output);
         }
 
-        let tokens_saved = if compress.is_some() && pre_compression_tokens > post_compression_tokens {
+        let tokens_saved = if args.compress.is_some() && pre_compression_tokens > post_compression_tokens {
              pre_compression_tokens - post_compression_tokens
         } else {
              0
         };
 
         // The Full Belch (Summary Table)
-        if !quiet {
+        if !args.quiet {
             eprintln!("\n{}", "╭──────────────────────────────────────╮".truecolor(139, 69, 19));
             eprintln!("{} {}", "│".truecolor(139, 69, 19), "        THE FULL BELCH (SUMMARY)       ".truecolor(167, 255, 0).bold());
             eprintln!("{}", "├──────────────────────────────────────┤".truecolor(139, 69, 19));
@@ -460,7 +460,7 @@ pub fn gobble_app(
             eprintln!("{}", "╰──────────────────────────────────────╯".truecolor(139, 69, 19));
         }
 
-        if open_explorer {
+        if args.open {
             let file_prefix = display_name
                 .replace("https://", "")
                 .replace("http://", "")
@@ -476,7 +476,7 @@ pub fn gobble_app(
             
             std::fs::write(&temp_file, &output)?;
             
-            if !quiet {
+            if !args.quiet {
                 eprintln!("{}", format!("🚪 Kicked open temporary file: {}", temp_file.display()).truecolor(0, 200, 255));
             }
             if let Err(e) = open::that(&temp_file) {
@@ -484,10 +484,10 @@ pub fn gobble_app(
             }
         }
 
-        if copy_clipboard {
+        if args.copy {
             let mut clipboard = arboard::Clipboard::new()?;
             clipboard.set_text(output)?;
-            if !quiet {
+            if !args.quiet {
                 eprintln!("{}", "📋 Stashed the loot in your clipboard!".truecolor(0, 255, 100));
             }
         }
@@ -496,16 +496,21 @@ pub fn gobble_app(
     Ok(())
 }
 
-fn gobble_local(target: &str, full: bool, horde: bool, plugin_override: Option<&str>) -> Result<Vec<(String, String)>> {
+pub fn gobble_local(
+    target: &str,
+    args: &crate::cli::Cli,
+) -> Result<Vec<(String, String)>> {
     let mut files = Vec::new();
+    let root = std::path::Path::new(target);
 
-    if !horde {
-        files.push((target.to_string(), route_and_gobble(target, full, plugin_override)?));
+    if !root.is_dir() || !args.horde {
+        let content = route_and_gobble(target, args)?;
+        files.push((target.to_string(), content));
         return Ok(files);
     }
 
     let walker = ignore::WalkBuilder::new(target).build();
-    let root = std::path::Path::new(target);
+    
 
     let mut tree_out = String::new();
     tree_out.push_str("```tree\n.");
@@ -544,7 +549,7 @@ fn gobble_local(target: &str, full: bool, horde: bool, plugin_override: Option<&
         }) {
             let rel_str = rel_path.to_string_lossy().into_owned();
 
-            let content = match route_and_gobble(file_path.to_str().unwrap(), full, plugin_override) {
+            let content = match route_and_gobble(file_path.to_str().unwrap(), args) {
                 Ok(c) => c,
                 Err(e) => format!("Error summarizing file: {}", e),
             };
@@ -556,7 +561,7 @@ fn gobble_local(target: &str, full: bool, horde: bool, plugin_override: Option<&
     Ok(files)
 }
 
-fn route_and_gobble(path_str: &str, full: bool, plugin_override: Option<&str>) -> Result<String> {
+fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
     let path = Path::new(path_str);
     let extension = path
         .extension()
@@ -565,9 +570,9 @@ fn route_and_gobble(path_str: &str, full: bool, plugin_override: Option<&str>) -
         .unwrap_or_default();
 
     // EXPLICIT OVERRIDE: If the user passed `--plugin <NAME>`, force execution through that WASM component.
-    if let Some(plugin_name) = plugin_override {
+    if let Some(plugin_name) = args.plugin.as_deref() {
         if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(plugin_name) {
-            match (parsers::wasm::WasmGobbler { wasm_path: plugin_path }).gobble(path) {
+            match (parsers::wasm::WasmGobbler { wasm_path: plugin_path }).gobble(path, args) {
                 Ok(markdown) => return Ok(markdown),
                 Err(e) => anyhow::bail!("Explicit WASM Plugin '{}' failed: {}", plugin_name, e),
             }
@@ -577,17 +582,17 @@ fn route_and_gobble(path_str: &str, full: bool, plugin_override: Option<&str>) -
     }
 
     match extension.as_str() {
-        "pdf" => parsers::pdf::PdfGobbler.gobble(path),
-        "docx" => parsers::office::OfficeGobbler.gobble(path),
-        "xlsx" | "xls" | "ods" | "csv" => parsers::sheet::SheetGobbler.gobble(path),
-        "pptx" => parsers::powerpoint::PptxGobbler.gobble(path),
-        "html" | "htm" => parsers::web::WebGobbler { extract_full: full }.gobble(path),
-        "rs" | "js" | "py" | "ts" | "go" | "c" | "cpp" => parsers::code::CodeGobbler.gobble(path),
+        "pdf" => parsers::pdf::PdfGobbler.gobble(path, args),
+        "docx" => parsers::office::OfficeGobbler.gobble(path, args),
+        "xlsx" | "xls" | "ods" | "csv" => parsers::sheet::SheetGobbler.gobble(path, args),
+        "pptx" => parsers::powerpoint::PptxGobbler.gobble(path, args),
+        "html" | "htm" => parsers::web::WebGobbler { extract_full: args.full }.gobble(path, args),
+        "rs" | "js" | "py" | "ts" | "go" | "c" | "cpp" => parsers::code::CodeGobbler.gobble(path, args),
         _ => {
             // Priority 1: Check if a user provided a dynamic WASM plugin for this extension
             #[allow(clippy::collapsible_if)]
             if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(&extension) {
-                if let Ok(markdown) = (parsers::wasm::WasmGobbler { wasm_path: plugin_path }).gobble(path) {
+                if let Ok(markdown) = (parsers::wasm::WasmGobbler { wasm_path: plugin_path }).gobble(path, args) {
                     return Ok(markdown);
                 }
             }
@@ -595,7 +600,7 @@ fn route_and_gobble(path_str: &str, full: bool, plugin_override: Option<&str>) -
             // Priority 2: Fall back to core heuristics
             // If it's an image, pass to ocr. If text, just read.
             if ["png", "jpg", "jpeg", "webp"].contains(&extension.as_str()) {
-                parsers::ocr::OcrGobbler.gobble(path)
+                parsers::ocr::OcrGobbler.gobble(path, args)
             } else {
                 std::fs::read_to_string(path).context("Failed to read file as plaintext")
             }
@@ -630,6 +635,7 @@ fn fetch_url(url: &Url, quiet: bool) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use std::io::Write;
     use std::net::TcpListener;
     use std::thread;
@@ -661,10 +667,11 @@ mod tests {
         let html_content = fetch_url(&parsed_url, true).unwrap();
         assert!(html_content.contains("Goblin network testing!"));
 
+        let args = crate::cli::Cli::parse_from(&["filegoblin"]);
         let parsed_content = crate::parsers::web::WebGobbler {
             extract_full: false,
         }
-        .gobble_str(&html_content)
+        .gobble_str(&html_content, &args)
         .unwrap();
         assert!(parsed_content.contains("Goblin network testing!"));
     }
@@ -674,7 +681,8 @@ mod tests {
         // Fallback for an unknown extension (.xyz)
         let test_file = "dummy.xyz";
         std::fs::write(test_file, "Plaintext fallback text").unwrap();
-        let res = route_and_gobble(test_file, false, None).unwrap();
+        let args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let res = route_and_gobble(test_file, &args).unwrap();
         assert_eq!(res, "Plaintext fallback text");
         std::fs::remove_file(test_file).ok();
     }

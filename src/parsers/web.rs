@@ -65,12 +65,12 @@ impl WebGobbler {
 }
 
 impl Gobble for WebGobbler {
-    fn gobble(&self, path: &Path) -> Result<String> {
+    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
         let content = std::fs::read_to_string(path)?;
-        self.gobble_str(&content)
+        self.gobble_str(&content, flags)
     }
 
-    fn gobble_str(&self, content: &str) -> Result<String> {
+    fn gobble_str(&self, content: &str, _flags: &crate::cli::Cli) -> Result<String> {
         let mut clean = content.to_string();
 
         if self.extract_full {
@@ -110,6 +110,7 @@ impl Gobble for WebGobbler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn test_web_heuristic_extraction() {
@@ -127,7 +128,8 @@ mod tests {
             </body></html>
         "#;
 
-        let result = gobbler.gobble_str(html).unwrap();
+        let args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let result = gobbler.gobble_str(html, &args).unwrap();
 
         // Assert we stripped navigation and kept main article
         assert!(result.contains("The core content"));

@@ -1,11 +1,12 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use clap::Parser;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use ratatui::{
     backend::CrosstermBackend,
-    crossterm::{
-        event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
-        execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    },
     Terminal,
 };
 use std::{io, path::PathBuf};
@@ -458,7 +459,8 @@ impl<'a> App<'a> {
                         }
                         if let Ok(html) = res.text() {
                             let gobbler = filegoblin::parsers::web::WebGobbler { extract_full: false };
-                            match filegoblin::parsers::gobble::Gobble::gobble_str(&gobbler, &html) {
+                            let fallback_args = filegoblin::cli::Cli::parse_from(&["filegoblin"]);
+                            match filegoblin::parsers::gobble::Gobble::gobble_str(&gobbler, &html, &fallback_args) {
                                 Ok(md) => { let _ = tx.send(TuiMessage::PreviewLoaded(node, md)); }
                                 Err(e) => { let _ = tx.send(TuiMessage::PreviewLoadError(node, format!("{}", e))); }
                             }

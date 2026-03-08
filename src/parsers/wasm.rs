@@ -15,10 +15,10 @@ pub struct WasmGobbler {
 }
 
 impl Gobble for WasmGobbler {
-    fn gobble(&self, target_file: &Path) -> Result<String> {
-        let file_bytes = fs::read(target_file).context("Failed to read file for WASM parsing")?;
+    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
+        let file_bytes = fs::read(path).context("Failed to read file for WASM parsing")?;
         
-        let extension = target_file
+        let extension = path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or_default()
@@ -66,6 +66,7 @@ impl WasmGobbler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use std::fs::File;
     use std::io::Write;
 
@@ -84,7 +85,8 @@ mod tests {
         f.write_all(b"Hello Goblin!").unwrap();
 
         let gobbler = WasmGobbler { wasm_path: wasm_file.to_path_buf() };
-        let result = gobbler.gobble(target_file).unwrap();
+        let args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let result = gobbler.gobble(target_file, &args).unwrap();
 
         assert!(result.contains("DUMMY PARSER HIT!"));
         assert!(result.contains("Hello Goblin!"));

@@ -6,7 +6,7 @@ pub struct OcrGobbler;
 
 #[cfg(target_os = "macos")]
 impl Gobble for OcrGobbler {
-    fn gobble(&self, path: &Path) -> Result<String> {
+    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
         use objc2::{rc::Retained, AnyThread};
         use objc2_foundation::{NSArray, NSData, NSDictionary};
         use objc2_vision::{VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedTextObservation, VNRecognizedText};
@@ -67,7 +67,7 @@ impl Gobble for OcrGobbler {
 
 #[cfg(target_os = "windows")]
 impl Gobble for OcrGobbler {
-    fn gobble(&self, path: &Path) -> Result<String> {
+    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
         use windows::core::HSTRING;
         use windows::Graphics::Imaging::BitmapDecoder;
         use windows::Media::Ocr::OcrEngine;
@@ -115,7 +115,7 @@ impl Gobble for OcrGobbler {
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 impl Gobble for OcrGobbler {
-    fn gobble(&self, path: &Path) -> Result<String> {
+    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
         use image::GenericImageView;
         use ocrs::{OcrEngine, OcrEngineParams, ImageSource};
         use rten::Model;

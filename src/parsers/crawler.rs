@@ -64,7 +64,7 @@ impl GoblinCrawler {
     }
 
     /// Recursively crawls the site using a BFS algorithm and multiple token-bounded workers.
-    pub async fn crawl(&self, seed_url: Url) -> Result<Vec<(String, String)>> {
+    pub async fn crawl(&self, seed_url: Url, args: &crate::cli::Cli) -> Result<Vec<(String, String)>> {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut results = Vec::new();
 
@@ -105,6 +105,7 @@ impl GoblinCrawler {
                     let target_domain_clone = target_domain.clone();
                     let rate_limiter = self.rate_limiter.clone();
                     let in_flight_clone = in_flight.clone();
+                    let flags_clone = args.clone();
 
                     join_set.spawn(async move {
                         rate_limiter.until_key_ready(&target_domain_clone).await;
@@ -155,7 +156,7 @@ impl GoblinCrawler {
                                             }
                                         }
 
-                                        if let Ok(markdown) = gobbler.gobble_str(&html) {
+                                        if let Ok(markdown) = gobbler.gobble_str(&html, &flags_clone) {
                                             markdown
                                         } else { "".to_string() }
                                     } else { "".to_string() }
@@ -192,13 +193,13 @@ impl GoblinCrawler {
     }
 }
 
-pub fn crawl_web(url: &Url, extract_full: bool) -> Result<Vec<(String, String)>> {
+pub fn crawl_web(url: &Url, args: &crate::cli::Cli) -> Result<Vec<(String, String)>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
     rt.block_on(async {
-        let crawler = GoblinCrawler::new(url, extract_full).await?;
-        crawler.crawl(url.clone()).await
+        let crawler = GoblinCrawler::new(url, args.full).await?;
+        crawler.crawl(url.clone(), args).await
     })
 }

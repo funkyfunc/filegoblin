@@ -5,11 +5,15 @@ use std::path::Path;
 pub struct CodeGobbler;
 
 impl Gobble for CodeGobbler {
-    fn gobble(&self, path: &Path) -> Result<String> {
+    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
         let source_code = std::fs::read_to_string(path).unwrap_or_else(|_| {
             "pub fn gobble(&self, path: &Path) -> Result<String> {\n    let dummy = 1;\n}"
                 .to_string()
         });
+
+        if flags.full {
+            return Ok(source_code);
+        }
 
         // Tree-sitter logic
         let mut parser = tree_sitter::Parser::new();
@@ -60,12 +64,14 @@ impl Gobble for CodeGobbler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn test_code_skeleton_minification() {
         let gobbler = CodeGobbler;
         let p = Path::new("dummy.rs");
-        let result = gobbler.gobble(p).unwrap();
+        let default_args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let result = gobbler.gobble(p, &default_args).unwrap();
 
         // Assert Structural Minification (PRD 3.3)
         assert!(result.contains("/* body elided */"));

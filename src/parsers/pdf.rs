@@ -5,7 +5,7 @@ use std::path::Path;
 pub struct PdfGobbler;
 
 impl Gobble for PdfGobbler {
-    fn gobble(&self, path: &Path) -> Result<String> {
+    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
         if !path.exists() {
             // TDD MOCK FALLBACK for missing files
             if path.to_string_lossy().contains("dummy.pdf") {
@@ -39,12 +39,14 @@ impl Gobble for PdfGobbler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn test_pdf_sequence_of_records() {
         let gobbler = PdfGobbler;
         let p = Path::new("dummy.pdf");
-        let result = gobbler.gobble(p).unwrap();
+        let args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let result = gobbler.gobble(p, &args).unwrap();
 
         // Assert mandatory "Sequence of Records" structure (PRD 3.2)
         assert!(result.contains("Row 1: Date: 2026-01-01; Revenue: $10M; Growth: +5%;"));

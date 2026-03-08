@@ -7,10 +7,10 @@ use std::path::Path;
 /// a target string representation (Markdown, XML, YAML) based on the chosen output flavor.
 pub trait Gobble {
     /// Consumes a file at the given path and returns the extracted, structured string.
-    fn gobble(&self, path: &Path) -> Result<String>;
+    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String>;
 
     /// Consumes an in-memory string directly and returns the structured string.
-    fn gobble_str(&self, _content: &str) -> Result<String> {
+    fn gobble_str(&self, _content: &str, _flags: &crate::cli::Cli) -> Result<String> {
         anyhow::bail!("gobble_str natively unsupported by this target")
     }
 }

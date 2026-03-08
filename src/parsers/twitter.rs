@@ -482,12 +482,12 @@ impl TwitterGobbler {
 }
 
 impl Gobble for TwitterGobbler {
-    fn gobble(&self, path: &Path) -> Result<String> {
+    fn gobble(&self, path: &std::path::Path, flags: &crate::cli::Cli) -> anyhow::Result<String> {
         let content = std::fs::read_to_string(path)?;
-        self.gobble_str(&content)
+        self.gobble_str(&content, flags)
     }
 
-    fn gobble_str(&self, url: &str) -> Result<String> {
+    fn gobble_str(&self, url: &str, flags: &crate::cli::Cli) -> anyhow::Result<String> {
         let tweet_id = self
             .extract_tweet_id(url)
             .context("Invalid Twitter URL format. Could not extract tweet ID.")?;
