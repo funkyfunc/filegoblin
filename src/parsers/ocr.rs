@@ -79,8 +79,9 @@ impl Gobble for OcrGobbler {
             .build()
             .context("Failed to create Tokio runtime for Windows OCR")?;
 
+        let path_str = path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid unicode path"))?;
+
         rt.block_on(async {
-            let path_str = path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid unicode path"))?;
             let h_path = HSTRING::from(path_str);
             
             // 1. Load the image using Windows Storage API
