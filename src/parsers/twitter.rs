@@ -1,6 +1,5 @@
 use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
-use std::path::Path;
 use sha2::{Sha256, Digest};
 use base64::{Engine as _, engine::general_purpose};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -487,7 +486,7 @@ impl Gobble for TwitterGobbler {
         self.gobble_str(&content, flags)
     }
 
-    fn gobble_str(&self, url: &str, flags: &crate::cli::Cli) -> anyhow::Result<String> {
+    fn gobble_str(&self, url: &str, _flags: &crate::cli::Cli) -> anyhow::Result<String> {
         let tweet_id = self
             .extract_tweet_id(url)
             .context("Invalid Twitter URL format. Could not extract tweet ID.")?;

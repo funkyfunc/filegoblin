@@ -47,7 +47,7 @@ pub fn format_output(flavor: &Flavor, filename: &str, content: &str) -> String {
             )
         }
         Flavor::Gemini => {
-            format!("// --- FILE_START: {} ---\n{}\n", filename, content.trim())
+            format!("{}\n", content.trim())
         }
     }
 }
@@ -83,7 +83,7 @@ mod tests {
     fn test_gemini_flavor() {
         let content = "Hello World";
         let result = format_output(&Flavor::Gemini, "test.txt", content);
-        assert!(result.contains("// --- FILE_START: test.txt ---"));
-        assert!(result.contains("Hello World"));
+        // Gemini flavor now just trims content (FILE_START header is added upstream by lib.rs)
+        assert_eq!(result, "Hello World\n");
     }
 }

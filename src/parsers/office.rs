@@ -5,7 +5,7 @@ use std::path::Path;
 pub struct OfficeGobbler;
 
 impl Gobble for OfficeGobbler {
-    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
         if !path.exists() {
             // TDD MOCK FALLBACK for missing files
             if path.to_string_lossy().contains("dummy.") {

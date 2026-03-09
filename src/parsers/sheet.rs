@@ -6,7 +6,7 @@ use calamine::{Reader, open_workbook_auto, Data};
 pub struct SheetGobbler;
 
 impl Gobble for SheetGobbler {
-    fn gobble(&self, path: &std::path::Path, flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &std::path::Path, _flags: &crate::cli::Cli) -> Result<String> {
         let extension = path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")

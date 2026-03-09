@@ -3,6 +3,7 @@ pub mod flavors;
 pub mod parsers;
 pub mod privacy_shield;
 pub mod compressor;
+pub mod curation;
 
 use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
@@ -85,6 +86,41 @@ pub fn gobble_app(
         }
     }
 
+    // Execute Curation Intelligence pipelines before generic formatting steps (RAG/BM25 & Auto-Pruning)
+    let (searched_pairs, search_scores) = if let Some(query) = args.search.as_deref() {
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                format!("🧠 Searching {} files in the hoard for '{}' (Semantic Priority)...", raw_pairs.len(), query).truecolor(0, 200, 255)
+            );
+        }
+        let scored_results = curation::semantic_search(raw_pairs, query, 3).context("Semantic Search failed")?;
+        let scores: std::collections::HashMap<String, f32> = scored_results.iter().map(|(s, p, _)| (p.clone(), *s)).collect();
+        let pairs: Vec<(String, String)> = scored_results.into_iter().map(|(_, p, c)| (p, c)).collect();
+        (pairs, Some(scores))
+    } else {
+        (raw_pairs, None)
+    };
+
+    let pruned_pairs = if let Some(budget) = args.max_tokens {
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                format!("✂️ Enforcing rigid context budget ({} tokens)...", budget).truecolor(255, 99, 71)
+            );
+        }
+        let (kept_pairs, initial_tokens, kept_budget) = curation::enforce_budget(searched_pairs, budget, !args.quiet);
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                format!("⚔️ Pruned from {} baseline tokens down to {} tokens (fit {}/{} target files).", initial_tokens, kept_budget, kept_pairs.len(), targets.len()).truecolor(255, 99, 71)
+            );
+        }
+        kept_pairs
+    } else {
+        searched_pairs
+    };
+
     // Apply Privacy Shield if --scrub is requested
     let final_pairs = if args.scrub {
         if !args.quiet {
@@ -95,12 +131,12 @@ pub fn gobble_app(
         }
         let shield =
             privacy_shield::PrivacyShield::init().context("Failed to initialize Privacy Shield")?;
-        raw_pairs
+        pruned_pairs
             .into_iter()
             .map(|(p, c)| (p, shield.redact(&c)))
             .collect()
     } else {
-        raw_pairs
+        pruned_pairs
     };
 
     // Calculate baseline tokens BEFORE compression for savings metric
@@ -400,16 +436,51 @@ pub fn gobble_app(
         let mut combined = String::new();
         let file_count = compressed_pairs.len();
         let mut post_compression_tokens = 0;
+
+        // Build per-file token counts for manifest
+        let mut file_token_list: Vec<(String, usize)> = Vec::new();
         
+        for (path, content) in &compressed_pairs {
+            let toks = crate::compressor::heuristic::estimate_tokens(content, path);
+            file_token_list.push((path.clone(), toks));
+            post_compression_tokens += toks;
+        }
+
+        // --tokens-only: print just the count to stdout and skip all content
+        if args.tokens_only {
+            println!("{}", post_compression_tokens);
+            return Ok(());
+        }
+
+        // --manifest: prepend a table of contents
+        if args.manifest && file_token_list.len() > 1 {
+            combined.push_str("| # | File | Tokens |\n");
+            combined.push_str("|---|------|--------|\n");
+            for (i, (path, toks)) in file_token_list.iter().enumerate() {
+                if path != "_tree.md" {
+                    combined.push_str(&format!("| {} | {} | {} |\n", i + 1, path, toks));
+                }
+            }
+            combined.push_str("\n");
+        }
+
         for (path, content) in compressed_pairs {
             if path == "_tree.md" {
                 combined.push_str(&content);
             } else {
-                combined.push_str(&format!("// --- FILE_START: {} ---\n", path));
+                // Inject relevance score annotation if search was used
+                if let Some(ref scores) = search_scores {
+                    if let Some(score) = scores.get(&path) {
+                        combined.push_str(&format!("// --- FILE_START: {} --- (relevance: {:.2})\n", path, score));
+                    } else {
+                        combined.push_str(&format!("// --- FILE_START: {} ---\n", path));
+                    }
+                } else {
+                    combined.push_str(&format!("// --- FILE_START: {} ---\n", path));
+                }
                 combined.push_str(&content);
                 combined.push_str("\n\n");
             }
-            post_compression_tokens += crate::compressor::heuristic::estimate_tokens(&content, &path);
         }
 
         let output = flavors::format_output(flavor, &display_name, &combined);
@@ -417,13 +488,13 @@ pub fn gobble_app(
 
         if args.tokens {
             if args.quiet {
-                eprintln!("{}", post_compression_tokens);
+                eprintln!("tokens: {}", post_compression_tokens);
             } else {
                 eprintln!(
                     "{}",
                     format!(
-                        "📊 Output Length: {} chars (~{} tokens)",
-                        total_chars, post_compression_tokens
+                        "📊 tokens: {} (~{} chars)",
+                        post_compression_tokens, total_chars
                     )
                     .truecolor(255, 191, 0)
                 );
@@ -509,7 +580,11 @@ pub fn gobble_local(
         return Ok(files);
     }
 
-    let walker = ignore::WalkBuilder::new(target).build();
+    let mut walk_builder = ignore::WalkBuilder::new(target);
+    if let Some(max_depth) = args.depth {
+        walk_builder.max_depth(Some(max_depth));
+    }
+    let walker = walk_builder.build();
     
 
     let mut tree_out = String::new();
@@ -541,6 +616,96 @@ pub fn gobble_local(
     files.push(("_tree.md".to_string(), tree_out));
 
     // Process all collected files
+    // Apply --include glob filtering if specified
+    if !args.include.is_empty() {
+        let before_count = files_to_process.len();
+        files_to_process.retain(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            args.include.iter().any(|pattern| {
+                // Support both "*.rs" style and plain ".rs" style patterns
+                if let Some(ext_pattern) = pattern.strip_prefix("*.") {
+                    name.ends_with(&format!(".{}", ext_pattern))
+                } else if pattern.starts_with('.') {
+                    name.ends_with(pattern)
+                } else {
+                    name.contains(pattern.as_str())
+                }
+            })
+        });
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                format!("🎯 Filtered horde from {} to {} files matching: {}", before_count, files_to_process.len(), args.include.join(", ")).truecolor(0, 200, 255)
+            );
+        }
+    }
+
+    // Apply --exclude glob filtering if specified
+    if !args.exclude.is_empty() {
+        let before_count = files_to_process.len();
+        files_to_process.retain(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            !args.exclude.iter().any(|pattern| {
+                if let Some(ext_pattern) = pattern.strip_prefix("*.") {
+                    name.ends_with(&format!(".{}", ext_pattern))
+                } else if pattern.starts_with('.') {
+                    name.ends_with(pattern)
+                } else if pattern.contains('*') {
+                    // Simple wildcard matching: *test* style
+                    let parts: Vec<&str> = pattern.split('*').collect();
+                    parts.iter().all(|part| part.is_empty() || name.contains(part))
+                } else {
+                    name.contains(pattern.as_str())
+                }
+            })
+        });
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                format!("🚫 Excluded {} files matching: {}", before_count - files_to_process.len(), args.exclude.join(", ")).truecolor(255, 99, 71)
+            );
+        }
+    }
+
+    // Apply --git-diff filtering if specified
+    if let Some(ref git_ref) = args.git_diff {
+        let git_result = std::process::Command::new("git")
+            .args(["diff", "--name-only", git_ref])
+            .current_dir(root)
+            .output();
+
+        match git_result {
+            Ok(output) if output.status.success() => {
+                let changed_files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .map(|l| l.to_string())
+                    .collect();
+                let before_count = files_to_process.len();
+                files_to_process.retain(|p| {
+                    if let Ok(rel) = p.strip_prefix(root) {
+                        let rel_str = rel.to_string_lossy();
+                        changed_files.iter().any(|cf| rel_str == cf.as_str())
+                    } else {
+                        false
+                    }
+                });
+                if !args.quiet {
+                    eprintln!(
+                        "{}",
+                        format!("🔀 Git diff mode (vs {}): {} changed files found (from {} total)", git_ref, files_to_process.len(), before_count).truecolor(0, 200, 255)
+                    );
+                }
+            }
+            Ok(output) => {
+                let stderr_msg = String::from_utf8_lossy(&output.stderr);
+                eprintln!("{} git diff failed: {}", "⚠️".yellow(), stderr_msg.trim());
+            }
+            Err(e) => {
+                eprintln!("{} Could not run git (is it installed?): {}", "⚠️".yellow(), e);
+            }
+        }
+    }
+
     for file_path in files_to_process {
         if let Ok(rel_path) = file_path.strip_prefix(if root.is_file() {
             root.parent().unwrap_or(root)
@@ -549,12 +714,42 @@ pub fn gobble_local(
         }) {
             let rel_str = rel_path.to_string_lossy().into_owned();
 
-            let content = match route_and_gobble(file_path.to_str().unwrap(), args) {
-                Ok(c) => c,
-                Err(e) => format!("Error summarizing file: {}", e),
+            // --diff-format: use unified diff output instead of full file content
+            let content = if args.diff_format {
+                if let Some(ref git_ref) = args.git_diff {
+                    let diff_result = std::process::Command::new("git")
+                        .args(["diff", git_ref, "--", file_path.to_str().unwrap()])
+                        .current_dir(root)
+                        .output();
+                    match diff_result {
+                        Ok(output) if output.status.success() => {
+                            let diff_text = String::from_utf8_lossy(&output.stdout).to_string();
+                            if diff_text.trim().is_empty() { None } else { Some(diff_text) }
+                        }
+                        _ => None,
+                    }
+                } else {
+                    match route_and_gobble(file_path.to_str().unwrap(), args) {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            eprintln!("{} Error summarizing {}: {}", "⚠️".yellow(), rel_str, e);
+                            None
+                        }
+                    }
+                }
+            } else {
+                match route_and_gobble(file_path.to_str().unwrap(), args) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        eprintln!("{} Error summarizing {}: {}", "⚠️".yellow(), rel_str, e);
+                        None
+                    }
+                }
             };
 
-            files.push((rel_str, content));
+            if let Some(c) = content {
+                files.push((rel_str, c));
+            }
         }
     }
 

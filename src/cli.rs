@@ -31,7 +31,7 @@ pub struct Cli {
     pub flavor: String,
 
     /// Aggressively strip non-semantic characters from the final output to reduce LLM tokens
-    #[arg(long, help_heading = "Output Formatting")]
+    #[arg(short = 'c', long, default_missing_value = "contextual", num_args = 0..=1, help_heading = "Output Formatting")]
     pub compress: Option<CompressionLevel>,
 
     /// Extract the full document instead of attempting heuristic minification
@@ -39,7 +39,7 @@ pub struct Cli {
     pub full: bool,
 
     /// Split `--horde` output into individual files within an auto-generated directory
-    #[arg(long, help_heading = "Output Formatting", conflicts_with_all = ["chunk", "json"])]
+    #[arg(short = 's', long, help_heading = "Output Formatting", conflicts_with_all = ["chunk", "json"])]
     pub split: bool,
 
     /// Chunk combined output into multiple files based on an estimated token limit (e.g. --chunk 100k)
@@ -60,20 +60,61 @@ pub struct Cli {
     pub plugin: Option<String>,
 
     /// Recursive directory or website crawling
-    #[arg(long, help_heading = "Crawling & Ingestion")]
+    #[arg(short = 'H', long, help_heading = "Crawling & Ingestion")]
     pub horde: bool,
+
+    /// Filter horde ingestion to only include files matching glob patterns (repeatable, e.g. --include "*.rs" --include "*.toml")
+    #[arg(short = 'I', long, help_heading = "Crawling & Ingestion")]
+    pub include: Vec<String>,
+
+    /// Exclude files matching glob patterns from horde ingestion (repeatable, e.g. --exclude "*test*" --exclude "*.lock")
+    #[arg(short = 'E', long, help_heading = "Crawling & Ingestion")]
+    pub exclude: Vec<String>,
+
+    /// Limit recursion depth for --horde crawling (e.g. --depth 1 for top-level only)
+    #[arg(long, help_heading = "Crawling & Ingestion")]
+    pub depth: Option<usize>,
+
+    // --- CURATION & INTELLIGENCE ---
+    /// Local Zero-Dependency Semantic Search (evaluates and returns top matches)
+    #[arg(long, help_heading = "Curation & Intelligence")]
+    pub search: Option<String>,
+
+    /// Auto-Prune Context to fit a rigid token budget (e.g. --max-tokens 100000)
+    #[arg(long, help_heading = "Curation & Intelligence")]
+    pub max_tokens: Option<usize>,
+
+    /// Extract only structural symbols (function signatures, struct/enum definitions) from code files
+    #[arg(long, help_heading = "Curation & Intelligence")]
+    pub extract: Option<String>,
+
+    /// Only ingest files changed according to git diff (optionally against a specific ref, default: HEAD)
+    #[arg(long, default_missing_value = "HEAD", num_args = 0..=1, help_heading = "Curation & Intelligence")]
+    pub git_diff: Option<String>,
+
+    /// Show unified diff output instead of full file content when using --git-diff
+    #[arg(long, help_heading = "Curation & Intelligence", requires = "git_diff")]
+    pub diff_format: bool,
+
+    /// Prepend a manifest table-of-contents with file paths and token counts to horde output
+    #[arg(long, help_heading = "Curation & Intelligence")]
+    pub manifest: bool,
 
     // --- DEVELOPER UTILITIES ---
     /// Print estimated token counts for the specific model flavor
-    #[arg(long, help_heading = "Developer Utilities")]
+    #[arg(short = 't', long, help_heading = "Developer Utilities")]
     pub tokens: bool,
+
+    /// Print only the estimated token count to stdout (no content output)
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub tokens_only: bool,
 
     /// Scrub PII and Secrets from the output locally using hybrid Regex/SLM Engine
     #[arg(long, help_heading = "Developer Utilities")]
     pub scrub: bool,
 
     /// Headless "Direct-to-Clipboard" support
-    #[arg(short, long, help_heading = "Developer Utilities")]
+    #[arg(long, help_heading = "Developer Utilities")]
     pub copy: bool,
 
     /// OS native file explorer integration (Open the output file/dir)

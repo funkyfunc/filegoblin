@@ -38,3 +38,13 @@
 **Context:** The Phase VIII Image OCR implementation required a pure-Rust or statically deployable engine without external C-bindings. Testing revealed pure-Rust CPU math via `ocrs` and `rten` took 200ms-2s per image—functional, but sluggish for a CLI tool.
 **Decision:** Implemented a Hybrid "Native Escape Hatch" Architecture. On macOS, `filegoblin` uses pure-Rust `objc2` bindings to directly hook into Apple's Vision Framework, achieving instantaneous (<50ms) hardware-accelerated text extraction. On Linux/Windows, it conditionally compiles the `ocrs` engine using local `.rten` tensor weights as a fallback. This completely satisfies the zero-dependency mandate while unlocking maximum hardware performance where APIs are available.
 **Status:** Accepted
+
+## 2026-03-08: Adopting Heuristic Auto-Pruning with Context Fallbacks
+**Context:** When users scrape massive targets and set `--max-tokens` limits, blindly truncating the output ruins the structural integrity of the prompt. We needed a way to intelligently prioritize data to maximize LLM relevance density.
+**Decision:** Adopted a sequential pipeline. It first strips files based on a multi-tiered precedence mapping (`.gitignore`, then extension-based ranking). If the repository still exceeds the budget, it selectively hollows out implementation logic using `tree-sitter` ("Skeletonization"), preserving only function signatures and docstrings to provide dense mapping without massive token waste.
+**Status:** Accepted
+
+## 2026-03-08: Tantivy BM25 over Native ONNX for Search
+**Context:** Implementing a self-contained RAG (Retrieval-Augmented Generation) layer inside CLI contexts required deciding between dense embeddings using `candle-core` / `tract` (e.g., tracking a quantized 22MB MiniLM model) and a pure-text index.
+**Decision:** Selected `tantivy` (BM25 lexical search) over neural embeddings. The inverted index requires zero model weights, adds almost negligible binary bloat, and provides sub-10ms ephemeral searches. For highly specific technical code querying (e.g. searching for specific struct names), lexical matching out-competes generic semantic associations. We bridge the semantic gap manually via snake_case tokenization and synonym expansions.
+**Status:** Accepted

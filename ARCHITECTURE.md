@@ -55,3 +55,19 @@ This document details the core architectural pillars and technical decisions tha
 - **The Piped Ecosystem:** `filegoblin` is not an isolated GUI; it's a pipe component meant to be combined with `jq`, `grep`, or direct `curl` payloads to LLM APIs.
 - **Data Corruption:** Emitting a single byte of "Hello Goblin" or "Fetching URL..." into `stdout` instantly invalidates the resulting JSON array or Markdown stream for programmatic consumers.
 - **Zero-Config Quiet:** The addition of the `-q, --quiet` flag instantly silences `stderr` entirely, guaranteeing a completely silent operational footprint when orchestrated by CI/CD pipelines or background bash scripts.
+
+## 7. Intelligent Curation & Auto-Pruning
+
+**Decision:** When limits are applied (e.g. `--max-tokens`), the CLI prioritizes "Relevance Density" over pure concatenation. It utilizes extension-weighting, size optimization (knapsack patterns), and ultimately AST "Skeletonization" via `tree-sitter` to fit repositories into constrained LLM context windows.
+
+**Justification:**
+- **Context Exhaustion:** Large repositories contain massive amounts of noisy, low-value data (e.g., test mocks, vendor files). Blindly cutting off the output when a limit is reached abandons critical business logic.
+- **Skeletonization:** By pruning function bodies but retaining interfaces and signatures, the LLM maintains a structural map of the entire codebase even under extreme compression.
+
+## 8. Zero-Dependency Semantic Search (RAG Lite)
+
+**Decision:** The `--search` feature utilizes a Hybrid-Lexical approach powered by the `tantivy` crate (BM25) rather than Dense Neural Embeddings (ONNX/Small Language Models).
+
+**Justification:**
+- **Performance & Footprint:** Building an ephemeral inverted index in RAM takes milliseconds and adds barely any binary weight. Including quantized transformer models (like `all-MiniLM-L6-v2`) would bloat the binary by 20-90MB and introduce CPU inference latency.
+- **Technical Precision:** Keyword-based BM25 with exact tokenization performs far better for precise code elements (e.g., `TcpStream`, `Arc<Mutex>`) than dense models measuring semantic similarity. Semantic bridging is achieved via custom "Identifier Tokenization" (splitting `snake_case`) instead of heavy ML inference.

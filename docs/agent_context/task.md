@@ -95,3 +95,10 @@
 - [ ] Native Git Cloning via `git2` (e.g., `fg https://github.com/user/repo`)
 - [ ] Remote Cloud Storage Fetching (AWS S3 / GCS URIs)
 - [ ] Local Database Connection String Ingestion (SQLite `.db`, Postgres)
+
+## Phase XII: Curation & Intelligence
+- [ ] Intelligent Auto-Pruning (`--max-tokens 100k`) based on relevance heuristics
+- [ ] Semantic Search / RAG Lite (`--search "auth flow"`) using zero-dependency local inverted index or ONNX embeddings
+- [ ] Targeted ingestion masking via glob filtering (`--include "*.rs"`)
+- [ ] Structural Code Skeletonization (`--extract symbols`)
+- [ ] Git-Aware Context Diffing (`--git-diff`)

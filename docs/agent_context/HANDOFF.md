@@ -1,23 +1,25 @@
-## Session Handoff: 2026-03-04
+## Session Handoff: 2026-03-08
 
 ### 1. What was just completed
-- **TUI "Goblincore" Overhaul (Phase 2):** The `fg -i` interactive dashboard has been fully redesigned.
-  - Implemented the strict thematic color palette.
-  - Replaced tight borders with `BorderType::Rounded` and layout padding.
-  - Restored the O(1) directory file count cache to keep the lag-free experience while maintaining fully accurate selection colors (`v` vs `~`).
-  - Built out the 6-row animated header featuring the blinking/chewing `(o_o) filegoblin` ASCII mascot.
-  - Added dynamic "Goblin Quotes" that react to the user's cursor hover state.
+- **Architecture & UX Flaws Fixed:** 
+  - Passed `filegoblin::cli::Cli` arguments through the `Gobble` trait, allowing all 10 parsers to respect global configuration.
+  - Refactored `CodeGobbler` to respect `--full`, bypassing AST skeletonization natively without brittle states.
+  - Stopped error pollution during headless scraping (e.g., OCR model failures are now piped cleanly to `stderr` instead of polluting the `stdout` markdown array).
+  - Modified `--tokens` logic so that headless pipeline streams (`-q -t`) cleanly pipe the active token count to `stderr`.
+- **CLI Flag Polish:**
+  - Standardized short flag aliases for pipeline comfort: `-t` (`--tokens`), `-H` (`--horde`), and `-s` (`--split`).
+  - Refined the `--compress` parameter to be an optional implicit flag mapping to `-c` (`default_missing_value = "contextual"`).
+- **Phase XII Intelligence Curation:**
+  - Designed and deployed the `tantivy` BM25 Reverse Index to map and retrieve files interactively via `--search`.
+  - Constructed the `enforce_budget` pipeline prioritizing high-value contexts automatically when given a `--max-tokens` limit.
+  - Added dynamic CLI `stderr` outputs for intelligent operations (`--search` counting, `--max-tokens` reduction metrics).
 - **Documentation & Research:**
-  - Read `AGENTS.md`, `PRD.md`, `README.md`, `ARCHITECTURE.md`, and `docs/ADR.md`.
-  - Prepared the `twitter_agent_prompt.md` research spec prompt for the next agent to design a zero-cost Twitter scraper.
+  - Updated `ADR.md` and `ARCHITECTURE.md` to lock in zero-dependency `tantivy` indexing over ONNX models.
+  - Completed Phase XII tasks in `task.md`.
 
 ### 2. Current State
-- `cargo horde-check` passes cleanly (no clippy warnings or failing tests).
-- The `windows_vision_test.rs` file was deleted to resolve broken imports for the `windows` crate.
-- The `main` branch is fully pushed to `origin/main`.
+- `cargo test --all-features` passes cleanly with all new intelligence tests executing correctly.
+- Pipeline regressions solved and Phase XII Intelligence implemented.
 
 ### 3. Next Steps for the Next Machine
-- Provide the user with the contents of `twitter_agent_prompt.md` or submit it to the relevant LLM orchestrator.
-- Await the resulting **Twitter Ingestion Spec**.
-- Begin testing the feasibility of the chosen scraping approach (e.g. syndication API vs GraphQL guest tokens) by building a bare-bones `TwitterGobbler` struct in `src/parsers/` that implements the `Gobble` trait over `reqwest`.
-- Ensure output formatting correctly implements the target LLM anchor flavors defined in `PRD.md` (e.g., anthropic XML wrapping).
+- Begin laying the groundwork for Phase XI (Remote Data Hooks like Git repositories) or move forward with further R&D.

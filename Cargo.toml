@@ -1,6 +1,6 @@
 [package]
 name = "filegoblin"
-version = "1.6.2"
+version = "1.7.0"
 edition = "2024"
 description = "A zero-dependency, high-performance CLI tool to convert messy file formats into high-fidelity, LLM-optimized Markdown/XML/YAML."
 repository = "https://github.com/funkyfunc/filegoblin"
@@ -60,6 +60,7 @@ serde_json = "1.0.149"
 sha2 = "0.10.9"
 sliding_features = "7.1"
 stop-words = "0.10.0"
+tantivy = "0.22"
 tokio = { version = "1.49.0", features = ["rt", "macros"] }
 tree-sitter = { version = "0.26.5", features = ["std"] }
 tree-sitter-rust = "0.24.0"
