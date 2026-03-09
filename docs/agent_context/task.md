@@ -97,8 +97,19 @@
 - [ ] Local Database Connection String Ingestion (SQLite `.db`, Postgres)
 
 ## Phase XII: Curation & Intelligence
-- [ ] Intelligent Auto-Pruning (`--max-tokens 100k`) based on relevance heuristics
-- [ ] Semantic Search / RAG Lite (`--search "auth flow"`) using zero-dependency local inverted index or ONNX embeddings
-- [ ] Targeted ingestion masking via glob filtering (`--include "*.rs"`)
-- [ ] Structural Code Skeletonization (`--extract symbols`)
-- [ ] Git-Aware Context Diffing (`--git-diff`)
+- [x] Intelligent Auto-Pruning (`--max-tokens 100k`) based on relevance heuristics
+- [x] Semantic Search / RAG Lite (`--search "auth flow"`) using zero-dependency local inverted index
+- [x] Targeted ingestion masking via glob filtering (`--include "*.rs"`)
+- [x] Structural Code Skeletonization (`--extract symbols`)
+- [x] Git-Aware Context Diffing (`--git-diff`)
+
+## Phase XIII: Evaluation Feedback & UX Polish (v1.7.0)
+- [x] Fix Gemini flavor duplicated `FILE_START` header
+- [x] `--tokens` output labeled `tokens: N` on stderr
+- [x] `--tokens-only` mode for scripting (stdout, no content)
+- [x] `--exclude` glob blacklist for horde filtering
+- [x] `--depth` recursion limit for horde crawling
+- [x] `--manifest` table-of-contents with per-file token counts
+- [x] `--diff-format` unified diff output for `--git-diff`
+- [x] BM25 relevance score annotations in `--search` results
+- [x] Compiler warning cleanup across all parsers

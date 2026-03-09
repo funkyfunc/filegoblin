@@ -12,45 +12,71 @@
 ```text
 .
 ├── Cargo.toml
+├── build.rs          (Man page & shell completions generator)
 ├── src/
-│   ├── main.rs       (CLI Entry)
-│   ├── lib.rs        (Core Logic)
+│   ├── main.rs       (CLI Entry & Mascot)
+│   ├── lib.rs        (Core Pipeline Logic)
+│   ├── cli.rs        (Clap Flag Definitions)
+│   ├── flavors.rs    (LLM Output Flavors)
+│   ├── curation.rs   (BM25 Search & Auto-Pruning)
+│   ├── privacy_shield.rs (PII Redaction Engine)
+│   ├── ui.rs         (Ratatui Interactive TUI)
+│   ├── compressor/   (Token Compression Pipeline)
+│   │   ├── mod.rs
+│   │   ├── level1.rs (Safe: whitespace folding)
+│   │   ├── level2.rs (Contextual: comment stripping)
+│   │   ├── level3.rs (Aggressive: stopword removal)
+│   │   └── heuristic.rs (Token estimation)
 │   └── parsers/      (File parsing engines)
 │       ├── mod.rs
-│       └── gobble.rs (Gobble Trait)
+│       ├── gobble.rs  (Gobble Trait)
+│       ├── code.rs    (tree-sitter AST)
+│       ├── pdf.rs     (oxidize-pdf)
+│       ├── office.rs  (docx-rs)
+│       ├── web.rs     (HTML heuristics)
+│       ├── sheet.rs   (calamine xlsx/csv)
+│       ├── powerpoint.rs (quick-xml pptx)
+│       ├── ocr.rs     (Vision/rten hybrid)
+│       ├── twitter.rs (X/Twitter GraphQL)
+│       ├── crawler.rs (Recursive web crawler)
+│       └── wasm.rs    (WASM plugin host)
 └── .cargo/
     └── config.toml   (Aliases)
 ```
 
 ---
 
-## ⚡ Current Capabilities
-*Note to Agent: Document new flags and parsers here.*
+## ⚡ Current Capabilities (v1.7.0)
 
-- [x] Basic Rust Project Initialization
-- [x] `cargo horde-check` Alias Configuration
-- [x] MVP CLI Setup with `clap`
-- [x] Core Library scaffolding & `Gobble` trait
-- [x] Initial Core Parsers (PDF, Office, Web, Code) with TDD Mocks
-- [x] Add Image OCR support (Apple Vision Native Hooks & `ocrs` fallback)
-- [x] URL Ingestion Support & Recursive Crawling (`--horde`)
-- [x] Output Splitting & Auto-Directory Mapping (`--split`)
-- [x] Pipeline Isolation (`--quiet`) & Structured Data (`--json`)
-- [x] Token Estimation (`--tokens`)
+- [x] 10 Core Parsers (PDF, Office, Web, Code, Excel, PowerPoint, Images, Twitter, WASM Plugins)
+- [x] URL Ingestion & Recursive Crawling (`--horde`)
+- [x] Glob Filtering (`--include`, `--exclude`) & Depth Control (`--depth`)
+- [x] 4 LLM Flavors (`human`, `anthropic`, `gpt`, `gemini`)
+- [x] Token Estimation (`--tokens`), Token-Only Mode (`--tokens-only`)
+- [x] Token Compression & Stripping (`--compress safe|contextual|aggressive`)
+- [x] Auto-Pruning to Token Budgets (`--max-tokens`)
+- [x] Semantic BM25 Search with Relevance Scores (`--search`)
+- [x] Manifest Table of Contents (`--manifest`)
+- [x] Git-Aware Diffing (`--git-diff`) with Unified Diff Output (`--diff-format`)
+- [x] Code Skeletonization (`--extract symbols`) via tree-sitter
 - [x] PII Redaction (`--scrub`)
-- [x] Token Compression & Stripping (`--compress`)
-- [x] Interactive Terminal Dashboard (`-i`)
-- [x] The "Full Belch" Output Summary Table
+- [x] Output Splitting (`--split`), Chunking (`--chunk`), JSON (`--json`)
+- [x] Clipboard (`--copy`), OS Open (`--open`), File Write (`--write`)
+- [x] Interactive Terminal Dashboard (`-i`) with ratatui
+- [x] Pipeline-Safe Streams (`-q` for clean stdout)
+- [x] WASM Plugin Extensibility (`--plugin`)
 
 ---
 
 ## ✨ Key Features
-- **Parsers:** `oxidize-pdf`, `docx-rs`, `tree-sitter`, `quick-xml`, `calamine` (Statically Linked).
+- **Parsers:** `oxidize-pdf`, `docx-rs`, `tree-sitter`, `quick-xml`, `calamine`, `ocrs` (Statically Linked).
 - **Hybrid OCR:** Instantaneous macOS Vision Framework integration (`objc2`) with pure-Rust `rten` inference as fallback.
 - **WASM Extensibility:** `wasmtime` for pure-rust statically-linked component execution.
 - **LLM-Native:** Specific structural anchors (XML/YAML) to prevent "Attention Drift."
 - **Privacy First:** Local-only PII/Secret scrubbing using Distil-PII-1B.
-- **Structural Minification:** Tree-sitter powered `--skeleton` mode for source code.
+- **Structural Minification:** Tree-sitter powered `--extract symbols` mode for source code.
+- **Semantic Search:** BM25 relevance scoring via `tantivy` with zero model weights.
+- **Manifest TOC:** Auto-generated table of contents with per-file token counts.
 
 ## ⚙️ Development & Asset Pipeline
 
@@ -115,8 +141,46 @@ fg ./src/main.rs --compress aggressive > context.md
 fg ./src/ --horde --chunk 50k
 ```
 
-# Pipe directly from other programs using stdin
+**Pipe from stdin:**
+```bash
 curl -s "https://api.github.com/users/octocat" | fg -q --json
+```
+
+**Filtering & Exclusion:**
+```bash
+# Only Rust files, excluding tests and generated code
+fg ./src/ --horde --include "*.rs" --exclude "*test*" --exclude "*generated*"
+
+# Limit crawl depth to top-level files only
+fg ./src/ --horde --depth 1
+```
+
+**Manifest / Table of Contents:**
+```bash
+# Prepend a TOC with file paths and token counts
+fg ./src/ --horde --include "*.rs" --manifest
+```
+
+**Token-Only Mode (Scripting):**
+```bash
+# Print just the token count, no content — ideal for CI/scripts
+fg ./src/ --horde --tokens-only
+```
+
+**Semantic Search with Relevance Scores:**
+```bash
+# Search across a codebase and see BM25 relevance scores
+fg ./src/ --horde --search "authentication"
+```
+
+**Git-Diff Mode (Only Changed Files):**
+```bash
+# Ingest only files changed since last commit
+fg . --horde --git-diff HEAD~1
+
+# Show unified diffs instead of full file contents
+fg . --horde --git-diff HEAD~1 --diff-format
+```
 
 **Interactive Hoard Selector (TUI):**
 A full, snappy `ratatui` dashboard wrapper around the engine.

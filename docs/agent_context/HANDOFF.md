@@ -1,25 +1,27 @@
-## Session Handoff: 2026-03-08
+## Session Handoff: 2026-03-08 (v1.7.0)
 
 ### 1. What was just completed
-- **Architecture & UX Flaws Fixed:** 
-  - Passed `filegoblin::cli::Cli` arguments through the `Gobble` trait, allowing all 10 parsers to respect global configuration.
-  - Refactored `CodeGobbler` to respect `--full`, bypassing AST skeletonization natively without brittle states.
-  - Stopped error pollution during headless scraping (e.g., OCR model failures are now piped cleanly to `stderr` instead of polluting the `stdout` markdown array).
-  - Modified `--tokens` logic so that headless pipeline streams (`-q -t`) cleanly pipe the active token count to `stderr`.
-- **CLI Flag Polish:**
-  - Standardized short flag aliases for pipeline comfort: `-t` (`--tokens`), `-H` (`--horde`), and `-s` (`--split`).
-  - Refined the `--compress` parameter to be an optional implicit flag mapping to `-c` (`default_missing_value = "contextual"`).
-- **Phase XII Intelligence Curation:**
-  - Designed and deployed the `tantivy` BM25 Reverse Index to map and retrieve files interactively via `--search`.
-  - Constructed the `enforce_budget` pipeline prioritizing high-value contexts automatically when given a `--max-tokens` limit.
-  - Added dynamic CLI `stderr` outputs for intelligent operations (`--search` counting, `--max-tokens` reduction metrics).
-- **Documentation & Research:**
-  - Updated `ADR.md` and `ARCHITECTURE.md` to lock in zero-dependency `tantivy` indexing over ONNX models.
-  - Completed Phase XII tasks in `task.md`.
+- **Evaluation Feedback Sweep (v1.7.0):**
+  - Fixed Gemini flavor duplicated `FILE_START` header in `flavors.rs`.
+  - Improved `--tokens` output: labeled `tokens: N` on stderr. Added `--tokens-only` mode (stdout, no content).
+  - Added `--exclude` / `-E` glob blacklist for horde filtering (complements `--include`).
+  - Added `--depth` flag for limiting horde recursion depth via `ignore::WalkBuilder`.
+  - Added `--manifest` flag that prepends a markdown table-of-contents with file paths and token counts.
+  - Added `--diff-format` flag for unified diff output when used alongside `--git-diff`.
+  - Added BM25 relevance score annotations (`relevance: N.NN`) to `--search` result headers in `curation.rs`.
+  - Cleaned up 9 compiler warnings across 7 files (parsers, curation, UI).
+- **Documentation:**
+  - Updated `README.md` with full v1.7.0 capabilities, new project structure, and usage examples for all new flags.
+  - Updated `docs/agent_context/task.md` with completed Phase XII and new Phase XIII.
+  - Updated `HANDOFF.md` (this file).
 
 ### 2. Current State
-- `cargo test --all-features` passes cleanly with all new intelligence tests executing correctly.
-- Pipeline regressions solved and Phase XII Intelligence implemented.
+- `cargo test` passes cleanly (21/21 tests, 0 warnings).
+- Version bumped to `v1.7.0`, tagged and pushed to `origin/main`.
+- All new flags documented in `--help` and auto-generated man page (via `clap_mangen` in `build.rs`).
 
 ### 3. Next Steps for the Next Machine
-- Begin laying the groundwork for Phase XI (Remote Data Hooks like Git repositories) or move forward with further R&D.
+- Phase VII: WASM Plugin System finishing touches.
+- Phase IX: XML/YAML output flavors.
+- Phase XI: Remote Data Hooks (native git clone, S3/GCS, SQLite).
+- Consider adding `--tokens-only` support to the `--split` and `--chunk` paths (currently only in unchunked pipeline).
