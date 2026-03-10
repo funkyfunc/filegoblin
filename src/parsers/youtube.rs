@@ -131,14 +131,23 @@ impl YouTubeGobbler {
                 Ok(Event::Text(e)) if in_text => {
                     let raw_str = std::str::from_utf8(e.as_ref()).unwrap_or_default();
                     let decoded = raw_str
+                        // Full entity forms
                         .replace("&amp;", "&")
                         .replace("&lt;", "<")
                         .replace("&gt;", ">")
                         .replace("&quot;", "\"")
                         .replace("&apos;", "'")
                         .replace("&#39;", "'")
+                        .replace("&nbsp;", " ")
+                        // Partial entity remnants (quick-xml consumes leading '&')
+                        .replace("gt;gt;", ">>")
+                        .replace("gt;", ">")
+                        .replace("lt;", "<")
+                        .replace("amp;", "&")
+                        .replace("quot;", "\"")
+                        .replace("apos;", "'")
                         .replace("#39;", "'")
-                        .replace("&nbsp;", " ");
+                        .replace("nbsp;", " ");
                     let cleaned = decoded.replace('\n', " ");
                     transcript.push_str(&cleaned);
                 }
