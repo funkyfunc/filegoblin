@@ -113,3 +113,17 @@
 - [x] `--diff-format` unified diff output for `--git-diff`
 - [x] BM25 relevance score annotations in `--search` results
 - [x] Compiler warning cleanup across all parsers
+
+## Phase XIV: New Ingestion Sources
+> 📝 Research needed before implementation: **YouTube transcripts only** (API approach TBD)
+- [ ] GitHub URL ingestion (`gobble https://github.com/user/repo`) — shallow clone to tempdir via `git2`, horde-ingest, cleanup
+- [ ] Jupyter Notebook gobbler (`.ipynb`) — parse JSON cells by type (code/markdown/output)
+- [ ] SQLite gobbler (`.db`) — dump schema + sample rows per table via `rusqlite`
+- [ ] Slack / Discord export gobbler (JSON → structured markdown)
+- [ ] HTTP POST ingestion (`--post <url> -d '<body>'`) — extend existing reqwest fetcher
+- [ ] YouTube transcript ingestion — **needs research** (no public API; options: `yt-dlp` subprocess, timedtext scraping, or data API)
+
+## Phase XV: Wow-Factor UX Features
+- [ ] `--cost` flag — estimate API cost per model (lookup table of price/M tokens for GPT-4o, Claude, Gemini etc.)
+- [ ] `--summary` flag — heuristic context preamble (scan manifest files, count module types, grab README intro)
+- [ ] `--watch` mode — filesystem watcher that auto-regenerates output on save (`notify` crate)
