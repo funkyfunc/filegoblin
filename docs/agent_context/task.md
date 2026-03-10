@@ -122,7 +122,7 @@
 - [ ] Slack / Discord export gobbler (JSON → structured markdown)
 - [ ] HTTP POST ingestion (`--post <url> -d '<body>'`) — extend existing reqwest fetcher
 - [ ] YouTube transcript ingestion — **needs research** (no public API; options: `yt-dlp` subprocess, timedtext scraping, or data API)
-- [ ] Google OAuth flow (`--google-login`) — access authenticated Google content (Docs, Drive, Gemini shares); **needs research** (OAuth 2.0 scopes, which APIs are needed, credential store pattern same as Twitter)
+- [ ] Google OAuth flow (`--google-login`) — access authenticated Google content (Docs, Drive, Gemini shares); **needs research** → see `docs/agent_context/google_oauth_research_prompt.md`
 
 ## Phase XV: Wow-Factor UX Features
 - [ ] `--cost` flag — estimate API cost per model (lookup table of price/M tokens for GPT-4o, Claude, Gemini etc.)
