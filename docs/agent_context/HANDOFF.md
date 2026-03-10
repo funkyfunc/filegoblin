@@ -38,6 +38,8 @@ One-shot implementation. Pattern:
 
 This gives zero-friction for casual users while giving power users a reliable upgrade path. No research needed — `oauth2` crate handles the PKCE flow.
 
+> 📝 **Research first** — X rebranded from Twitter mid-2023 and restructured API tiers significantly. Training data may be stale on current endpoint URLs, OAuth scopes, and free-tier limits. Research prompt generated at: `docs/agent_context/twitter_oauth_research_prompt.md`
+
 #### Priority 3: YouTube Transcript Ingestion (Phase XIV)
 **Needs research first.** Research prompt generated at:
 `docs/agent_context/youtube_research_prompt.md`
