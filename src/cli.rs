@@ -76,6 +76,10 @@ pub struct Cli {
     #[arg(long, help_heading = "Crawling & Ingestion")]
     pub depth: Option<usize>,
 
+    /// Fetch a specific language transcript from YouTube or auto-translate (e.g. --lang es)
+    #[arg(long, help_heading = "Crawling & Ingestion")]
+    pub lang: Option<String>,
+
     // --- CURATION & INTELLIGENCE ---
     /// Local Zero-Dependency Semantic Search (evaluates and returns top matches)
     #[arg(long, help_heading = "Curation & Intelligence")]

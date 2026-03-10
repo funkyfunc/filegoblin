@@ -2,7 +2,7 @@ use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
 use sha2::{Sha256, Digest};
 use base64::{Engine as _, engine::general_purpose};
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use urlencoding::encode;
 use serde::{Deserialize, Serialize};
