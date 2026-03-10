@@ -116,7 +116,8 @@
 
 ## Phase XIV: New Ingestion Sources
 > 📝 Research needed before implementation: **YouTube transcripts only** (API approach TBD)
-- [ ] GitHub URL ingestion (`gobble https://github.com/user/repo`) — shallow clone to tempdir via `git2`, horde-ingest, cleanup
+- [x] GitHub URL ingestion (`gobble https://github.com/user/repo`) — shallow clone to tempdir via `git2`, horde-ingest, cleanup
+- [x] Twitter OAuth 2.0 PKCE Refactor (`--twitter-login`) — graceful degradation from authenticated > graphql > syndication
 - [ ] Jupyter Notebook gobbler (`.ipynb`) — parse JSON cells by type (code/markdown/output)
 - [ ] SQLite gobbler (`.db`) — dump schema + sample rows per table via `rusqlite`
 - [ ] Slack / Discord export gobbler (JSON → structured markdown)

@@ -18,6 +18,7 @@ pub enum CompressionLevel {
 )]
 pub struct Cli {
     /// The target files, directories, or URLs to ingest
+    #[arg(required_unless_present_any = ["interactive", "twitter_login"])]
     pub paths: Vec<String>,
 
     // --- OUTPUT FORMATTING ---
@@ -120,6 +121,10 @@ pub struct Cli {
     /// OS native file explorer integration (Open the output file/dir)
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub open: bool,
+
+    /// Authenticate via Twitter OAuth 2.0 PKCE to bypass rate-limits and enable reliable thread ingestion
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub twitter_login: bool,
 
 
     /// Launch the interactive TUI "Hoard Selector" dashboard

@@ -1,5 +1,6 @@
 pub mod code;
 pub mod crawler;
+pub mod github;
 pub mod gobble;
 pub mod ocr;
 pub mod office;
