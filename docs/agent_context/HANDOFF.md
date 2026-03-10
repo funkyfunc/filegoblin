@@ -23,16 +23,20 @@ One-shot implementation. Pattern:
 - Private repos: check for `~/.config/filegoblin/credentials.json` and use stored token as `git2` credential callback
 
 #### Priority 2: Twitter OAuth 2.0 Refactor (Phase XIV)
-**Current approach is fragile** — the guest-token + `ct0` CSRF cookie hack breaks when Twitter rotates tokens (happens regularly, silently). 
+**Current approach is fragile** — the guest-token + `ct0` CSRF cookie hack breaks when Twitter rotates tokens (silently, no warning).
 
-**Recommended approach: OAuth 2.0 PKCE with local credential store**
-- User creates a free Twitter Developer App (one-time 5-minute setup)
-- First run: `gobble --twitter-login` triggers a PKCE OAuth flow, opens browser to Twitter auth page, captures callback on `localhost:7890`, stores `access_token` + `refresh_token` in `~/.config/filegoblin/credentials.json`
-- Subsequent runs: load token silently, auto-refresh if expired
-- Fallback: if no credentials, attempt existing guest-token flow with a warning
-- This unlocks Twitter API v2 with proper rate limits and reliable thread traversal
+**Recommended approach: Graceful degradation with optional OAuth**
+- **Default (no setup required):** Attempt existing guest-token flow as before
+- **On failure:** Instead of a cryptic error, surface a clear, actionable message:
+  ```
+  ⚠️  Twitter rate-limited or blocked the unauthenticated request.
+  💡  For reliable access, run: gobble --twitter-login
+      This takes ~2 minutes and stores credentials locally.
+  ```
+- **`--twitter-login`:** Triggers a one-time OAuth 2.0 PKCE flow — opens browser, captures callback on `localhost:7890`, stores `access_token` + `refresh_token` in `~/.config/filegoblin/credentials.json`
+- **Subsequent runs:** If credentials exist, use them silently (auto-refresh if expired). If not, fall back to guest-token and warn on failure.
 
-This is a medium complexity implementation — PKCE is well-understood. The `oauth2` crate handles the flow cleanly. No research needed, just implementation.
+This gives zero-friction for casual users while giving power users a reliable upgrade path. No research needed — `oauth2` crate handles the PKCE flow.
 
 #### Priority 3: YouTube Transcript Ingestion (Phase XIV)
 **Needs research first.** Research prompt generated at:
