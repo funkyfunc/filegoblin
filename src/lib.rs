@@ -25,6 +25,11 @@ pub fn gobble_app(
     flavor: &flavors::Flavor,
     args: &crate::cli::Cli,
 ) -> Result<()> {
+    if args.twitter_login {
+        crate::parsers::twitter::handle_twitter_login()?;
+        return Ok(());
+    }
+
     if targets.is_empty() {
         return Ok(());
     }
@@ -59,6 +64,28 @@ pub fn gobble_app(
                 }
                 if args.horde {
                     raw_pairs.extend(crate::parsers::crawler::crawl_web(&url, args)?);
+                } else if url.domain().map_or(false, |d| d.ends_with("github.com")) {
+                    if !args.quiet {
+                        eprintln!("{}", "🐙 Cloning GitHub repository for deep ingestion...".truecolor(0, 200, 255));
+                    }
+                    let temp_dir = std::env::temp_dir().join(format!("filegoblin_gh_{}", std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()));
+                    std::fs::create_dir_all(&temp_dir)?;
+                    if let Err(e) = parsers::github::clone_github_repo(target, &temp_dir) {
+                        let _ = std::fs::remove_dir_all(&temp_dir);
+                        anyhow::bail!("Failed to clone GitHub repo: {}", e);
+                    }
+                    let mut repo_args = args.clone();
+                    repo_args.horde = true; // Force horde mode for a repository clone
+                    match gobble_local(&temp_dir.to_string_lossy(), &repo_args) {
+                        Ok(local_pairs) => {
+                            raw_pairs.extend(local_pairs);
+                        }
+                        Err(e) => {
+                            let _ = std::fs::remove_dir_all(&temp_dir);
+                            anyhow::bail!("Failed to process cloned repo: {}", e);
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&temp_dir);
                 } else if url.domain().map_or(false, |d| d.ends_with("twitter.com") || d.ends_with("x.com")) {
                     if !args.quiet {
                         eprintln!("🐦 Diverting to TwitterGobbler for deep context extraction...");

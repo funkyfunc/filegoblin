@@ -153,7 +153,7 @@ mod tests {
         ];
         
         // At 150 tokens, it should completely drop the log and keep the source code via greedy sort
-        let (pruned, raw, kept) = enforce_budget(pairs, 150, false);
+        let (pruned, _raw, _kept) = enforce_budget(pairs, 150, false);
         assert_eq!(pruned.len(), 1);
         assert_eq!(pruned[0].0, "main.rs");
     }
