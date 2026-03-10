@@ -532,26 +532,30 @@ pub fn gobble_app(
         }
 
         if args.open {
-            let file_prefix = display_name
-                .replace("https://", "")
-                .replace("http://", "")
-                .replace("/", "_")
-                .replace("..", "")
-                .replace(":", "_")
-                .replace(" ", "_")
-                .replace("&", "and");
-            
-            // Write to the OS temporary directory to prevent accidental local file overwrites
-            let temp_dir = std::env::temp_dir();
-            let temp_file = temp_dir.join(format!("{}_gobbled.md", file_prefix));
-            
-            std::fs::write(&temp_file, &output)?;
-            
+            let file_to_open = if let Some(file_path) = args.write.as_deref() {
+                // --write was specified — open that file directly
+                std::path::PathBuf::from(file_path)
+            } else {
+                // No --write — write to a temp file and open that
+                let file_prefix = display_name
+                    .replace("https://", "")
+                    .replace("http://", "")
+                    .replace("/", "_")
+                    .replace("..", "")
+                    .replace(":", "_")
+                    .replace(" ", "_")
+                    .replace("&", "and");
+                let temp_dir = std::env::temp_dir();
+                let temp_file = temp_dir.join(format!("{}_gobbled.md", file_prefix));
+                std::fs::write(&temp_file, &output)?;
+                temp_file
+            };
+
             if !args.quiet {
-                eprintln!("{}", format!("🚪 Kicked open temporary file: {}", temp_file.display()).truecolor(0, 200, 255));
+                eprintln!("{}", format!("🚪 Kicked open: {}", file_to_open.display()).truecolor(0, 200, 255));
             }
-            if let Err(e) = open::that(&temp_file) {
-                 eprintln!("{} Failed to open temporary file: {}", "⚠️".yellow(), e);
+            if let Err(e) = open::that(&file_to_open) {
+                eprintln!("{} Failed to open file: {}", "⚠️".yellow(), e);
             }
         }
 

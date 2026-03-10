@@ -73,6 +73,45 @@ impl Gobble for WebGobbler {
     fn gobble_str(&self, content: &str, _flags: &crate::cli::Cli) -> Result<String> {
         let mut clean = content.to_string();
 
+        // --- Auth wall / JS-gated page detection ---
+        // Detect pages that require sign-in or JavaScript rendering before bothering to parse
+        let lower = clean.to_lowercase();
+        let is_google_signin = lower.contains("accounts.google.com") || 
+            (lower.contains("sign in") && (lower.contains("google") || lower.contains("gemini")));
+        let has_no_body_content = {
+            // Strip all tags and check if meaningful text remains
+            // Only flag if nearly empty AND has script tags (classic JS-only SPA/auth wall pattern)
+            let text_only: String = clean.chars()
+                .scan(false, |in_tag, c| {
+                    if c == '<' { *in_tag = true; }
+                    let emit = !*in_tag;
+                    if c == '>' { *in_tag = false; }
+                    Some(if emit { c } else { ' ' })
+                })
+                .collect::<String>();
+            let word_count = text_only.split_whitespace().count();
+            let has_scripts = lower.contains("<script");
+            // Must be nearly empty (<10 meaningful words) AND script-driven 
+            // to avoid false positives on minimal test HTML
+            word_count < 10 && has_scripts
+        };
+
+        if is_google_signin {
+            anyhow::bail!(
+                "This page requires a Google account sign-in (JavaScript auth wall).\n\
+                 filegoblin cannot access authenticated Google/Gemini content.\n\
+                 💡 Try: copy the content manually, save as a .md or .txt file, then: gobble <file>"
+            );
+        }
+
+        if has_no_body_content {
+            anyhow::bail!(
+                "This page appears to require JavaScript rendering or authentication.\n\
+                 filegoblin uses a static HTTP fetcher and cannot execute JavaScript.\n\
+                 💡 Try: save the page as HTML from your browser, then: gobble <saved-file.html>"
+            );
+        }
+
         if self.extract_full {
             // In full extraction, just remove scripts/styles that aren't content
             clean = self.strip_tags(clean, &["script", "style", "svg", "noscript", "iframe"]);
