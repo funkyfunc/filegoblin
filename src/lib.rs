@@ -86,6 +86,13 @@ pub fn gobble_app(
                         }
                     }
                     let _ = std::fs::remove_dir_all(&temp_dir);
+                } else if url.domain().map_or(false, |d| d.ends_with("youtube.com") || d.ends_with("youtu.be")) {
+                    if !args.quiet {
+                        eprintln!("▶️ Diverting to YouTubeGobbler to extract video transcripts...");
+                    }
+                    let youtube = parsers::youtube::YouTubeGobbler::new();
+                    let text = youtube.gobble_str(target, args)?;
+                    raw_pairs.push((target.to_string(), text));
                 } else if url.domain().map_or(false, |d| d.ends_with("twitter.com") || d.ends_with("x.com")) {
                     if !args.quiet {
                         eprintln!("🐦 Diverting to TwitterGobbler for deep context extraction...");
