@@ -1,58 +1,58 @@
-## Session Handoff: 2026-03-09 (Post v1.7.0)
+## Session Handoff: 2026-03-09 (Post v1.8.0)
 
 ### 1. What was just completed
-- **v1.7.0 Evaluation Feedback (previous session):**
-  - Gemini flavor fix, `--tokens` labels, `--tokens-only`, `--exclude`, `--depth`, `--manifest`, `--diff-format`, BM25 relevance scores, warning cleanup.
-  - Full doc update (README, task.md, ADR, HANDOFF).
-  - Tagged `v1.7.0`, pushed to `origin/main`.
-- **Shell Setup:**
-  - Added `fg-update` alias (rebuild + install + refresh zsh completions) and `zsh-add` helper to `~/.zshrc`.
-  - Added `alias gobble="filegoblin"`.
-- **Roadmap Planning:**
-  - Added Phase XIV (new ingestion sources) and Phase XV (wow-factor UX) to `docs/agent_context/task.md`.
-  - Wrote YouTube transcript research prompt (see below).
+- **GitHub URL Ingestion (Phase XIV):**
+  - Added `git2` crate. `src/parsers/github.rs` implements shallow clone (`depth=1`) to tempdir.
+  - Routed `github.com` URLs in `lib.rs` alongside existing `twitter.com` check.
+  - Private repos: reads `github_token` from `~/.config/filegoblin/credentials.json`.
+  - Tempdir cleaned up on exit (success or error).
+
+- **Twitter OAuth 2.0 PKCE (Phase XIV):**
+  - New `--twitter-login` CLI flag triggers one-time PKCE browser flow.
+  - Spawns `tiny_http` server on `127.0.0.1:7890` to capture callback code.
+  - Stores `access_token` + `refresh_token` + expiry in `~/.config/filegoblin/credentials.json`.
+  - Auto-refreshes expired tokens silently before each scrape.
+  - Falls back gracefully to legacy GraphQL guest-token flow if no credentials present.
+  - On guest-token failure: surfaces actionable UX warning pointing user to `--twitter-login`.
+  - Custom Client ID supported via `TWITTER_CLIENT_ID` env var.
+  - Authenticated path hits canonical `api.twitter.com/2/tweets` V2 endpoints.
+  - Note: X API requires Basic tier ($200/mo) or PPU model to read data. Free tier is write-only.
+
+- **Tagged `v1.8.0`** (not yet pushed).
 
 ### 2. Next Steps for the Next Machine
 
-#### Priority 1: GitHub URL Ingestion (Phase XIV)
-One-shot implementation. Pattern:
-- Detect `github.com` URL in `lib.rs` URL router (alongside existing `twitter.com` check)
-- Use `git2` crate to shallow-clone (`--depth 1`) to `std::env::temp_dir()`
-- Pass the tempdir path into existing `gobble_local()` horde pipeline
-- Clean up tempdir on exit
-- Private repos: check for `~/.config/filegoblin/credentials.json` and use stored token as `git2` credential callback
+#### Priority 1: YouTube Transcript Ingestion (Phase XIV)
+**Needs research first.** Research prompt at: `docs/agent_context/youtube_research_prompt.md`
 
-#### Priority 2: Twitter OAuth 2.0 Refactor (Phase XIV)
-**Current approach is fragile** — the guest-token + `ct0` CSRF cookie hack breaks when Twitter rotates tokens (silently, no warning).
+Key unknowns to resolve before implementation:
+- Stability of the unauthenticated `timedtext` / `get_transcript` endpoint
+- Whether a maintained Rust crate exists (or if `yt-dlp` subprocess is the best path)
+- Fallback strategy when auto-captions are unavailable
 
-**Recommended approach: Graceful degradation with optional OAuth**
-- **Default (no setup required):** Attempt existing guest-token flow as before
-- **On failure:** Instead of a cryptic error, surface a clear, actionable message:
-  ```
-  ⚠️  Twitter rate-limited or blocked the unauthenticated request.
-  💡  For reliable access, run: gobble --twitter-login
-      This takes ~2 minutes and stores credentials locally.
-  ```
-- **`--twitter-login`:** Triggers a one-time OAuth 2.0 PKCE flow — opens browser, captures callback on `localhost:7890`, stores `access_token` + `refresh_token` in `~/.config/filegoblin/credentials.json`
-- **Subsequent runs:** If credentials exist, use them silently (auto-refresh if expired). If not, fall back to guest-token and warn on failure.
+Hand to a research agent first, then implement.
 
-This gives zero-friction for casual users while giving power users a reliable upgrade path. No research needed — `oauth2` crate handles the PKCE flow.
+#### Priority 2: Google OAuth 2.0 (Phase XIV)
+**Needs research first.** Research prompt at: `docs/agent_context/google_oauth_research_prompt.md`
 
-> 📝 **Research first** — X rebranded from Twitter mid-2023 and restructured API tiers significantly. Training data may be stale on current endpoint URLs, OAuth scopes, and free-tier limits. Research prompt generated at: `docs/agent_context/twitter_oauth_research_prompt.md`
+Pattern will closely mirror the Twitter PKCE flow:
+- New `--google-login` flag using `oauth2` crate (same PKCE/tiny_http pattern)
+- Scopes: `drive.readonly` + `docs.readonly` (minimum for reading Docs/Drive files)
+- Callback on `127.0.0.1:7890/callback` (same port, reuse same pattern)
+- Store credentials in existing `~/.config/filegoblin/credentials.json` under `google_token`
+- Then wire up `drive.google.com` and `docs.google.com` URLs in the `lib.rs` router
 
-#### Priority 3: YouTube Transcript Ingestion (Phase XIV)
-**Needs research first.** Research prompt generated at:
-`docs/agent_context/youtube_research_prompt.md`
-
-Hand this to a research agent before implementing. Key unknowns: stability of unauthenticated `timedtext` endpoint, whether a maintained Rust crate exists, and fallback strategy.
-
-#### Priority 4: Jupyter Notebook Gobbler (Phase XIV)
-One-shot. `.ipynb` is plain JSON. Parse `cells[]` array, emit by `cell_type`: markdown cells as-is, code cells in fenced blocks, output cells as blockquotes.
+#### Priority 3: Jupyter Notebook Gobbler (Phase XIV)
+One-shot. `.ipynb` is plain JSON. Parse `cells[]` array, emit by `cell_type`:
+- `markdown` → emit as-is
+- `code` → fenced code block with language hint from kernel
+- `outputs` → blockquote (stdout/result) or skip (images)
 
 #### Other Phase XIV/XV items
-See `docs/agent_context/task.md` — all Phase XIV items (SQLite, Slack/Discord, `--cost`, `--summary`, `--watch`) are one-shot implementations requiring no research.
+See `docs/agent_context/task.md` — SQLite, Slack/Discord, `--cost`, `--summary`, `--watch` are all one-shot, no research needed.
 
 ### 3. Current State
-- `cargo test` passes (21/21, 0 warnings) on `v1.7.0`
+- `cargo check` passes cleanly on `v1.8.0` (2 minor dead-code warnings, non-blocking)
+- Tagged `v1.8.0` locally — run `git push && git push --tags` to publish
 - `gobble` alias + `fg-update` + `zsh-add` active in `~/.zshrc`
 - Shell completions at `~/.zfunc/_filegoblin`
