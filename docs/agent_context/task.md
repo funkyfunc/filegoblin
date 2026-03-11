@@ -132,3 +132,8 @@
 - [x] `--cost` flag — estimate API cost per model (lookup table of price/M tokens for GPT-4o, Claude, Gemini etc.)
 - [x] `--summary` flag — heuristic context preamble (scan manifest files, count module types, grab README intro)
 - [x] `--watch` mode — filesystem watcher that auto-regenerates output on save (`notify` crate)
+
+## Phase 15.5: Security & Privacy Hardening
+- [x] Restricted `credentials.json` initialization to `0600` permissions on Unix platforms
+- [x] Implemented a `tempfile` safe cleanup wrapper for github clone dirs
+- [x] Implemented explicit hardcoded traversal skipping for secret files (`.env`, `.pem`, `.aws/credentials`, etc.)

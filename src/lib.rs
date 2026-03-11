@@ -94,27 +94,20 @@ pub fn gobble_app(
                                 .truecolor(0, 200, 255)
                         );
                     }
-                    let temp_dir = std::env::temp_dir().join(format!(
-                        "filegoblin_gh_{}",
-                        std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
-                    ));
-                    std::fs::create_dir_all(&temp_dir)?;
-                    if let Err(e) = parsers::github::clone_github_repo(target, &temp_dir) {
-                        let _ = std::fs::remove_dir_all(&temp_dir);
+                    let temp_dir = tempfile::tempdir()?;
+                    if let Err(e) = parsers::github::clone_github_repo(target, temp_dir.path()) {
                         anyhow::bail!("Failed to clone GitHub repo: {}", e);
                     }
                     let mut repo_args = args.clone();
                     repo_args.horde = true; // Force horde mode for a repository clone
-                    match gobble_local(&temp_dir.to_string_lossy(), &repo_args) {
+                    match gobble_local(&temp_dir.path().to_string_lossy(), &repo_args) {
                         Ok(local_pairs) => {
                             raw_pairs.extend(local_pairs);
                         }
                         Err(e) => {
-                            let _ = std::fs::remove_dir_all(&temp_dir);
                             anyhow::bail!("Failed to process cloned repo: {}", e);
                         }
                     }
-                    let _ = std::fs::remove_dir_all(&temp_dir);
                 } else if url.domain().is_some_and(|d| {
                     d.ends_with("youtube.com") || d.ends_with("youtu.be")
                 }) {
@@ -952,6 +945,28 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
     files.push(("_tree.md".to_string(), tree_out));
 
     // Process all collected files
+    
+    // HARDCODED Security & Privacy Exclusion
+    let mut skipped = 0;
+    files_to_process.retain(|p| {
+        let name = p.file_name().unwrap_or_default().to_string_lossy();
+        let path_str = p.to_string_lossy();
+        let is_radioactive = matches!(
+            name.as_ref(),
+            ".env" | ".env.local" | ".env.development" | ".env.test" | ".env.production" | "id_rsa" | "id_ed25519" | "credentials.json"
+        ) || name.ends_with(".pem") || path_str.contains(".aws/credentials") || path_str.contains(".ssh/");
+        
+        if is_radioactive {
+            skipped += 1;
+        }
+        
+        !is_radioactive
+    });
+
+    if skipped > 0 && !args.quiet {
+        use colored::Colorize;
+        eprintln!("{}", format!("🛡️ SKIPPED {} RADIOACTIVE FILE(S)", skipped).truecolor(255, 0, 0));
+    }
     // Apply --include glob filtering if specified
     if !args.include.is_empty() {
         let before_count = files_to_process.len();
@@ -1241,7 +1256,7 @@ mod tests {
         let html_content = fetch_url(&parsed_url, true).unwrap();
         assert!(html_content.contains("Goblin network testing!"));
 
-        let args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let args = crate::cli::Cli::parse_from(["filegoblin"]);
         let parsed_content = crate::parsers::web::WebGobbler {
             extract_full: false,
         }
@@ -1255,7 +1270,7 @@ mod tests {
         // Fallback for an unknown extension (.xyz)
         let test_file = "dummy.xyz";
         std::fs::write(test_file, "Plaintext fallback text").unwrap();
-        let args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let args = crate::cli::Cli::parse_from(["filegoblin"]);
         let res = route_and_gobble(test_file, &args).unwrap();
         assert_eq!(res, "Plaintext fallback text");
         std::fs::remove_file(test_file).ok();

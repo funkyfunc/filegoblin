@@ -1,19 +1,15 @@
-## Session Handoff: 2026-03-10 (Post v1.8.1 Feature Branch)
+## Session Handoff: 2026-03-10 (Post Phase 15.5)
 
 ### 1. What was just completed
 
-- **Wow-Factor UX Features (Phase XV):**
-  - **`--cost` flag**: Added a static lookup table in `src/cost.rs` to estimate API costs in USD across 6 major models (GPT-4o, Claude 3.5, Gemini 1.5 Pro, etc.). The costs are automatically calculated and appended to the existing output summary table.
-  - **`--summary` flag**: Implemented a heuristic preamble generator in `src/lib.rs`. It scans ingested files for a `README.md`, extracts the first non-blank paragraph, counts file extensions, and prepends a nice markdown summary block before any context dumping.
-  - **`--watch` mode (`-W`)**: Replaced the previous single-shot execution with a file system watcher using the `notify` crate. Modifying, creating, or removing a file in the target directory triggers a 500ms debounced re-execution of `gobble_app()`, which is incredibly useful when dumping directly to an `--write context.md` file while developing.
-
-- **Maintenance:**
-  - `README.md` was updated (globally renaming `fg` to `filegoblin` per user request) and explicitly listed the new Phase 15 commands in the Quick Start sections.
-  - Handled Git Tag increments and finalized the current codebase state.
+- **Security & Privacy Hardening (Phase 15.5):**
+  - **Credential Storage Security**: `credentials.json` now explicitly demands `-rw-------` (`0600`) permissions using `std::os::unix::fs::PermissionsExt` so malicious host-machine tenants cannot read users' API tokens or session cookies.
+  - **Radioactive Exclusions**: `gobble_local` directory traversal now strictly guards against common secrets files, bypassing them natively. It skips `.env`, `.pem`, `id_rsa`, `.aws/credentials`, and others even if they explicitly match a user pass-through `--include` flag!
+  - **GitHub Clone Memory Safety**: Converted the Github cloning logic to strictly utilize `tempfile::tempdir()`, implementing Drop bindings. This guarantees cleanup of remote repository folders even if a user panics or sends a `SIGINT` (Ctrl+C).
 
 ### 2. State & Issues
-- All new features implemented successfully. The binary builds warning-free with `cargo horde-check`.
-- **Note on Watch Mode**: It writes cleanly to file endpoints. If used writing to standard out, it will clear the terminal via ANSI escape sequences before re-printing the payload to avoid infinite scrolling. This was intentional UX for folks using `fg . -W` to monitor project size.
+- The binary builds warning-free with `cargo horde-check` after applying significant deep `rust-clippy` transformations over `src/parsers/twitter.rs`.
+- We applied the tag bump for `v1.8.3` to `Cargo.toml`.
 
 ### 3. Next Steps for the Next Machine
 
