@@ -2,8 +2,8 @@ use anyhow::Result;
 use clap::Parser;
 use colored::*;
 use filegoblin::{flavors::Flavor, gobble_app};
-use std::str::FromStr;
 use std::io::IsTerminal;
+use std::str::FromStr;
 
 fn print_mascot() {
     use std::{thread, time::Duration};
@@ -75,14 +75,20 @@ fn main() -> Result<()> {
 
     // 3. Prevent running with no targets
     if targets.is_empty() && !args.interactive {
-        eprintln!("{} Error: No target path provided and no stdin stream detected.", "❌".red());
+        eprintln!(
+            "{} Error: No target path provided and no stdin stream detected.",
+            "❌".red()
+        );
         eprintln!("Usage: fg <target>  --OR--  cat <file> | fg");
         std::process::exit(1);
     }
 
     if args.interactive {
         if targets.contains(&"-".to_string()) {
-            eprintln!("{} Error: Cannot run the Interactive TUI (-i) while piping stdin data.", "❌".red());
+            eprintln!(
+                "{} Error: Cannot run the Interactive TUI (-i) while piping stdin data.",
+                "❌".red()
+            );
             std::process::exit(1);
         }
         // TUI Mode hijacks the execution
@@ -94,11 +100,7 @@ fn main() -> Result<()> {
 
             let targets: Vec<String> = selected_targets;
 
-            gobble_app(
-                &targets,
-                &parsed_flavor,
-                &args,
-            )?;
+            gobble_app(&targets, &parsed_flavor, &args)?;
         }
         return Ok(());
     }
@@ -107,11 +109,80 @@ fn main() -> Result<()> {
         print_mascot();
     }
 
-    gobble_app(
-        &targets,
-        &parsed_flavor,
-        &args,
-    )?;
+    gobble_app(&targets, &parsed_flavor, &args)?;
+
+    if args.watch {
+        use notify::{EventKind, RecursiveMode, Watcher};
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        if !args.quiet {
+            eprintln!(
+                "\n{}",
+                "👀 Watch mode active. Monitoring targets for changes..."
+                    .truecolor(255, 191, 0)
+                    .bold()
+            );
+        }
+
+        let (tx, rx) = channel();
+
+        // Use RecommendedWatcher
+        let mut watcher = notify::RecommendedWatcher::new(tx, notify::Config::default())?;
+
+        // Add all targets to the watcher
+        for target in &targets {
+            let path = std::path::Path::new(target);
+            if path.exists() {
+                let _ = watcher.watch(path, RecursiveMode::Recursive);
+            }
+        }
+
+        let mut last_run = std::time::Instant::now();
+        let debounce_duration = Duration::from_millis(500); // 500ms debounce
+
+        loop {
+            match rx.recv() {
+                Ok(Ok(event)) => {
+                    // Only react to actual modifications or creates
+                    match event.kind {
+                        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
+                            if last_run.elapsed() >= debounce_duration {
+                                if !args.quiet {
+                                    // Clear screen
+                                    print!("\x1B[2J\x1B[1;1H");
+                                    eprintln!(
+                                        "{}",
+                                        format!(
+                                            "🔄 File changed: {:?}. Regenerating...",
+                                            event
+                                                .paths
+                                                .first()
+                                                .unwrap_or(&std::path::PathBuf::new())
+                                        )
+                                        .truecolor(0, 200, 255)
+                                    );
+                                }
+                                if let Err(e) = gobble_app(&targets, &parsed_flavor, &args) {
+                                    eprintln!("{} Watch regeneration failed: {}", "⚠️".yellow(), e);
+                                }
+                                last_run = std::time::Instant::now();
+                                if !args.quiet {
+                                    eprintln!(
+                                        "\n{}",
+                                        "👀 Watching for changes...".truecolor(255, 191, 0).bold()
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Err(e)) => eprintln!("{} Watch error: {:?}", "⚠️".red(), e),
+                Err(_) => break, // Channel closed
+            }
+        }
+    }
 
     Ok(())
 }

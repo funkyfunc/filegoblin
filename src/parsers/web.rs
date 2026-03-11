@@ -76,22 +76,28 @@ impl Gobble for WebGobbler {
         // --- Auth wall / JS-gated page detection ---
         // Detect pages that require sign-in or JavaScript rendering before bothering to parse
         let lower = clean.to_lowercase();
-        let is_google_signin = lower.contains("accounts.google.com") || 
-            (lower.contains("sign in") && (lower.contains("google") || lower.contains("gemini")));
+        let is_google_signin = lower.contains("accounts.google.com")
+            || (lower.contains("sign in")
+                && (lower.contains("google") || lower.contains("gemini")));
         let has_no_body_content = {
             // Strip all tags and check if meaningful text remains
             // Only flag if nearly empty AND has script tags (classic JS-only SPA/auth wall pattern)
-            let text_only: String = clean.chars()
+            let text_only: String = clean
+                .chars()
                 .scan(false, |in_tag, c| {
-                    if c == '<' { *in_tag = true; }
+                    if c == '<' {
+                        *in_tag = true;
+                    }
                     let emit = !*in_tag;
-                    if c == '>' { *in_tag = false; }
+                    if c == '>' {
+                        *in_tag = false;
+                    }
                     Some(if emit { c } else { ' ' })
                 })
                 .collect::<String>();
             let word_count = text_only.split_whitespace().count();
             let has_scripts = lower.contains("<script");
-            // Must be nearly empty (<10 meaningful words) AND script-driven 
+            // Must be nearly empty (<10 meaningful words) AND script-driven
             // to avoid false positives on minimal test HTML
             word_count < 10 && has_scripts
         };
@@ -167,7 +173,7 @@ mod tests {
             </body></html>
         "#;
 
-        let args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let args = crate::cli::Cli::parse_from(["filegoblin"]);
         let result = gobbler.gobble_str(html, &args).unwrap();
 
         // Assert we stripped navigation and kept main article

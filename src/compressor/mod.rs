@@ -3,8 +3,8 @@ pub mod level1;
 pub mod level2;
 pub mod level3;
 
-use std::borrow::Cow;
 use crate::cli::CompressionLevel;
+use std::borrow::Cow;
 
 pub trait TokenTransformer {
     /// Applies the transformation to a markdown string segment
@@ -26,7 +26,7 @@ impl CompressionPipeline {
         if *level == CompressionLevel::Contextual || *level == CompressionLevel::Aggressive {
             // Level 2
             if let Some(lang) = language {
-               transformers.push(Box::new(level2::CommentStripper::new(lang)));
+                transformers.push(Box::new(level2::CommentStripper::new(lang)));
             }
             transformers.push(Box::new(level2::Minifier));
         }

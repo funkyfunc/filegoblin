@@ -45,7 +45,7 @@ mod tests {
     fn test_pdf_sequence_of_records() {
         let gobbler = PdfGobbler;
         let p = Path::new("dummy.pdf");
-        let args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let args = crate::cli::Cli::parse_from(["filegoblin"]);
         let result = gobbler.gobble(p, &args).unwrap();
 
         // Assert mandatory "Sequence of Records" structure (PRD 3.2)

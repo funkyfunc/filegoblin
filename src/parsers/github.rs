@@ -1,7 +1,7 @@
-use std::path::Path;
 use anyhow::{Context, Result};
 use git2::build::RepoBuilder;
 use git2::{FetchOptions, RemoteCallbacks};
+use std::path::Path;
 
 pub fn clone_github_repo(url: &str, out_path: &Path) -> Result<()> {
     let mut cb = RemoteCallbacks::new();
@@ -38,7 +38,9 @@ pub fn clone_github_repo(url: &str, out_path: &Path) -> Result<()> {
     let mut builder = RepoBuilder::new();
     builder.fetch_options(fo);
 
-    builder.clone(url, out_path).context("Failed to clone GitHub repository")?;
+    builder
+        .clone(url, out_path)
+        .context("Failed to clone GitHub repository")?;
 
     Ok(())
 }

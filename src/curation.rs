@@ -1,9 +1,9 @@
 use anyhow::Result;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Schema, TEXT, STORED};
-use tantivy::{doc, Index};
 use tantivy::schema::document::Value;
+use tantivy::schema::{STORED, Schema, TEXT};
+use tantivy::{Index, doc};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum RelevanceRank {
@@ -19,7 +19,12 @@ fn score_file(path: &str) -> RelevanceRank {
         RelevanceRank::Trivial
     } else if lower.ends_with(".json") || lower.ends_with(".csv") || lower.ends_with(".lock") {
         RelevanceRank::Low
-    } else if lower.ends_with(".md") || lower.ends_with(".txt") || lower.ends_with(".toml") || lower.ends_with(".yaml") || lower.ends_with(".yml") {
+    } else if lower.ends_with(".md")
+        || lower.ends_with(".txt")
+        || lower.ends_with(".toml")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+    {
         RelevanceRank::Medium
     } else {
         // Default to high priority for presumed source code/interfaces
@@ -28,14 +33,21 @@ fn score_file(path: &str) -> RelevanceRank {
 }
 
 /// Enforces a strict maximum token budget on a list of file pairs using Heuristic Auto-Pruning.
-pub fn enforce_budget(mut pairs: Vec<(String, String)>, budget: usize, _verbose: bool) -> (Vec<(String, String)>, usize, usize) {
+pub fn enforce_budget(
+    mut pairs: Vec<(String, String)>,
+    budget: usize,
+    _verbose: bool,
+) -> (Vec<(String, String)>, usize, usize) {
     // 1. Calculate the initial footprint
-    let total_tokens: usize = pairs.iter().map(|(p, c)| crate::compressor::heuristic::estimate_tokens(c, p)).sum();
-    
+    let total_tokens: usize = pairs
+        .iter()
+        .map(|(p, c)| crate::compressor::heuristic::estimate_tokens(c, p))
+        .sum();
+
     if total_tokens <= budget {
         return (pairs, total_tokens, total_tokens);
     }
-    
+
     // Sort files by relevance (asc), then by token size (desc - largest first to greedly reclaim space if stuck in same rank)
     pairs.sort_by(|a, b| {
         let rank_a = score_file(&a.0);
@@ -53,28 +65,32 @@ pub fn enforce_budget(mut pairs: Vec<(String, String)>, budget: usize, _verbose:
 
     let mut kept = Vec::new();
     let mut kept_budget = 0;
-    
+
     // Keep adding the highest ranked items until budget breaks
     // (Notice we iterate backwards over our sorted list to grab High -> Medium -> Low)
     for (path, content) in pairs.into_iter().rev() {
-         let cost = crate::compressor::heuristic::estimate_tokens(&content, &path);
-         if kept_budget + cost <= budget {
-             kept.push((path, content));
-             kept_budget += cost;
-         } else {
-             // Fallback: Rather than totally dropping a High priority file, attempt 'Skeletonization'
-             if score_file(&path) == RelevanceRank::High {
-                 let fallback = crate::compressor::CompressionPipeline::new(&crate::cli::CompressionLevel::Contextual, Some(&path)).process(&content);
-                 let shrink_cost = crate::compressor::heuristic::estimate_tokens(&fallback, &path);
-                 if kept_budget + shrink_cost <= budget {
-                     kept.push((path, fallback));
-                     kept_budget += shrink_cost;
-                     continue; 
-                 }
-             }
-             
-             // If skeletonization failed or we are looking at low priority data, we MUST drop the file
-         }
+        let cost = crate::compressor::heuristic::estimate_tokens(&content, &path);
+        if kept_budget + cost <= budget {
+            kept.push((path, content));
+            kept_budget += cost;
+        } else {
+            // Fallback: Rather than totally dropping a High priority file, attempt 'Skeletonization'
+            if score_file(&path) == RelevanceRank::High {
+                let fallback = crate::compressor::CompressionPipeline::new(
+                    &crate::cli::CompressionLevel::Contextual,
+                    Some(&path),
+                )
+                .process(&content);
+                let shrink_cost = crate::compressor::heuristic::estimate_tokens(&fallback, &path);
+                if kept_budget + shrink_cost <= budget {
+                    kept.push((path, fallback));
+                    kept_budget += shrink_cost;
+                    continue;
+                }
+            }
+
+            // If skeletonization failed or we are looking at low priority data, we MUST drop the file
+        }
     }
 
     // Re-sort alphabetically for deterministic output
@@ -83,7 +99,11 @@ pub fn enforce_budget(mut pairs: Vec<(String, String)>, budget: usize, _verbose:
 }
 
 /// Creates a highly ephemeral BM25 reversed index in memory to execute a pure-Rust "RAG-lite" search over collected strings
-pub fn semantic_search(pairs: Vec<(String, String)>, query: &str, top_k: usize) -> Result<Vec<(f32, String, String)>> {
+pub fn semantic_search(
+    pairs: Vec<(String, String)>,
+    query: &str,
+    top_k: usize,
+) -> Result<Vec<(f32, String, String)>> {
     let mut schema_builder = Schema::builder();
     let path_field = schema_builder.add_text_field("path", TEXT | STORED);
     let body_field = schema_builder.add_text_field("body", TEXT | STORED);
@@ -103,7 +123,7 @@ pub fn semantic_search(pairs: Vec<(String, String)>, query: &str, top_k: usize) 
     let reader = index.reader()?;
     let searcher = reader.searcher();
     let query_parser = QueryParser::for_index(&index, vec![body_field, path_field]);
-    
+
     let parsed_query = query_parser.parse_query(query)?;
     let top_docs = searcher.search(&parsed_query, &TopDocs::with_limit(top_k))?;
 
@@ -119,14 +139,14 @@ pub fn semantic_search(pairs: Vec<(String, String)>, query: &str, top_k: usize) 
                 }
             }
             if field_value.field == body_field {
-                 if let Some(text) = (&field_value.value).as_str() {
+                if let Some(text) = (&field_value.value).as_str() {
                     b = text.to_string();
                 }
             }
         }
         results.push((score, p, b));
     }
-    
+
     // Sort by score descending (most relevant first)
     results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -148,10 +168,10 @@ mod tests {
     #[test]
     fn test_enforce_budget_pruning() {
         let pairs = vec![
-            ("app.log".to_string(), "a ".repeat(500)), // 500 tokens
+            ("app.log".to_string(), "a ".repeat(500)),  // 500 tokens
             ("main.rs".to_string(), "fn ".repeat(100)), // 100 tokens
         ];
-        
+
         // At 150 tokens, it should completely drop the log and keep the source code via greedy sort
         let (pruned, _raw, _kept) = enforce_budget(pairs, 150, false);
         assert_eq!(pruned.len(), 1);
@@ -163,7 +183,10 @@ mod tests {
         let pairs = vec![
             ("main.rs".to_string(), "pub fn connect_db() {}".to_string()),
             ("utils.rs".to_string(), "pub fn parse_date() {}".to_string()),
-            ("crawler.rs".to_string(), "pub fn fetch_url() {}".to_string()),
+            (
+                "crawler.rs".to_string(),
+                "pub fn fetch_url() {}".to_string(),
+            ),
         ];
 
         let results = semantic_search(pairs, "connect", 1).unwrap();

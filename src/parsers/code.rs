@@ -80,7 +80,8 @@ impl Gobble for CodeGobbler {
                                                     .find(|c| c.kind() == "block")
                                                     .map(|block| block.start_byte())
                                                     .unwrap_or(method.end_byte());
-                                                let method_sig = &source_code[method.start_byte()..method_sig_end];
+                                                let method_sig = &source_code
+                                                    [method.start_byte()..method_sig_end];
                                                 symbols.push(format!("  {}", method_sig.trim()));
                                             }
                                         }

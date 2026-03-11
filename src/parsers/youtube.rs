@@ -6,6 +6,12 @@ use std::path::Path;
 
 pub struct YouTubeGobbler;
 
+impl Default for YouTubeGobbler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl YouTubeGobbler {
     pub fn new() -> Self {
         Self
@@ -17,7 +23,7 @@ impl YouTubeGobbler {
         // https://youtu.be/VIDEO_ID
         // https://www.youtube.com/shorts/VIDEO_ID
         let url_obj = url::Url::parse(url).context("Failed to parse YouTube URL")?;
-        
+
         if let Some(domain) = url_obj.domain() {
             if domain.ends_with("youtu.be") {
                 if let Some(id) = url_obj.path_segments().and_then(|mut s| s.next()) {
@@ -37,7 +43,7 @@ impl YouTubeGobbler {
                 }
             }
         }
-        
+
         anyhow::bail!("Could not extract video ID from YouTube URL: {}", url)
     }
 
@@ -53,7 +59,8 @@ impl YouTubeGobbler {
             "videoId": video_id
         });
 
-        client.post(url)
+        client
+            .post(url)
             .json(&body)
             .send()
             .context("Failed to connect to YouTube InnerTube API")?
@@ -61,14 +68,18 @@ impl YouTubeGobbler {
             .context("Failed to parse player response JSON")
     }
 
-    fn select_best_track<'a>(&self, tracks: &'a Vec<Value>, preferred_lang: Option<&str>) -> Result<&'a Value> {
+    fn select_best_track<'a>(
+        &self,
+        tracks: &'a Vec<Value>,
+        preferred_lang: Option<&str>,
+    ) -> Result<&'a Value> {
         // Priority:
         // 1. Manual English ("en")
         // 2. Manual requested language (if preferred_lang is some)
         // 3. Auto English ("a.en")
         // 4. Auto requested language
         // 5. First available fallback
-        
+
         let mut manual_en = None;
         let mut manual_pref = None;
         let mut auto_en = None;
@@ -85,7 +96,7 @@ impl YouTubeGobbler {
                         auto_pref = Some(track);
                     }
                 }
-                
+
                 if vss_id == "a.en" {
                     auto_en = Some(track);
                 }
@@ -104,8 +115,10 @@ impl YouTubeGobbler {
         if let Some(track) = auto_pref {
             return Ok(track);
         }
-        
-        tracks.first().context("No tracks found even though array was non-empty")
+
+        tracks
+            .first()
+            .context("No tracks found even though array was non-empty")
     }
 
     fn parse_transcript_xml(&self, xml: &str) -> Result<String> {
@@ -152,7 +165,13 @@ impl YouTubeGobbler {
                     transcript.push_str(&cleaned);
                 }
                 Ok(Event::Eof) => break,
-                Err(e) => return Err(anyhow::anyhow!("Error at position {}: {:?}", reader.buffer_position(), e)),
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "Error at position {}: {:?}",
+                        reader.buffer_position(),
+                        e
+                    ));
+                }
                 _ => (),
             }
             buf.clear();
@@ -166,9 +185,11 @@ impl YouTubeGobbler {
             .args([
                 "--write-auto-sub",
                 "--skip-download",
-                "--sub-format", "srt",
-                "--output", "-",
-                video_url
+                "--sub-format",
+                "srt",
+                "--output",
+                "-",
+                video_url,
             ])
             .output()
             .context("Failed to execute yt-dlp. Is it installed in PATH?")?;
@@ -178,13 +199,17 @@ impl YouTubeGobbler {
             anyhow::bail!("yt-dlp failed: {}", err);
         }
 
-        let srt_content = String::from_utf8(output.stdout).context("yt-dlp output was not valid UTF-8")?;
-        
+        let srt_content =
+            String::from_utf8(output.stdout).context("yt-dlp output was not valid UTF-8")?;
+
         // Simple SRT to text conversion: strip timestamps and index lines
         let mut transcript = String::new();
         for line in srt_content.lines() {
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.chars().all(|c| c.is_ascii_digit()) || trimmed.contains("-->") {
+            if trimmed.is_empty()
+                || trimmed.chars().all(|c| c.is_ascii_digit())
+                || trimmed.contains("-->")
+            {
                 continue;
             }
             // Filter some VTT-like tags
@@ -203,21 +228,33 @@ impl Gobble for YouTubeGobbler {
     }
 
     fn gobble_str(&self, url: &str, flags: &crate::cli::Cli) -> Result<String> {
-        let client = Client::builder()
-            .use_rustls_tls()
-            .build()?;
+        let client = Client::builder().use_rustls_tls().build()?;
 
         let video_id = self.extract_id(url)?;
         let response = self.get_player_response(&client, &video_id)?;
 
-        let playability = response["playabilityStatus"]["status"].as_str().unwrap_or("OK");
+        let playability = response["playabilityStatus"]["status"]
+            .as_str()
+            .unwrap_or("OK");
         if playability != "OK" {
-            anyhow::bail!("Video not playable (requires login or unavailable): {}", playability);
+            anyhow::bail!(
+                "Video not playable (requires login or unavailable): {}",
+                playability
+            );
         }
 
-        let title = response["videoDetails"]["title"].as_str().unwrap_or("Unknown Title").to_string();
-        let author = response["videoDetails"]["author"].as_str().unwrap_or("Unknown Author").to_string();
-        let duration = response["videoDetails"]["lengthSeconds"].as_str().unwrap_or("Unknown Duration").to_string();
+        let title = response["videoDetails"]["title"]
+            .as_str()
+            .unwrap_or("Unknown Title")
+            .to_string();
+        let author = response["videoDetails"]["author"]
+            .as_str()
+            .unwrap_or("Unknown Author")
+            .to_string();
+        let duration = response["videoDetails"]["lengthSeconds"]
+            .as_str()
+            .unwrap_or("Unknown Duration")
+            .to_string();
 
         let captions = response["captions"]["playerCaptionsTracklistRenderer"]["captionTracks"]
             .as_array()
@@ -226,32 +263,40 @@ impl Gobble for YouTubeGobbler {
 
         let transcript_content = if captions.is_empty() {
             // Attempt yt-dlp fallback if we get empty captions but playability is OK
-            self.attempt_yt_dlp_fallback(url)
-                .map_err(|e| anyhow::anyhow!("No native transcripts found and fallback failed: {}", e))?
+            self.attempt_yt_dlp_fallback(url).map_err(|e| {
+                anyhow::anyhow!("No native transcripts found and fallback failed: {}", e)
+            })?
         } else {
             let best_track = self.select_best_track(&captions, flags.lang.as_deref())?;
-            let base_url = best_track["baseUrl"].as_str()
+            let base_url = best_track["baseUrl"]
+                .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing baseUrl in caption track"))?
                 .to_string();
 
-            let mut parsed_url = url::Url::parse(&base_url).map_err(|e| anyhow::anyhow!("Invalid baseUrl: {}", e))?;
-            let mut query_pairs: Vec<(String, String)> = parsed_url.query_pairs().into_owned().collect();
+            let mut parsed_url = url::Url::parse(&base_url)
+                .map_err(|e| anyhow::anyhow!("Invalid baseUrl: {}", e))?;
+            let mut query_pairs: Vec<(String, String)> =
+                parsed_url.query_pairs().into_owned().collect();
             query_pairs.retain(|(k, _)| k != "fmt");
             query_pairs.push(("fmt".to_string(), "srv1".to_string()));
-            
+
             // Server-side translation
             if let Some(lang) = &flags.lang {
-                if best_track["vssId"].as_str().unwrap_or("") != format!(".{}", lang) &&
-                   best_track["vssId"].as_str().unwrap_or("") != format!("a.{}", lang) {
-                     query_pairs.push(("tlang".to_string(), lang.clone()));
+                if best_track["vssId"].as_str().unwrap_or("") != format!(".{}", lang)
+                    && best_track["vssId"].as_str().unwrap_or("") != format!("a.{}", lang)
+                {
+                    query_pairs.push(("tlang".to_string(), lang.clone()));
                 }
             }
-            
-            parsed_url.query_pairs_mut().clear().extend_pairs(query_pairs);
+
+            parsed_url
+                .query_pairs_mut()
+                .clear()
+                .extend_pairs(query_pairs);
             let fetch_url = parsed_url.to_string();
 
             let xml_resp = client.get(&fetch_url).send()?.text()?;
-            
+
             if xml_resp.trim().is_empty() {
                 // Potentially blocked by POT - fallback to yt-dlp
                 self.attempt_yt_dlp_fallback(url)

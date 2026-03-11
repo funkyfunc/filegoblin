@@ -62,6 +62,8 @@
 - [x] PII Redaction (`--scrub`)
 - [x] Output Splitting (`--split`), Chunking (`--chunk`), JSON (`--json`)
 - [x] Clipboard Ingestion (`--clipboard`), Clipboard Output (`--copy`), OS Open (`--open`), File Write (`--write`)
+- [x] Heuristic Project Summaries (`--summary`) & LLM Core API Cost Estimation (`--cost`)
+- [x] Live Auto-Regeneration Watch Mode (`--watch`)
 - [x] Interactive Terminal Dashboard (`-i`) with ratatui
 - [x] Pipeline-Safe Streams (`-q` for clean stdout)
 - [x] WASM Plugin Extensibility (`--plugin`)
@@ -161,6 +163,15 @@ filegoblin --google-login
 # Ingest Google Docs/Drive items or Gemini share links directly
 filegoblin https://docs.google.com/document/d/1X...
 filegoblin https://gemini.google.com/share/...
+```
+
+**Development & Intelligence:**
+```bash
+# Get a heuristic overview of the project and estimate LLM API ingest costs
+filegoblin ./src/ --summary --cost --tokens
+
+# Watch mode: continuously monitor files and dump fresh context to output file on save
+filegoblin ./src/ --write context.md --watch
 ```
 
 **Filtering & Exclusion:**

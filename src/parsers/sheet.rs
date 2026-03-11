@@ -1,13 +1,14 @@
 use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
+use calamine::{Data, Reader, open_workbook_auto};
 use std::path::Path;
-use calamine::{Reader, open_workbook_auto, Data};
 
 pub struct SheetGobbler;
 
 impl Gobble for SheetGobbler {
     fn gobble(&self, path: &std::path::Path, _flags: &crate::cli::Cli) -> Result<String> {
-        let extension = path.extension()
+        let extension = path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
@@ -28,13 +29,16 @@ impl SheetGobbler {
             .context("Failed to open CSV file")?;
 
         let mut output = String::new();
-        output.push_str(&format!("## Dataset: {}\n\n", path.file_name().unwrap_or_default().to_string_lossy()));
+        output.push_str(&format!(
+            "## Dataset: {}\n\n",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
 
         let mut row_idx = 1;
         for result in rdr.records() {
             let record = result?;
             output.push_str(&format!("Row {}: ", row_idx));
-            
+
             let mut col_parts = Vec::new();
             for (col_idx, field) in record.iter().enumerate() {
                 if !field.trim().is_empty() {
@@ -56,11 +60,11 @@ impl SheetGobbler {
         let sheet_names = workbook.sheet_names().to_owned();
 
         let mut output = String::new();
-        
+
         for sheet_name in sheet_names {
             if let Ok(range) = workbook.worksheet_range(&sheet_name) {
                 output.push_str(&format!("## Sheet: {}\n\n", sheet_name));
-                
+
                 let mut row_idx = 1;
                 for row in range.rows() {
                     let mut col_parts = Vec::new();
@@ -98,7 +102,7 @@ impl SheetGobbler {
         }
 
         if output.trim().is_empty() {
-             return Ok("No data could be extracted from this workbook.".to_string());
+            return Ok("No data could be extracted from this workbook.".to_string());
         }
 
         Ok(output)

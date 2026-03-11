@@ -5,7 +5,6 @@ use base64::{Engine as _, engine::general_purpose};
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use urlencoding::encode;
-use serde::{Deserialize, Serialize};
 
 // oauth2 imports
 use oauth2::{
@@ -16,7 +15,7 @@ use tiny_http::{Server, Response};
 
 const BEARER_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 
-use crate::parsers::credentials::{LocalCredentials, load_credentials, save_credentials};
+use crate::parsers::credentials::{load_credentials, save_credentials};
 
 pub struct TwitterGobbler {
     pub flavor: crate::flavors::Flavor,
