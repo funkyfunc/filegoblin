@@ -64,7 +64,11 @@ impl GoblinCrawler {
     }
 
     /// Recursively crawls the site using a BFS algorithm and multiple token-bounded workers.
-    pub async fn crawl(&self, seed_url: Url, args: &crate::cli::Cli) -> Result<Vec<(String, String)>> {
+    pub async fn crawl(
+        &self,
+        seed_url: Url,
+        args: &crate::cli::Cli,
+    ) -> Result<Vec<(String, String)>> {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut results = Vec::new();
 

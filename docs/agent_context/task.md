@@ -129,6 +129,6 @@
 - [x] Gemini share link gobbler (`gemini.google.com/share/<id>`) — batchexecute RPC (`ujx1Bf`), requires `--google-login` session cookies; scrape `f.sid`/`bl`/`at` from page on each call
 
 ## Phase XV: Wow-Factor UX Features
-- [ ] `--cost` flag — estimate API cost per model (lookup table of price/M tokens for GPT-4o, Claude, Gemini etc.)
-- [ ] `--summary` flag — heuristic context preamble (scan manifest files, count module types, grab README intro)
-- [ ] `--watch` mode — filesystem watcher that auto-regenerates output on save (`notify` crate)
+- [x] `--cost` flag — estimate API cost per model (lookup table of price/M tokens for GPT-4o, Claude, Gemini etc.)
+- [x] `--summary` flag — heuristic context preamble (scan manifest files, count module types, grab README intro)
+- [x] `--watch` mode — filesystem watcher that auto-regenerates output on save (`notify` crate)

@@ -1,10 +1,11 @@
 use super::TokenTransformer;
-use std::borrow::Cow;
 use regex::Regex;
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 static NEWLINE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
-static TRAILING_SPACE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^[ \t]+|[ \t]+$").unwrap());
+static TRAILING_SPACE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^[ \t]+|[ \t]+$").unwrap());
 
 pub struct NewlineDeduplicator;
 

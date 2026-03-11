@@ -3,16 +3,13 @@ use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread;
 use std::{io, path::PathBuf};
 use url::Url;
-use std::sync::mpsc::{channel, Sender, Receiver};
-use std::thread;
 
 pub enum TuiMessage {
     DirLoaded(TuiNode, Vec<TuiNode>),
@@ -33,31 +30,57 @@ impl TuiNode {
     pub fn is_dir(&self) -> bool {
         matches!(self, TuiNode::LocalDir(_) | TuiNode::WebDir { .. })
     }
-    
+
     pub fn is_file(&self) -> bool {
         !self.is_dir()
     }
 
     pub fn display_name(&self) -> String {
         match self {
-            TuiNode::LocalDir(p) | TuiNode::LocalFile(p) => p.file_name().unwrap_or_default().to_string_lossy().to_string(),
+            TuiNode::LocalDir(p) | TuiNode::LocalFile(p) => p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
             TuiNode::WebDir { url, title } => {
                 let name = if let Ok(u) = Url::parse(url) {
                     if let Some(segments) = u.path_segments() {
                         let last = segments.last().unwrap_or("");
-                        if last.is_empty() { u.host_str().unwrap_or(url).to_string() } else { last.to_string() }
-                    } else { u.host_str().unwrap_or(url).to_string() }
-                } else { url.clone() };
-                
+                        if last.is_empty() {
+                            u.host_str().unwrap_or(url).to_string()
+                        } else {
+                            last.to_string()
+                        }
+                    } else {
+                        u.host_str().unwrap_or(url).to_string()
+                    }
+                } else {
+                    url.clone()
+                };
+
                 if let Some(t) = title {
-                    if name.is_empty() { return t.clone(); }
+                    if name.is_empty() {
+                        return t.clone();
+                    }
                     format!("{} ({})", t, name)
                 } else {
-                    if name.is_empty() { return url.clone(); }
+                    if name.is_empty() {
+                        return url.clone();
+                    }
                     name
                 }
-            },
-            TuiNode::TweetNode { url: _, text_preview } => text_preview.chars().take(60).collect::<String>().replace("\n", " ") + "...",
+            }
+            TuiNode::TweetNode {
+                url: _,
+                text_preview,
+            } => {
+                text_preview
+                    .chars()
+                    .take(60)
+                    .collect::<String>()
+                    .replace("\n", " ")
+                    + "..."
+            }
         }
     }
 
@@ -71,7 +94,10 @@ impl TuiNode {
     pub fn from_arg(arg: &str) -> Self {
         if let Ok(url) = Url::parse(arg) {
             if url.scheme() == "http" || url.scheme() == "https" {
-                return TuiNode::WebDir { url: arg.to_string(), title: None };
+                return TuiNode::WebDir {
+                    url: arg.to_string(),
+                    title: None,
+                };
             }
         }
         let p = PathBuf::from(arg);
@@ -96,7 +122,7 @@ pub struct App<'a> {
     pub should_execute: bool,
     pub active_flags: &'a mut filegoblin::cli::Cli,
     pub dir_file_counts: std::collections::HashMap<TuiNode, usize>,
-    
+
     // Async mechanisms
     pub rx_msgs: Receiver<TuiMessage>,
     pub tx_msgs: Sender<TuiMessage>,
@@ -115,7 +141,7 @@ impl<'a> App<'a> {
         let path_str = flags.paths.first().map(|s| s.as_str()).unwrap_or(".");
         let root = TuiNode::from_arg(path_str);
         let current_dir = root.clone();
-        
+
         let initial_write = flags.write.clone();
 
         let (tx, rx) = channel();
@@ -155,7 +181,7 @@ impl<'a> App<'a> {
                     if self.current_dir == node {
                         self.is_loading_dir = false;
                         self.current_items = items;
-                        
+
                         // Sort items: folders first, then files
                         self.current_items.sort_by(|a, b| {
                             let a_dir = a.is_dir();
@@ -196,13 +222,17 @@ impl<'a> App<'a> {
                 }
                 TuiMessage::PreviewLoaded(node, preview) => {
                     self.preview_cache.insert(node.clone(), preview.clone());
-                    if !self.current_items.is_empty() && self.current_items[self.selected_index] == node {
+                    if !self.current_items.is_empty()
+                        && self.current_items[self.selected_index] == node
+                    {
                         self.preview_content = preview;
                         ui_dirty = true;
                     }
                 }
                 TuiMessage::PreviewLoadError(node, err) => {
-                    if !self.current_items.is_empty() && self.current_items[self.selected_index] == node {
+                    if !self.current_items.is_empty()
+                        && self.current_items[self.selected_index] == node
+                    {
                         self.preview_content = format!("Error loading preview: {}", err);
                         ui_dirty = true;
                     }
@@ -245,7 +275,8 @@ impl<'a> App<'a> {
                     if let Ok(entries) = std::fs::read_dir(path) {
                         for entry in entries.flatten() {
                             let p = entry.path();
-                            let is_hidden = p.file_name()
+                            let is_hidden = p
+                                .file_name()
                                 .and_then(|n| n.to_str())
                                 .map(|s| s.starts_with('.') && s != "." && s != "..")
                                 .unwrap_or(false);
@@ -264,21 +295,34 @@ impl<'a> App<'a> {
                 TuiNode::WebDir { url, .. } => {
                     // Check if it's twitter
                     if url.contains("twitter.com") || url.contains("x.com") {
-                        let twitter = filegoblin::parsers::twitter::TwitterGobbler { flavor: filegoblin::flavors::Flavor::Human };
+                        let twitter = filegoblin::parsers::twitter::TwitterGobbler {
+                            flavor: filegoblin::flavors::Flavor::Human,
+                        };
                         match twitter.get_thread_nodes(url) {
                             Ok(thread_items) => {
-                                let items: Vec<TuiNode> = thread_items.into_iter().map(|(tid, text)| {
-                                    TuiNode::TweetNode { url: tid, text_preview: text }
-                                }).collect();
+                                let items: Vec<TuiNode> = thread_items
+                                    .into_iter()
+                                    .map(|(tid, text)| TuiNode::TweetNode {
+                                        url: tid,
+                                        text_preview: text,
+                                    })
+                                    .collect();
                                 let _ = tx.send(TuiMessage::DirLoaded(node.clone(), items));
                             }
                             Err(e) => {
-                                let _ = tx.send(TuiMessage::DirLoadError(node.clone(), format!("{}", e)));
+                                let _ = tx
+                                    .send(TuiMessage::DirLoadError(node.clone(), format!("{}", e)));
                             }
                         }
                     } else {
                         // Standard web page, extract links
-                        if let Ok(res) = reqwest::blocking::Client::builder().use_rustls_tls().build().unwrap().get(url).send() {
+                        if let Ok(res) = reqwest::blocking::Client::builder()
+                            .use_rustls_tls()
+                            .build()
+                            .unwrap()
+                            .get(url)
+                            .send()
+                        {
                             if let Ok(html) = res.text() {
                                 let document = scraper::Html::parse_document(&html);
                                 let selector = scraper::Selector::parse("a").unwrap();
@@ -290,9 +334,19 @@ impl<'a> App<'a> {
                                                 let s = next_url.scheme();
                                                 if s == "http" || s == "https" {
                                                     next_url.set_fragment(None);
-                                                    let title = element.text().collect::<Vec<_>>().join(" ");
-                                                    let title_opt = if title.trim().is_empty() { None } else { Some(title.trim().to_string()) };
-                                                    items.push(TuiNode::WebDir { url: next_url.to_string(), title: title_opt });
+                                                    let title = element
+                                                        .text()
+                                                        .collect::<Vec<_>>()
+                                                        .join(" ");
+                                                    let title_opt = if title.trim().is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(title.trim().to_string())
+                                                    };
+                                                    items.push(TuiNode::WebDir {
+                                                        url: next_url.to_string(),
+                                                        title: title_opt,
+                                                    });
                                                 }
                                             }
                                         }
@@ -302,10 +356,16 @@ impl<'a> App<'a> {
                                 items.dedup_by_key(|n| n.target_str());
                                 let _ = tx.send(TuiMessage::DirLoaded(node.clone(), items));
                             } else {
-                                let _ = tx.send(TuiMessage::DirLoadError(node.clone(), "Failed to read HTML text".to_string()));
+                                let _ = tx.send(TuiMessage::DirLoadError(
+                                    node.clone(),
+                                    "Failed to read HTML text".to_string(),
+                                ));
                             }
                         } else {
-                            let _ = tx.send(TuiMessage::DirLoadError(node.clone(), "Failed to fetch URL".to_string()));
+                            let _ = tx.send(TuiMessage::DirLoadError(
+                                node.clone(),
+                                "Failed to fetch URL".to_string(),
+                            ));
                         }
                     }
                 }
@@ -339,7 +399,7 @@ impl<'a> App<'a> {
     pub fn toggle_selection(&mut self) {
         if !self.current_items.is_empty() && !self.is_loading_dir {
             let node = self.current_items[self.selected_index].clone();
-            
+
             if node.is_file() {
                 if self.selected_paths.contains(&node) {
                     self.selected_paths.remove(&node);
@@ -355,14 +415,19 @@ impl<'a> App<'a> {
                             nested_files.push(TuiNode::LocalFile(entry.into_path()));
                         }
                     }
-                    
-                    self.dir_file_counts.insert(node.clone(), nested_files.len());
-                    
+
+                    self.dir_file_counts
+                        .insert(node.clone(), nested_files.len());
+
                     let all_selected = nested_files.iter().all(|f| self.selected_paths.contains(f));
                     if all_selected {
-                        for f in nested_files { self.selected_paths.remove(&f); }
+                        for f in nested_files {
+                            self.selected_paths.remove(&f);
+                        }
                     } else {
-                        for f in nested_files { self.selected_paths.insert(f); }
+                        for f in nested_files {
+                            self.selected_paths.insert(f);
+                        }
                     }
                 } else if matches!(node, TuiNode::WebDir { .. }) {
                     // For WebDir, just select the dir node itself (we treat it as a page to scrape later)
@@ -381,9 +446,10 @@ impl<'a> App<'a> {
             let node = self.current_items[self.selected_index].clone();
             if node.is_dir() {
                 // Save current position before diving
-                self.history.insert(self.current_dir.clone(), self.selected_index);
+                self.history
+                    .insert(self.current_dir.clone(), self.selected_index);
                 self.nav_stack.push(self.current_dir.clone());
-                
+
                 self.current_dir = node;
                 self.selected_index = 0;
                 self.sniff();
@@ -397,10 +463,10 @@ impl<'a> App<'a> {
             let parent_node = self.nav_stack.pop().or_else(|| {
                 // Fallback for local files just in case
                 match &self.current_dir {
-                    TuiNode::LocalDir(p) | TuiNode::LocalFile(p) => {
-                        p.parent().map(|parent| TuiNode::LocalDir(parent.to_path_buf()))
-                    }
-                    _ => None
+                    TuiNode::LocalDir(p) | TuiNode::LocalFile(p) => p
+                        .parent()
+                        .map(|parent| TuiNode::LocalDir(parent.to_path_buf())),
+                    _ => None,
                 }
             });
 
@@ -426,7 +492,7 @@ impl<'a> App<'a> {
         }
 
         let node = self.current_items[self.selected_index].clone();
-        
+
         if let Some(cached_preview) = self.preview_cache.get(&node) {
             self.preview_content = cached_preview.clone();
             return;
@@ -441,32 +507,56 @@ impl<'a> App<'a> {
                     item_count
                 );
             }
-            TuiNode::LocalFile(path) => {
-                match std::fs::read_to_string(path) {
-                    Ok(content) => self.preview_content = content,
-                    Err(_) => self.preview_content = "This one is too gristly! (Binary or unreadable file)".to_string(),
+            TuiNode::LocalFile(path) => match std::fs::read_to_string(path) {
+                Ok(content) => self.preview_content = content,
+                Err(_) => {
+                    self.preview_content =
+                        "This one is too gristly! (Binary or unreadable file)".to_string()
                 }
-            }
+            },
             TuiNode::WebDir { url, title: _ } => {
                 self.preview_content = "Fetching web preview from network...".to_string();
                 let tx = self.tx_msgs.clone();
                 let url_c = url.clone();
                 thread::spawn(move || {
-                    if let Ok(res) = reqwest::blocking::Client::builder().use_rustls_tls().build().unwrap().get(&url_c).send() {
+                    if let Ok(res) = reqwest::blocking::Client::builder()
+                        .use_rustls_tls()
+                        .build()
+                        .unwrap()
+                        .get(&url_c)
+                        .send()
+                    {
                         if !res.status().is_success() {
-                            let _ = tx.send(TuiMessage::PreviewLoadError(node, format!("HTTP Error: {}", res.status())));
+                            let _ = tx.send(TuiMessage::PreviewLoadError(
+                                node,
+                                format!("HTTP Error: {}", res.status()),
+                            ));
                             return;
                         }
                         if let Ok(html) = res.text() {
-                            let gobbler = filegoblin::parsers::web::WebGobbler { extract_full: false };
+                            let gobbler = filegoblin::parsers::web::WebGobbler {
+                                extract_full: false,
+                            };
                             let fallback_args = filegoblin::cli::Cli::parse_from(&["filegoblin"]);
-                            match filegoblin::parsers::gobble::Gobble::gobble_str(&gobbler, &html, &fallback_args) {
-                                Ok(md) => { let _ = tx.send(TuiMessage::PreviewLoaded(node, md)); }
-                                Err(e) => { let _ = tx.send(TuiMessage::PreviewLoadError(node, format!("{}", e))); }
+                            match filegoblin::parsers::gobble::Gobble::gobble_str(
+                                &gobbler,
+                                &html,
+                                &fallback_args,
+                            ) {
+                                Ok(md) => {
+                                    let _ = tx.send(TuiMessage::PreviewLoaded(node, md));
+                                }
+                                Err(e) => {
+                                    let _ = tx
+                                        .send(TuiMessage::PreviewLoadError(node, format!("{}", e)));
+                                }
                             }
                         }
                     } else {
-                        let _ = tx.send(TuiMessage::PreviewLoadError(node, "Network request failed".to_string()));
+                        let _ = tx.send(TuiMessage::PreviewLoadError(
+                            node,
+                            "Network request failed".to_string(),
+                        ));
                     }
                 });
             }
@@ -503,21 +593,24 @@ pub fn run_tui(args: &mut filegoblin::cli::Cli) -> Result<Option<Vec<String>>> {
 
     if app.should_execute {
         if !app.selected_paths.is_empty() {
-             let selected: Vec<String> = app.selected_paths.into_iter().map(|n| n.target_str()).collect();
-             return Ok(Some(selected));
+            let selected: Vec<String> = app
+                .selected_paths
+                .into_iter()
+                .map(|n| n.target_str())
+                .collect();
+            return Ok(Some(selected));
         } else if !app.current_items.is_empty() && app.selected_index < app.current_items.len() {
-             return Ok(Some(vec![app.current_items[app.selected_index].target_str()]));
+            return Ok(Some(vec![
+                app.current_items[app.selected_index].target_str(),
+            ]));
         }
     }
-    
+
     Ok(None)
 }
 
-fn run_app<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-) -> Result<()> 
-where 
+fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
+where
     <B as ratatui::backend::Backend>::Error: std::error::Error + Send + Sync + 'static,
 {
     use ratatui::{
@@ -529,7 +622,7 @@ where
 
     const C_PRIMARY: Color = Color::Rgb(167, 255, 0);
     const C_SECONDARY: Color = Color::Rgb(139, 69, 19);
-    const C_ACCENT: Color = Color::Rgb(255, 191, 0); 
+    const C_ACCENT: Color = Color::Rgb(255, 191, 0);
     const C_MUTED: Color = Color::Rgb(112, 128, 144);
 
     let mut last_tick = std::time::Instant::now();
@@ -549,9 +642,15 @@ where
         let mut missing_counts = Vec::new();
         for p in &app.current_items {
             if let TuiNode::LocalDir(path) = p {
-                if !app.dir_file_counts.contains_key(p) && app.selected_paths.iter().any(|s| {
-                    if let TuiNode::LocalFile(sp) = s { sp.starts_with(path) } else { false }
-                }) {
+                if !app.dir_file_counts.contains_key(p)
+                    && app.selected_paths.iter().any(|s| {
+                        if let TuiNode::LocalFile(sp) = s {
+                            sp.starts_with(path)
+                        } else {
+                            false
+                        }
+                    })
+                {
                     missing_counts.push(p.clone());
                 }
             }
@@ -586,7 +685,7 @@ where
                 (false, 7)     => "(-_-)",
                 _ => "(o_o)",
             };
-            
+
             let mouth = if is_eating && jitter_state % 2 == 0 { "(V)" } else { "(W)" };
 
             let mut goblin_quote = "I'm hungry for files...".to_string();
@@ -663,16 +762,16 @@ where
                     } else if let TuiNode::TweetNode { .. } = p {
                         name = format!("🐦 {}", name);
                     }
-                    
+
                     let mut is_selected_full = app.selected_paths.contains(p);
                     let mut is_selected_partial = false;
-                    
+
                     if p.is_dir() {
                         if let TuiNode::LocalDir(path) = p {
                             is_selected_partial = app.selected_paths.iter().any(|s| {
                                 if let TuiNode::LocalFile(sp) = s { sp.starts_with(path) } else { false }
                             });
-                            
+
                             if is_selected_partial && let Some(&total_files) = app.dir_file_counts.get(p) {
                                 let selected_count = app.selected_paths.iter().filter(|s| {
                                     if let TuiNode::LocalFile(sp) = s { sp.starts_with(path) } else { false }
@@ -684,7 +783,7 @@ where
                             }
                         }
                     }
-                    
+
                     let is_highlighted = i == app.selected_index;
                     let mut spans = Vec::new();
 
@@ -692,7 +791,7 @@ where
                         let (teeth, color) = match jitter_state % 4 {
                             0 => ("v ", C_PRIMARY),
                             1 => ("vw", C_PRIMARY),
-                            2 => ("wW", C_ACCENT), 
+                            2 => ("wW", C_ACCENT),
                             _ => ("Wv", C_PRIMARY),
                         };
                         spans.push(Span::styled(teeth, Style::default().fg(color).add_modifier(Modifier::BOLD)));
@@ -737,9 +836,9 @@ where
 
             let eye = match jitter_state {
                 0..=3 => "(o_o)",
-                4 => "(-_-)",    
+                4 => "(-_-)",
                 5 | 6 => "(^w^)",
-                _ => "(-_-)",    
+                _ => "(-_-)",
             };
             let preview_title = format!(" {} Preview (Crunching...) ", eye);
 
@@ -799,7 +898,7 @@ where
                     .border_style(Style::default().fg(C_MUTED))
                 );
             f.render_widget(bottom_block, main_chunks[2]);
-            
+
             // Draw input overlay if in input mode
             if app.is_input_mode {
                 let area = f.area();
@@ -831,7 +930,7 @@ where
                         spans.push(Span::raw(" "));
                     }
                 }
-                
+
                 let input_block = Paragraph::new(Line::from(spans))
                     .block(Block::default()
                         .title(" Set Write output filename (e.g. out.md) - [Enter] to Save / [Esc] to Cancel ")
@@ -844,7 +943,10 @@ where
             }
         })?;
 
-        if event::poll(std::time::Duration::from_millis(16))? && let Event::Key(key) = event::read()? && key.kind == event::KeyEventKind::Press {
+        if event::poll(std::time::Duration::from_millis(16))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == event::KeyEventKind::Press
+        {
             if app.is_input_mode {
                 match key.code {
                     KeyCode::Enter => {
@@ -892,64 +994,73 @@ where
                     _ => {}
                 }
             } else {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-                        KeyCode::Enter => {
-                            app.should_execute = true;
-                            app.should_quit = true;
-                        }
-                        KeyCode::Char(' ') => app.toggle_selection(),
-                        KeyCode::Char('w') => {
-                            if app.active_flags.write.is_some() {
-                                // Instantly untoggle
-                                app.active_flags.write = None;
-                            } else {
-                                // Open input box
-                                app.is_input_mode = true;
-                                app.input_buffer = app.last_write_file.clone().unwrap_or_else(|| "out.md".to_string());
-                                app.input_cursor = app.input_buffer.chars().count();
-                            }
-                        }
-                        KeyCode::Char('c') => app.active_flags.copy = !app.active_flags.copy,
-                        KeyCode::Char('o') => app.active_flags.open = !app.active_flags.open,
-                        KeyCode::Char('p') => {
-                            app.active_flags.split = !app.active_flags.split;
-                            if app.active_flags.split {
-                                app.active_flags.chunk = None;
-                            }
-                        },
-                        KeyCode::Char('n') => {
-                            if app.active_flags.chunk.is_none() {
-                                app.active_flags.chunk = Some("100k".to_string());
-                                app.active_flags.split = false;
-                            } else {
-                                app.active_flags.chunk = None;
-                            }
-                        },
-                        KeyCode::Char('m') => {
-                            app.active_flags.compress = match app.active_flags.compress {
-                                None => Some(filegoblin::cli::CompressionLevel::Contextual),
-                                Some(filegoblin::cli::CompressionLevel::Contextual) => Some(filegoblin::cli::CompressionLevel::Aggressive),
-                                Some(filegoblin::cli::CompressionLevel::Aggressive) => Some(filegoblin::cli::CompressionLevel::Safe),
-                                Some(filegoblin::cli::CompressionLevel::Safe) => None,
-                            };
-                        },
-                        KeyCode::Char('s') => app.active_flags.scrub = !app.active_flags.scrub,
-                        KeyCode::Char('t') => app.active_flags.tokens = !app.active_flags.tokens,
-                        KeyCode::Down | KeyCode::Char('j') => app.next(),
-                        KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                        KeyCode::Right | KeyCode::Char('l') => app.enter_directory(),
-                        KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => app.leave_directory(),
-                        KeyCode::PageDown => app.scroll_down(),
-                        KeyCode::PageUp => app.scroll_up(),
-                        KeyCode::Char('d') => {
-                                app.scroll_down();
-                        }
-                        KeyCode::Char('u') => {
-                                app.scroll_up();
-                        }
-                        _ => {}
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+                    KeyCode::Enter => {
+                        app.should_execute = true;
+                        app.should_quit = true;
                     }
+                    KeyCode::Char(' ') => app.toggle_selection(),
+                    KeyCode::Char('w') => {
+                        if app.active_flags.write.is_some() {
+                            // Instantly untoggle
+                            app.active_flags.write = None;
+                        } else {
+                            // Open input box
+                            app.is_input_mode = true;
+                            app.input_buffer = app
+                                .last_write_file
+                                .clone()
+                                .unwrap_or_else(|| "out.md".to_string());
+                            app.input_cursor = app.input_buffer.chars().count();
+                        }
+                    }
+                    KeyCode::Char('c') => app.active_flags.copy = !app.active_flags.copy,
+                    KeyCode::Char('o') => app.active_flags.open = !app.active_flags.open,
+                    KeyCode::Char('p') => {
+                        app.active_flags.split = !app.active_flags.split;
+                        if app.active_flags.split {
+                            app.active_flags.chunk = None;
+                        }
+                    }
+                    KeyCode::Char('n') => {
+                        if app.active_flags.chunk.is_none() {
+                            app.active_flags.chunk = Some("100k".to_string());
+                            app.active_flags.split = false;
+                        } else {
+                            app.active_flags.chunk = None;
+                        }
+                    }
+                    KeyCode::Char('m') => {
+                        app.active_flags.compress = match app.active_flags.compress {
+                            None => Some(filegoblin::cli::CompressionLevel::Contextual),
+                            Some(filegoblin::cli::CompressionLevel::Contextual) => {
+                                Some(filegoblin::cli::CompressionLevel::Aggressive)
+                            }
+                            Some(filegoblin::cli::CompressionLevel::Aggressive) => {
+                                Some(filegoblin::cli::CompressionLevel::Safe)
+                            }
+                            Some(filegoblin::cli::CompressionLevel::Safe) => None,
+                        };
+                    }
+                    KeyCode::Char('s') => app.active_flags.scrub = !app.active_flags.scrub,
+                    KeyCode::Char('t') => app.active_flags.tokens = !app.active_flags.tokens,
+                    KeyCode::Down | KeyCode::Char('j') => app.next(),
+                    KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                    KeyCode::Right | KeyCode::Char('l') => app.enter_directory(),
+                    KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => {
+                        app.leave_directory()
+                    }
+                    KeyCode::PageDown => app.scroll_down(),
+                    KeyCode::PageUp => app.scroll_up(),
+                    KeyCode::Char('d') => {
+                        app.scroll_down();
+                    }
+                    KeyCode::Char('u') => {
+                        app.scroll_up();
+                    }
+                    _ => {}
+                }
             }
         }
 

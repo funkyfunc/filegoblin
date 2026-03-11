@@ -1,7 +1,7 @@
 use aho_corasick::{AhoCorasick, MatchKind};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use regex::Regex;
+use std::collections::HashMap;
 
 /// Heuristic Trigger Component (Tier 3)
 pub struct PiiTrigger {
@@ -18,7 +18,7 @@ impl PiiTrigger {
             force_trigger: false,
         }
     }
-    
+
     pub fn force(mut self, force: bool) -> Self {
         self.force_trigger = force;
         self
@@ -116,8 +116,8 @@ impl Tier2Refiner {
         // MOCK LOGIC: We simulate that the model natively identified specific words with high confidence.
         // E.g. "Jane Doe" or "Seattle" if they appear contextually, alongside API keys that have high entropy.
         let sensitive_words = [
-            ("Jane Doe", 0.95), 
-            ("Seattle", 0.82), 
+            ("Jane Doe", 0.95),
+            ("Seattle", 0.82),
             // Mocking high-entropy token detection by the neural network
             ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", 0.99),
             ("ghp_xYz123Abc456DeF789GHi012JkL345MnO", 0.98),
@@ -125,7 +125,7 @@ impl Tier2Refiner {
             // Mocking crypto addresses
             ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", 0.97),
             // A name that is technically PII but mocked below threshold
-            ("Bob Smith", 0.75), 
+            ("Bob Smith", 0.75),
         ];
 
         for (word, conf) in sensitive_words {
@@ -162,7 +162,7 @@ impl PrivacyShield {
 
         // Standard PII Regexes for immediate scrubbing
         let regexes = vec![
-            Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(), // SSN
+            Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),   // SSN
             Regex::new(r"\b(?:\d[ -]*?){13,16}\b").unwrap(), // Credit Card
             Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b").unwrap(), // Email
             Regex::new(r"\b(?i)api[_-]?key.{1,20}?[a-zA-Z0-9]{20,}\b").unwrap(), // Generic API Key Assignment
@@ -204,15 +204,15 @@ impl PrivacyShield {
         // Pass 3: Neural Trigger (For ambiguous soft PII)
         let triggers = self.trigger.scan(&output);
         let merged_triggers = IndexMerger::merge(triggers, 64); // 64-byte look-back buffer
-        
+
         if !merged_triggers.is_empty() {
             // As this is a synchronous function currently but tokio Semaphore is async,
             // we use try_acquire to immediately grab a permit if available or skip/block.
             // For production, if strict concurrency limits apply to synchronous ingestion,
-            // we should block thread or handle asynchronously. 
+            // we should block thread or handle asynchronously.
             // In a blocking context, we can use `acquire` within a block_on or try_acquire.
             let permit = self.neural_semaphore.try_acquire();
-            
+
             if permit.is_ok() {
                 // We have a permit to use RAM for inference!
                 // Process the chunk back to front to avoid shifting indices
@@ -233,7 +233,7 @@ impl PrivacyShield {
                     output.replace_range(rs..re, "[REDACTED]");
                 }
             } else {
-                // In aggressive mode, we might drop the thread or queue it. 
+                // In aggressive mode, we might drop the thread or queue it.
                 // For now, if we hit RAM bounds, we skip (or fail-open).
             }
         }
@@ -275,7 +275,10 @@ mod tests {
         assert_eq!(shield.redact(ssn_text), "My [REDACTED] is [REDACTED].");
 
         let email_text = "Contact me at dino@example.com quickly.";
-        assert_eq!(shield.redact(email_text), "Contact me at [REDACTED] quickly.");
+        assert_eq!(
+            shield.redact(email_text),
+            "Contact me at [REDACTED] quickly."
+        );
     }
 
     #[test]
@@ -283,24 +286,62 @@ mod tests {
         let shield = PrivacyShield::init().unwrap();
 
         // Part 1A: Literal Anchors
-        assert_eq!(shield.redact("We found a printed Passport left on the train."), "We found a printed [REDACTED] left on the train.");
-        assert_eq!(shield.redact("Please enter your Credit Card details."), "Please enter your [REDACTED] details.");
-        
+        assert_eq!(
+            shield.redact("We found a printed Passport left on the train."),
+            "We found a printed [REDACTED] left on the train."
+        );
+        assert_eq!(
+            shield.redact("Please enter your Credit Card details."),
+            "Please enter your [REDACTED] details."
+        );
+
         // Part 1B: Standardized Numeric Patterns (Regex)
-        assert_eq!(shield.redact("my SSN is 123-45-6789."), "my [REDACTED] is [REDACTED].");
-        assert_eq!(shield.redact("Visa card ending in 4111-1111-1111-1111,"), "Visa card ending in [REDACTED],");
-        assert_eq!(shield.redact("Always email admin@filegoblin.io before"), "Always email [REDACTED] before");
+        assert_eq!(
+            shield.redact("my SSN is 123-45-6789."),
+            "my [REDACTED] is [REDACTED]."
+        );
+        assert_eq!(
+            shield.redact("Visa card ending in 4111-1111-1111-1111,"),
+            "Visa card ending in [REDACTED],"
+        );
+        assert_eq!(
+            shield.redact("Always email admin@filegoblin.io before"),
+            "Always email [REDACTED] before"
+        );
 
         // Part 1C: Standardized Secrets (Regex)
-        assert_eq!(shield.redact("const api_key = \"aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA\";"), "const [REDACTED]\";");
-        assert_eq!(shield.redact("export const apiKey : string = \"vW3xY5zAaB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v\";"), "export const [REDACTED]\";");
+        assert_eq!(
+            shield.redact("const api_key = \"aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA\";"),
+            "const [REDACTED]\";"
+        );
+        assert_eq!(
+            shield.redact(
+                "export const apiKey : string = \"vW3xY5zAaB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1v\";"
+            ),
+            "export const [REDACTED]\";"
+        );
 
         // Part 2A: High Confidence SLM Triggers
-        assert_eq!(shield.redact("The meeting is scheduled with Jane Doe for Tuesday"), "The meeting is scheduled with [REDACTED] for Tuesday");
-        assert_eq!(shield.redact("AWS token: AKIAIOSFODNN7EXAMPLE in the file"), "AWS token: [REDACTED] in the file");
-        assert_eq!(shield.redact("crypto wallet: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"), "crypto wallet: [REDACTED]");
-        assert_eq!(shield.redact("using token: ghp_xYz123Abc456DeF789GHi012JkL345MnO"), "using token: [REDACTED]");
-        assert_eq!(shield.redact("JWT token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."), "JWT token: [REDACTED]...");
+        assert_eq!(
+            shield.redact("The meeting is scheduled with Jane Doe for Tuesday"),
+            "The meeting is scheduled with [REDACTED] for Tuesday"
+        );
+        assert_eq!(
+            shield.redact("AWS token: AKIAIOSFODNN7EXAMPLE in the file"),
+            "AWS token: [REDACTED] in the file"
+        );
+        assert_eq!(
+            shield.redact("crypto wallet: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
+            "crypto wallet: [REDACTED]"
+        );
+        assert_eq!(
+            shield.redact("using token: ghp_xYz123Abc456DeF789GHi012JkL345MnO"),
+            "using token: [REDACTED]"
+        );
+        assert_eq!(
+            shield.redact("JWT token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."),
+            "JWT token: [REDACTED]..."
+        );
 
         // Part 2B: Low Confidence Bypass
         let safe_text1 = "office in Seattle next month.";

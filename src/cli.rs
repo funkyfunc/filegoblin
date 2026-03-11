@@ -114,6 +114,10 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities")]
     pub tokens_only: bool,
 
+    /// Print an estimated API cost breakdown based on token count for major models
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub cost: bool,
+
     /// Scrub PII and Secrets from the output locally using hybrid Regex/SLM Engine
     #[arg(long, help_heading = "Developer Utilities")]
     pub scrub: bool,
@@ -137,6 +141,14 @@ pub struct Cli {
     /// Paste from system clipboard as the primary input target (equivalent to pbpaste/xclip)
     #[arg(long, help_heading = "Developer Utilities")]
     pub clipboard: bool,
+
+    /// Prepend a heuristic structural summary to the top of the output
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub summary: bool,
+
+    /// Watch mode: monitor target paths for changes and auto-regenerate output
+    #[arg(short = 'W', long, help_heading = "Developer Utilities")]
+    pub watch: bool,
 
     /// Launch the interactive TUI "Hoard Selector" dashboard
     #[arg(short, long, help_heading = "Developer Utilities")]

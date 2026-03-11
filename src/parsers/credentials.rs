@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 /// Local storage format for ~/.config/filegoblin/credentials.json
 #[derive(Serialize, Deserialize, Debug, Default)]

@@ -1,32 +1,31 @@
 use crate::parsers::gobble::Gobble;
-use std::path::Path;
 use std::io::Read;
+use std::path::Path;
 
 pub struct PptxGobbler;
 
 impl Gobble for PptxGobbler {
-
     fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> anyhow::Result<String> {
         let file = std::fs::File::open(path)?;
         let mut archive = zip::ZipArchive::new(file)?;
-        
+
         let mut slide_contents: Vec<(usize, String)> = Vec::new();
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
             let name = file.name().to_string();
-            
+
             // We only care about slide files: "ppt/slides/slideN.xml"
             if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
                 // Extract the slide number N
                 let num_str = name
                     .trim_start_matches("ppt/slides/slide")
                     .trim_end_matches(".xml");
-                
+
                 if let Ok(slide_num) = num_str.parse::<usize>() {
                     let mut xml_content = String::new();
                     file.read_to_string(&mut xml_content)?;
-                    
+
                     let text = extract_text_from_slide_xml(&xml_content);
                     if !text.trim().is_empty() {
                         slide_contents.push((slide_num, text));
@@ -45,7 +44,7 @@ impl Gobble for PptxGobbler {
         }
 
         if output.is_empty() {
-             return Ok("No text could be extracted from this presentation.".to_string());
+            return Ok("No text could be extracted from this presentation.".to_string());
         }
 
         Ok(output)
@@ -54,8 +53,8 @@ impl Gobble for PptxGobbler {
 
 /// A simple quick-xml reader that grabs all text inside <a:t> nodes
 fn extract_text_from_slide_xml(xml: &str) -> String {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
 
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -87,13 +86,11 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
                     output.push_str(&decoded);
                 }
             }
-            Ok(Event::End(ref e)) => {
-                match e.name().as_ref() {
-                    b"a:t" => in_text_node = false,
-                    b"a:p" => output.push('\n'), 
-                    _ => (),
-                }
-            }
+            Ok(Event::End(ref e)) => match e.name().as_ref() {
+                b"a:t" => in_text_node = false,
+                b"a:p" => output.push('\n'),
+                _ => (),
+            },
             Ok(Event::Eof) => break,
             Err(_) => break, // Silently ignore malformed XML chunks rather than crashing the whole horde
             _ => (),
