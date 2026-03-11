@@ -46,4 +46,4 @@ When the User requests a handoff, the Agent MUST:
    - Any broken tests, compilation errors, or pending bugs the next agent needs to know about.
    - A clear list of the immediate next steps or tasks for the next session.
 4. Commit and push the changes to GitHub so the context is preserved for the next machine.
-5. Identify the current git tag (e.g., `git tag --sort=-v:refname | head -n 1`), increment the patch version (e.g., v1.8.0 -> v1.8.1) or minor version if significant features were added, tag the commit, and push the tag to the remote repository (`git push origin <new_tag>`). This is crucial because our GitHub workflow relies on these tags for releases.
+5. Identify the current git tag (e.g., `git tag --sort=-v:refname | head -n 1`), increment the patch version (e.g., v1.8.0 -> v1.8.1) or minor version if significant features were added. **You MUST also update the `version` field in `Cargo.toml` to match this new tag.** Tag the commit, and push the tag to the remote repository (`git push origin <new_tag>`). This is crucial because our GitHub workflow relies on these tags for releases.
