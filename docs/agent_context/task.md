@@ -64,6 +64,7 @@
 - [x] Make `path` optional in the CLI
 - [x] Implement `std::io::IsTerminal` pipe detection
 - [x] Support `"-"` target inside `gobble_app`
+- [x] Add `--clipboard` / `--clipboard` flag — reads clipboard contents as input (inverse of `--copy` which writes output *to* clipboard); calls `pbpaste` (macOS) or `xclip -o` (Linux)
 
 ## Phase VI.80: Output File Flag
 - [x] Add `--write` target file flag in `cli.rs`
@@ -122,8 +123,10 @@
 - [ ] SQLite gobbler (`.db`) — dump schema + sample rows per table via `rusqlite`
 - [ ] Slack / Discord export gobbler (JSON → structured markdown)
 - [ ] HTTP POST ingestion (`--post <url> -d '<body>'`) — extend existing reqwest fetcher
-- [ ] YouTube transcript ingestion — **needs research** (no public API; options: `yt-dlp` subprocess, timedtext scraping, or data API)
-- [ ] Google OAuth flow (`--google-login`) — access authenticated Google content (Docs, Drive, Gemini shares); **needs research** → see `docs/agent_context/google_oauth_research_prompt.md`
+- [x] YouTube transcript ingestion — InnerTube API (`/v1/player`), SRV1 XML parsing, `yt-dlp` fallback, `--lang` flag
+- [x] Request research for Google OAuth and Gemini
+- [x] Google OAuth flow (`--google-login`) — PKCE flow, store session cookies (`SID`, `__Secure-1PSID`) interactively + OAuth token; enables Docs/Drive AND Gemini share links
+- [x] Gemini share link gobbler (`gemini.google.com/share/<id>`) — batchexecute RPC (`ujx1Bf`), requires `--google-login` session cookies; scrape `f.sid`/`bl`/`at` from page on each call
 
 ## Phase XV: Wow-Factor UX Features
 - [ ] `--cost` flag — estimate API cost per model (lookup table of price/M tokens for GPT-4o, Claude, Gemini etc.)

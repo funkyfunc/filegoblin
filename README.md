@@ -61,10 +61,11 @@
 - [x] Code Skeletonization (`--extract symbols`) via tree-sitter
 - [x] PII Redaction (`--scrub`)
 - [x] Output Splitting (`--split`), Chunking (`--chunk`), JSON (`--json`)
-- [x] Clipboard (`--copy`), OS Open (`--open`), File Write (`--write`)
+- [x] Clipboard Ingestion (`--clipboard`), Clipboard Output (`--copy`), OS Open (`--open`), File Write (`--write`)
 - [x] Interactive Terminal Dashboard (`-i`) with ratatui
 - [x] Pipeline-Safe Streams (`-q` for clean stdout)
 - [x] WASM Plugin Extensibility (`--plugin`)
+- [x] Cloud Resource Ingestion (Google Docs, Drive, Gemini, Twitter URL parsing + Authentication)
 
 ---
 
@@ -144,6 +145,22 @@ fg ./src/ --horde --chunk 50k
 **Pipe from stdin:**
 ```bash
 curl -s "https://api.github.com/users/octocat" | fg -q --json
+```
+
+**Clipboard Ingestion:**
+```bash
+# Read contents directly from your OS clipboard
+fg --clipboard > context.md
+```
+
+**Cloud Resources (Google Docs/Drive/Gemini):**
+```bash
+# Authenticate once to securely cache PKCE token and provide session cookies
+fg --google-login
+
+# Ingest Google Docs/Drive items or Gemini share links directly
+fg https://docs.google.com/document/d/1X...
+fg https://gemini.google.com/share/...
 ```
 
 **Filtering & Exclusion:**
