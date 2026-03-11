@@ -1,4 +1,4 @@
-# (o_o) filegoblin (fg)
+# (o_o) filegoblin (filegoblin)
 
 > **"Ingesting the messy world, spitting out clean context."**
 
@@ -103,100 +103,100 @@ cargo horde-check
 **Basic Gobble (Files):**
 ```bash
 # Output a single file to stdout
-fg my_notes.pdf > context.md
+filegoblin my_notes.pdf > context.md
 
 # Merge multiple files natively
-fg src/main.rs src/lib.rs README.md --write context.md
+filegoblin src/main.rs src/lib.rs README.md --write context.md
 ```
 
 **URL Ingestion (Web):**
 ```bash
-fg https://example.com/api-docs > context.md
+filegoblin https://example.com/api-docs > context.md
 ```
 
 **Web Horde (Split into mapping directory):**
 ```bash
-fg https://bettercli.org/ --horde --split
+filegoblin https://bettercli.org/ --horde --split
 # Translates to -> ./bettercli.org_gobbled/
 ```
 
 **Privacy Shield (Redact PII & Secrets locally):**
 ```bash
-fg ./src/api_keys.ts --scrub > safe_context.md
+filegoblin ./src/api_keys.ts --scrub > safe_context.md
 ```
 
 **Scripting Pipeline (JSON & Quiet):**
 ```bash
-fg ./src/ --horde -q --json | jq '.[].path'
+filegoblin ./src/ --horde -q --json | jq '.[].path'
 ```
 
 **Token Compression (Reduce LLM context sizes):**
 ```bash
 # Strip comments from code, remove stop words, collapse whitespace
-fg ./src/main.rs --compress aggressive > context.md
+filegoblin ./src/main.rs --compress aggressive > context.md
 ```
 
 **Multi-Part Splitting (Chunk output by tokens):**
 ```bash
 # Automatically break massive repositories into `partN` files at a 50k token threshold
-fg ./src/ --horde --chunk 50k
+filegoblin ./src/ --horde --chunk 50k
 ```
 
 **Pipe from stdin:**
 ```bash
-curl -s "https://api.github.com/users/octocat" | fg -q --json
+curl -s "https://api.github.com/users/octocat" | filegoblin -q --json
 ```
 
 **Clipboard Ingestion:**
 ```bash
 # Read contents directly from your OS clipboard
-fg --clipboard > context.md
+filegoblin --clipboard > context.md
 ```
 
 **Cloud Resources (Google Docs/Drive/Gemini):**
 ```bash
 # Authenticate once to securely cache PKCE token and provide session cookies
-fg --google-login
+filegoblin --google-login
 
 # Ingest Google Docs/Drive items or Gemini share links directly
-fg https://docs.google.com/document/d/1X...
-fg https://gemini.google.com/share/...
+filegoblin https://docs.google.com/document/d/1X...
+filegoblin https://gemini.google.com/share/...
 ```
 
 **Filtering & Exclusion:**
 ```bash
 # Only Rust files, excluding tests and generated code
-fg ./src/ --horde --include "*.rs" --exclude "*test*" --exclude "*generated*"
+filegoblin ./src/ --horde --include "*.rs" --exclude "*test*" --exclude "*generated*"
 
 # Limit crawl depth to top-level files only
-fg ./src/ --horde --depth 1
+filegoblin ./src/ --horde --depth 1
 ```
 
 **Manifest / Table of Contents:**
 ```bash
 # Prepend a TOC with file paths and token counts
-fg ./src/ --horde --include "*.rs" --manifest
+filegoblin ./src/ --horde --include "*.rs" --manifest
 ```
 
 **Token-Only Mode (Scripting):**
 ```bash
 # Print just the token count, no content — ideal for CI/scripts
-fg ./src/ --horde --tokens-only
+filegoblin ./src/ --horde --tokens-only
 ```
 
 **Semantic Search with Relevance Scores:**
 ```bash
 # Search across a codebase and see BM25 relevance scores
-fg ./src/ --horde --search "authentication"
+filegoblin ./src/ --horde --search "authentication"
 ```
 
 **Git-Diff Mode (Only Changed Files):**
 ```bash
 # Ingest only files changed since last commit
-fg . --horde --git-diff HEAD~1
+filegoblin . --horde --git-diff HEAD~1
 
 # Show unified diffs instead of full file contents
-fg . --horde --git-diff HEAD~1 --diff-format
+filegoblin . --horde --git-diff HEAD~1 --diff-format
 ```
 
 **Interactive Hoard Selector (TUI):**
@@ -206,7 +206,7 @@ A full, snappy `ratatui` dashboard wrapper around the engine.
 - Toggle pipeline flags directly from the bottom bar (`c` for copy, `s` for scrub secrets, etc.).
 - Hit `Enter` to belch out the results!
 ```bash
-fg ./src/ -i
+filegoblin ./src/ -i
 ```
 
 ---
