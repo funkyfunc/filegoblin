@@ -44,8 +44,8 @@ impl TuiNode {
                 .to_string(),
             TuiNode::WebDir { url, title } => {
                 let name = if let Ok(u) = Url::parse(url) {
-                    if let Some(segments) = u.path_segments() {
-                        let last = segments.last().unwrap_or("");
+                    if let Some(mut segments) = u.path_segments() {
+                        let last = segments.next_back().unwrap_or("");
                         if last.is_empty() {
                             u.host_str().unwrap_or(url).to_string()
                         } else {
@@ -92,14 +92,13 @@ impl TuiNode {
     }
 
     pub fn from_arg(arg: &str) -> Self {
-        if let Ok(url) = Url::parse(arg) {
-            if url.scheme() == "http" || url.scheme() == "https" {
+        if let Ok(url) = Url::parse(arg)
+            && (url.scheme() == "http" || url.scheme() == "https") {
                 return TuiNode::WebDir {
                     url: arg.to_string(),
                     title: None,
                 };
             }
-        }
         let p = PathBuf::from(arg);
         if p.is_dir() {
             TuiNode::LocalDir(p)
@@ -329,8 +328,8 @@ impl<'a> App<'a> {
                                 let mut items = Vec::new();
                                 if let Ok(base_url) = Url::parse(url) {
                                     for element in document.select(&selector) {
-                                        if let Some(href) = element.value().attr("href") {
-                                            if let Ok(mut next_url) = base_url.join(href) {
+                                        if let Some(href) = element.value().attr("href")
+                                            && let Ok(mut next_url) = base_url.join(href) {
                                                 let s = next_url.scheme();
                                                 if s == "http" || s == "https" {
                                                     next_url.set_fragment(None);
@@ -349,7 +348,6 @@ impl<'a> App<'a> {
                                                     });
                                                 }
                                             }
-                                        }
                                     }
                                 }
                                 items.sort_by_key(|n| n.target_str());
@@ -537,7 +535,7 @@ impl<'a> App<'a> {
                             let gobbler = filegoblin::parsers::web::WebGobbler {
                                 extract_full: false,
                             };
-                            let fallback_args = filegoblin::cli::Cli::parse_from(&["filegoblin"]);
+                            let fallback_args = filegoblin::cli::Cli::parse_from(["filegoblin"]);
                             match filegoblin::parsers::gobble::Gobble::gobble_str(
                                 &gobbler,
                                 &html,
@@ -641,8 +639,8 @@ where
         // Lazy-load file counts for partially selected local directories
         let mut missing_counts = Vec::new();
         for p in &app.current_items {
-            if let TuiNode::LocalDir(path) = p {
-                if !app.dir_file_counts.contains_key(p)
+            if let TuiNode::LocalDir(path) = p
+                && !app.dir_file_counts.contains_key(p)
                     && app.selected_paths.iter().any(|s| {
                         if let TuiNode::LocalFile(sp) = s {
                             sp.starts_with(path)
@@ -653,7 +651,6 @@ where
                 {
                     missing_counts.push(p.clone());
                 }
-            }
         }
         for p in missing_counts {
             if let TuiNode::LocalDir(path) = &p {
@@ -686,7 +683,7 @@ where
                 _ => "(o_o)",
             };
 
-            let mouth = if is_eating && jitter_state % 2 == 0 { "(V)" } else { "(W)" };
+            let mouth = if is_eating && jitter_state.is_multiple_of(2) { "(V)" } else { "(W)" };
 
             let mut goblin_quote = "I'm hungry for files...".to_string();
             if app.is_loading_dir {
@@ -710,8 +707,8 @@ where
                     }
                 } else if let TuiNode::TweetNode { .. } = hovered {
                     goblin_quote = "A juicy tweet thread! Very digestible.".to_string();
-                } else if let TuiNode::LocalFile(p) = hovered {
-                    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                } else if let TuiNode::LocalFile(p) = hovered
+                    && let Some(ext) = p.extension().and_then(|e| e.to_str()) {
                         match ext {
                             "md" | "txt" | "json" | "csv" => goblin_quote = "Ah, crunchy text. Easy to digest.".to_string(),
                             "pdf" => goblin_quote = "A PDF? Grr... tough rind, but I'll crack it.".to_string(),
@@ -720,7 +717,6 @@ where
                             _ => goblin_quote = "Looks exotic. I wonder what it tastes like...".to_string(),
                         }
                     }
-                }
             } else {
                 goblin_quote = "Nothing here but dust and spiders. Pah!".to_string();
             }
@@ -766,8 +762,8 @@ where
                     let mut is_selected_full = app.selected_paths.contains(p);
                     let mut is_selected_partial = false;
 
-                    if p.is_dir() {
-                        if let TuiNode::LocalDir(path) = p {
+                    if p.is_dir()
+                        && let TuiNode::LocalDir(path) = p {
                             is_selected_partial = app.selected_paths.iter().any(|s| {
                                 if let TuiNode::LocalFile(sp) = s { sp.starts_with(path) } else { false }
                             });
@@ -782,7 +778,6 @@ where
                                 }
                             }
                         }
-                    }
 
                     let is_highlighted = i == app.selected_index;
                     let mut spans = Vec::new();

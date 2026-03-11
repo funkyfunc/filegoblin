@@ -117,38 +117,33 @@ impl Gobble for GeminiGobbler {
         }
 
         for chunk in parsed_chunks {
-            if let Some(inner_arr) = chunk[0][2].as_str() {
-                if let Ok(Value::Array(conv_data)) = serde_json::from_str(inner_arr) {
-                    if let Some(Value::Array(turns)) = conv_data.get(0) {
+            if let Some(inner_arr) = chunk[0][2].as_str()
+                && let Ok(Value::Array(conv_data)) = serde_json::from_str(inner_arr) {
+                    if let Some(Value::Array(turns)) = conv_data.first() {
                         for turn in turns {
                             if let Some(Value::Array(items)) = turn.get(0) {
-                                if let Some(Value::Array(user_parts)) = items.get(0) {
-                                    if let Some(Value::Array(user_content)) = user_parts.get(0) {
-                                        if let Some(text) =
-                                            user_content.get(0).and_then(|v| v.as_str())
+                                if let Some(Value::Array(user_parts)) = items.first()
+                                    && let Some(Value::Array(user_content)) = user_parts.first()
+                                        && let Some(text) =
+                                            user_content.first().and_then(|v| v.as_str())
                                         {
                                             builder.push_str(&format!("**User:**\n{}\n\n", text));
                                         }
-                                    }
-                                }
-                                if let Some(Value::Array(model_parts)) = items.get(1) {
-                                    if let Some(Value::Array(model_content)) = model_parts.get(0) {
-                                        if let Some(text) =
-                                            model_content.get(0).and_then(|v| v.as_str())
+                                if let Some(Value::Array(model_parts)) = items.get(1)
+                                    && let Some(Value::Array(model_content)) = model_parts.first()
+                                        && let Some(text) =
+                                            model_content.first().and_then(|v| v.as_str())
                                         {
                                             builder.push_str(&format!("**Gemini:**\n{}\n\n", text));
                                         }
-                                    }
-                                }
                             } else {
                                 // Simplified flat parser for varying proto structs
                                 if let Some(user_q) = turn.get(2).and_then(|v| v.as_str()) {
                                     builder.push_str(&format!("**User:**\n{}\n\n", user_q));
-                                } else if let Some(Value::Array(sub_items)) = turn.get(1) {
-                                    if let Some(text) = sub_items.get(0).and_then(|v| v.as_str()) {
+                                } else if let Some(Value::Array(sub_items)) = turn.get(1)
+                                    && let Some(text) = sub_items.first().and_then(|v| v.as_str()) {
                                         builder.push_str(&format!("**Message:**\n{}\n\n", text));
                                     }
-                                }
                             }
                         }
                     } else if let Some(title) = conv_data.get(2).and_then(|v| v.as_str()) {
@@ -158,7 +153,6 @@ impl Gobble for GeminiGobbler {
                         );
                     }
                 }
-            }
         }
 
         // Just in case parsing totally failed to match the proto layout, but data exists
@@ -188,17 +182,15 @@ fn parse_batchexecute_chunks(payload: &str) -> Vec<Value> {
     // Pattern: 1 line with length, next line is JSON array string
     let mut i = 0;
     while i < lines.len() {
-        if lines[i].parse::<usize>().is_ok() {
-            if i + 1 < lines.len() {
-                if let Ok(json) = serde_json::from_str::<Value>(lines[i + 1]) {
-                    if let Value::Array(arr) = json {
+        if lines[i].parse::<usize>().is_ok()
+            && i + 1 < lines.len() {
+                if let Ok(json) = serde_json::from_str::<Value>(lines[i + 1])
+                    && let Value::Array(arr) = json {
                         chunks.push(Value::Array(arr));
                     }
-                }
                 i += 2;
                 continue;
             }
-        }
         i += 1;
     }
     chunks

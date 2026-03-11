@@ -133,16 +133,14 @@ pub fn semantic_search(
         let mut p = String::new();
         let mut b = String::new();
         for field_value in retrieved_doc.field_values() {
-            if field_value.field == path_field {
-                if let Some(text) = (&field_value.value).as_str() {
+            if field_value.field == path_field
+                && let Some(text) = (&field_value.value).as_str() {
                     p = text.to_string();
                 }
-            }
-            if field_value.field == body_field {
-                if let Some(text) = (&field_value.value).as_str() {
+            if field_value.field == body_field
+                && let Some(text) = (&field_value.value).as_str() {
                     b = text.to_string();
                 }
-            }
         }
         results.push((score, p, b));
     }

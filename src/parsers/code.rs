@@ -70,11 +70,11 @@ impl Gobble for CodeGobbler {
                         symbols.push(format!("{} {{ ... }}", sig.trim()));
                         // Also recurse into impl to find methods
                         for i in 0..node.child_count() {
-                            if let Some(child) = node.child(i as u32) {
-                                if child.kind() == "declaration_list" {
+                            if let Some(child) = node.child(i as u32)
+                                && child.kind() == "declaration_list" {
                                     for j in 0..child.child_count() {
-                                        if let Some(method) = child.child(j as u32) {
-                                            if method.kind() == "function_item" {
+                                        if let Some(method) = child.child(j as u32)
+                                            && method.kind() == "function_item" {
                                                 let method_sig_end = (0..method.child_count())
                                                     .filter_map(|k| method.child(k as u32))
                                                     .find(|c| c.kind() == "block")
@@ -84,10 +84,8 @@ impl Gobble for CodeGobbler {
                                                     [method.start_byte()..method_sig_end];
                                                 symbols.push(format!("  {}", method_sig.trim()));
                                             }
-                                        }
                                     }
                                 }
-                            }
                         }
                         continue; // Don't push children to avoid double-processing methods
                     }
@@ -166,7 +164,7 @@ mod tests {
     fn test_code_skeleton_minification() {
         let gobbler = CodeGobbler;
         let p = Path::new("dummy.rs");
-        let default_args = crate::cli::Cli::parse_from(&["filegoblin"]);
+        let default_args = crate::cli::Cli::parse_from(["filegoblin"]);
         let result = gobbler.gobble(p, &default_args).unwrap();
 
         // Assert Structural Minification (PRD 3.3)

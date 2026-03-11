@@ -275,11 +275,10 @@ pub fn handle_google_login() -> Result<()> {
             if let Some(query) = url.split('?').nth(1) {
                 for pair in query.split('&') {
                     let mut kv = pair.split('=');
-                    if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
-                        if k == "code" {
+                    if let (Some(k), Some(v)) = (kv.next(), kv.next())
+                        && k == "code" {
                             auth_code = Some(AuthorizationCode::new(v.to_string()));
                         }
-                    }
                 }
             }
 

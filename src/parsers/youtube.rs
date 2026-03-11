@@ -281,13 +281,12 @@ impl Gobble for YouTubeGobbler {
             query_pairs.push(("fmt".to_string(), "srv1".to_string()));
 
             // Server-side translation
-            if let Some(lang) = &flags.lang {
-                if best_track["vssId"].as_str().unwrap_or("") != format!(".{}", lang)
+            if let Some(lang) = &flags.lang
+                && best_track["vssId"].as_str().unwrap_or("") != format!(".{}", lang)
                     && best_track["vssId"].as_str().unwrap_or("") != format!("a.{}", lang)
                 {
                     query_pairs.push(("tlang".to_string(), lang.clone()));
                 }
-            }
 
             parsed_url
                 .query_pairs_mut()
