@@ -30,7 +30,25 @@ pub fn gobble_app(
         return Ok(());
     }
 
-    if targets.is_empty() {
+    if args.google_login {
+        crate::parsers::google::handle_google_login()?;
+        return Ok(());
+    }
+
+    let mut raw_pairs: Vec<(String, String)> = Vec::new();
+
+    if args.clipboard {
+        if !args.quiet {
+            eprintln!("📋 Reading from system clipboard...");
+        }
+        let mut clipboard = arboard::Clipboard::new().context("Failed to access system clipboard")?;
+        let text = clipboard.get_text().context("Failed to read text from clipboard")?;
+        if !text.is_empty() {
+             raw_pairs.push(("clipboard".to_string(), text));
+        }
+    }
+
+    if targets.is_empty() && raw_pairs.is_empty() {
         return Ok(());
     }
 
@@ -38,11 +56,11 @@ pub fn gobble_app(
         targets[0].clone()
     } else if targets.len() == 2 {
         format!("{} & {}", targets[0], targets[1])
+    } else if args.clipboard && targets.is_empty() {
+        "clipboard".to_string()
     } else {
         format!("{} and {} others", targets[0], targets.len() - 1)
     };
-    
-    let mut raw_pairs: Vec<(String, String)> = Vec::new();
 
     for target in targets {
         if target == "-" {
@@ -99,6 +117,20 @@ pub fn gobble_app(
                     }
                     let twitter = parsers::twitter::TwitterGobbler { flavor: flavor.clone() };
                     let text = twitter.gobble_str(target, args)?;
+                    raw_pairs.push((target.to_string(), text));
+                } else if url.domain().map_or(false, |d| d.ends_with("docs.google.com") || d.ends_with("drive.google.com")) {
+                    if !args.quiet {
+                        eprintln!("📄 Diverting to GoogleGobbler for Workspace extraction...");
+                    }
+                    let google = parsers::google::GoogleGobbler;
+                    let text = google.gobble_str(target, args)?;
+                    raw_pairs.push((target.to_string(), text));
+                } else if url.domain().map_or(false, |d| d.ends_with("gemini.google.com")) {
+                    if !args.quiet {
+                        eprintln!("✨ Diverting to GeminiGobbler for shared conversation extraction...");
+                    }
+                    let gemini = parsers::gemini_share::GeminiGobbler;
+                    let text = gemini.gobble_str(target, args)?;
                     raw_pairs.push((target.to_string(), text));
                 } else {
                     let html_content = fetch_url(&url, args.quiet)?;

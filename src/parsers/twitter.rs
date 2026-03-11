@@ -16,14 +16,7 @@ use tiny_http::{Server, Response};
 
 const BEARER_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 
-/// Local storage format for ~/.config/filegoblin/credentials.json
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct LocalCredentials {
-    pub github_token: Option<String>,
-    pub twitter_access_token: Option<String>,
-    pub twitter_refresh_token: Option<String>,
-    pub twitter_token_expires_at: Option<u64>,
-}
+use crate::parsers::credentials::{LocalCredentials, load_credentials, save_credentials};
 
 pub struct TwitterGobbler {
     pub flavor: crate::flavors::Flavor,
@@ -706,31 +699,6 @@ impl Gobble for TwitterGobbler {
     }
 }
 
-fn get_credentials_path() -> std::path::PathBuf {
-    home::home_dir()
-        .map(|h| h.join(".config/filegoblin/credentials.json"))
-        .unwrap_or_else(|| std::path::PathBuf::from("credentials.json"))
-}
-
-pub fn load_credentials() -> Option<LocalCredentials> {
-    let path = get_credentials_path();
-    if !path.exists() {
-        return None;
-    }
-    let data = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&data).ok()
-}
-
-pub fn save_credentials(creds: &LocalCredentials) -> Result<()> {
-    let path = get_credentials_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let data = serde_json::to_string_pretty(creds)?;
-    std::fs::write(path, data)?;
-    Ok(())
-}
-
 fn build_oauth_client() -> BasicClient {
     let client_id = std::env::var("TWITTER_CLIENT_ID")
         .unwrap_or_else(|_| "Wm5uMmdDMEtzQ21xTzlMZTlVUGs6MTpjaQ".to_string());
@@ -813,7 +781,7 @@ pub fn handle_twitter_login() -> Result<()> {
     let mut creds = load_credentials().unwrap_or_default();
     creds.twitter_access_token = Some(token_result.access_token().secret().to_string());
     if let Some(rt) = token_result.refresh_token() {
-         creds.twitter_refresh_token = Some(rt.secret().to_string());
+        creds.twitter_refresh_token = Some(rt.secret().to_string());
     }
     creds.twitter_token_expires_at = Some(expires_at);
 

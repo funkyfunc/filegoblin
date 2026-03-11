@@ -48,3 +48,8 @@
 **Context:** Implementing a self-contained RAG (Retrieval-Augmented Generation) layer inside CLI contexts required deciding between dense embeddings using `candle-core` / `tract` (e.g., tracking a quantized 22MB MiniLM model) and a pure-text index.
 **Decision:** Selected `tantivy` (BM25 lexical search) over neural embeddings. The inverted index requires zero model weights, adds almost negligible binary bloat, and provides sub-10ms ephemeral searches. For highly specific technical code querying (e.g. searching for specific struct names), lexical matching out-competes generic semantic associations. We bridge the semantic gap manually via snake_case tokenization and synonym expansions.
 **Status:** Accepted
+
+## 2026-03-10: Persistent "Zero-Automation" Cloud Authentication
+**Context:** Parsing enterprise content (Google Docs, Gemini sessions) required overcoming OAuth token constraints in a strictly local, serverless binary without a baked-in Client Secret. Gemini share links specifically lack official API endpoints.
+**Decision:** We implemented the standard OAuth 2.0 PKCE desktop flow utilizing a temporary loopback listener on port `7890`. To overcome Gemini's reliance on first-party DOM components, we prompted the user directly during the `--google-login` setup to paste their `__Secure-1PSID` cookie. This satisfies our local-only execution requirements, ensures the binary stays devoid of hardcoded secrets, and avoids embedding third-party browser-automation runtimes.
+**Status:** Accepted

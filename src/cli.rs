@@ -18,7 +18,7 @@ pub enum CompressionLevel {
 )]
 pub struct Cli {
     /// The target files, directories, or URLs to ingest
-    #[arg(required_unless_present_any = ["interactive", "twitter_login"])]
+    #[arg(required_unless_present_any = ["interactive", "twitter_login", "google_login", "clipboard"])]
     pub paths: Vec<String>,
 
     // --- OUTPUT FORMATTING ---
@@ -130,6 +130,13 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities")]
     pub twitter_login: bool,
 
+    /// Authenticate via Google OAuth 2.0 PKCE to enable Docs/Drive ingestion and interactive Gemini session import
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub google_login: bool,
+
+    /// Paste from system clipboard as the primary input target (equivalent to pbpaste/xclip)
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub clipboard: bool,
 
     /// Launch the interactive TUI "Hoard Selector" dashboard
     #[arg(short, long, help_heading = "Developer Utilities")]

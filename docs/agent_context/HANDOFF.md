@@ -36,7 +36,7 @@
 
 ### 2. Next Steps for the Next Machine
 
-#### Priority 1: Google OAuth 2.0 (Phase XIV)
+#### Priority 1: Google OAuth 2.0 + Gemini Share Links (Phase XIV)
 **Research prompt at:** `docs/agent_context/google_oauth_research_prompt.md`
 
 Pattern closely mirrors the Twitter PKCE flow — should be a relatively fast implementation:
@@ -46,10 +46,43 @@ Pattern closely mirrors the Twitter PKCE flow — should be a relatively fast im
 - Store credentials in `~/.config/filegoblin/credentials.json` under `google_token` key
 - Wire up `drive.google.com` and `docs.google.com` URLs in the `lib.rs` router
 - Wire up `docs.google.com` export URL (`/export?format=md` or similar)
+- **Also store the Google session cookies** (`SID`, `__Secure-1PSID`, `__Secure-3PSID`) returned by the OAuth callback flow — these are needed for Gemini share links (see below)
 
 Read the research prompt first before implementing.
 
-#### Priority 2: Jupyter Notebook Gobbler (Phase XIV)
+#### Priority 1b: Gemini Share Link Ingestion (Phase XIV)
+**Depends on:** `--google-login` storing session cookies (above)
+
+Reverse-engineered the exact API call Gemini uses for share links (from Network tab):
+- **Endpoint:** `POST https://gemini.google.com/_/BardChatUi/data/batchexecute`
+- **Key params:** `rpcids=ujx1Bf`, `source-path=/share/<id>`, `bl=<build_label>`, `f.sid=<session_id>`
+- **POST body:** `f.req=[[["ujx1Bf","[[\"{share_id}\"]]",null,"generic"]]]&at=<xsrf_token>`
+
+**Implementation flow for `GeminiGobbler`:**
+1. Detect `gemini.google.com/share/<id>` URL pattern
+2. Load stored Google session cookies from `credentials.json`
+3. `GET gemini.google.com/share/<id>` with cookies → parse `WIZ_global_data` JSON blob from HTML
+   - Extract `FdrFJe` → `f.sid` parameter
+   - Extract `cfb2h` → `bl` (build label, changes with deployments)
+   - Extract `SNlM0d` → `at` XSRF token (**only present in authenticated page loads**)
+4. Fire the `batchexecute` POST with all three params + session cookies
+5. Parse the response (Google's `)]}'` prefixed JSON + length-chunked streaming format)
+6. Extract conversation turns from the nested array structure
+
+**Important findings from testing:**
+- Without auth cookies: page loads (511KB) but `SNlM0d` (at/XSRF token) is absent → RPC returns error 4
+- With valid auth cookies: full `WIZ_global_data` including `SNlM0d` is injected → RPC succeeds
+- The `bl` build label changes with each server deployment — must be scraped fresh each call, not hardcoded
+- OAuth bearer tokens alone do NOT work — this is cookie-based (same as how the browser does it)
+- Response format: `)]}'` header + length-prefixed chunks + nested JSON array — similar to YouTube's protobuf-lite
+
+#### Priority 2: `--clipboard` Flag (Quick Win, ~30 min)
+Read clipboard contents as filegoblin input — inverse of existing `--copy` (which outputs *to* clipboard):
+- Add `--clipboard` / `-c` flag to `src/cli.rs`
+- In `lib.rs`: if `--clipboard` set, spawn `pbpaste` (macOS) or `xclip -o` (Linux) and treat stdout as the input target
+- Allows: copy text from Gemini/ChatGPT → `gobble --clipboard` instead of fussing with temp files
+
+#### Priority 3: Jupyter Notebook Gobbler (Phase XIV)
 One-shot. `.ipynb` is plain JSON. Parse `cells[]` array, emit by `cell_type`:
 - `markdown` → emit as-is
 - `code` → fenced code block with language hint from kernel
