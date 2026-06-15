@@ -283,10 +283,10 @@ impl Gobble for YouTubeGobbler {
             // Server-side translation
             if let Some(lang) = &flags.lang
                 && best_track["vssId"].as_str().unwrap_or("") != format!(".{}", lang)
-                    && best_track["vssId"].as_str().unwrap_or("") != format!("a.{}", lang)
-                {
-                    query_pairs.push(("tlang".to_string(), lang.clone()));
-                }
+                && best_track["vssId"].as_str().unwrap_or("") != format!("a.{}", lang)
+            {
+                query_pairs.push(("tlang".to_string(), lang.clone()));
+            }
 
             parsed_url
                 .query_pairs_mut()

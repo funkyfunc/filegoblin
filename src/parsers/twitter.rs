@@ -1,17 +1,17 @@
 use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
-use sha2::{Sha256, Digest};
 use base64::{Engine as _, engine::general_purpose};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde_json::{json, Value};
 use urlencoding::encode;
 
 // oauth2 imports
 use oauth2::{
-    basic::BasicClient, reqwest::http_client, AuthUrl, AuthorizationCode, ClientId,
-    CsrfToken, PkceCodeChallenge, RedirectUrl, TokenResponse, TokenUrl, Scope, RefreshToken
+    AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, RefreshToken,
+    Scope, TokenResponse, TokenUrl, basic::BasicClient, reqwest::http_client,
 };
-use tiny_http::{Server, Response};
+use tiny_http::{Response, Server};
 
 const BEARER_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 
@@ -49,10 +49,7 @@ impl TwitterGobbler {
         general_purpose::STANDARD.encode(result)
     }
 
-    fn fetch_guest_token(
-        &self,
-        client: &reqwest::blocking::Client,
-    ) -> Result<String> {
+    fn fetch_guest_token(&self, client: &reqwest::blocking::Client) -> Result<String> {
         let res = client
             .post("https://api.twitter.com/1.1/guest/activate.json")
             .header("Authorization", format!("Bearer {}", BEARER_TOKEN))
@@ -72,10 +69,7 @@ impl TwitterGobbler {
             .context("No guest_token returned")
     }
 
-    fn try_graphql_extraction(
-        &self,
-        tweet_id: &str,
-    ) -> Result<Value> {
+    fn try_graphql_extraction(&self, tweet_id: &str) -> Result<Value> {
         let client = reqwest::blocking::ClientBuilder::new()
             .cookie_store(true)
             .use_rustls_tls()
@@ -157,7 +151,10 @@ impl TwitterGobbler {
             .header("Authorization", format!("Bearer {}", BEARER_TOKEN))
             .header("x-guest-token", guest_token)
             .header("x-csrf-token", ct0_token)
-            .header("x-client-transaction-id", self.generate_transaction_id(&path))
+            .header(
+                "x-client-transaction-id",
+                self.generate_transaction_id(&path),
+            )
             .header(
                 "User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -183,7 +180,8 @@ impl TwitterGobbler {
             .use_rustls_tls()
             .build()
             .context("Failed to initialize Syndication HTTP client")?;
-        let res = client.get(&url)
+        let res = client
+            .get(&url)
             .header(
                 "User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -198,40 +196,58 @@ impl TwitterGobbler {
 
     fn try_oauth2_extraction(&self, tweet_id: &str, access_token: &str) -> Result<Value> {
         let client = reqwest::blocking::Client::new();
-        
+
         let url = format!(
             "https://api.twitter.com/2/tweets/{}?tweet.fields=created_at,author_id,conversation_id,public_metrics,in_reply_to_user_id&expansions=author_id,attachments.media_keys,in_reply_to_user_id,referenced_tweets.id&media.fields=media_key,type,url,preview_image_url&user.fields=name,username",
             tweet_id
         );
-        let focal_res = client.get(&url)
+        let focal_res = client
+            .get(&url)
             .header("Authorization", format!("Bearer {}", access_token))
             .send()
             .context("Failed to fetch focal tweet via OAuth2")?;
 
         if !focal_res.status().is_success() {
-             anyhow::bail!("Focal tweet OAuth2 request failed: {}", focal_res.status());
+            anyhow::bail!("Focal tweet OAuth2 request failed: {}", focal_res.status());
         }
 
         let focal_json: Value = focal_res.json()?;
-        
-        let conversation_id = focal_json["data"]["conversation_id"].as_str().unwrap_or(tweet_id).to_string();
-        let author_username = focal_json["includes"]["users"][0]["username"].as_str().unwrap_or("").to_string();
+
+        let conversation_id = focal_json["data"]["conversation_id"]
+            .as_str()
+            .unwrap_or(tweet_id)
+            .to_string();
+        let author_username = focal_json["includes"]["users"][0]["username"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
 
         let mut thread_url = "https://api.twitter.com/2/tweets/search/recent?".to_string();
-        thread_url.push_str(&format!("query=conversation_id:{} from:{}", conversation_id, author_username));
-        thread_url.push_str("&tweet.fields=created_at,author_id,conversation_id,public_metrics,in_reply_to_user_id");
-        thread_url.push_str("&expansions=author_id,attachments.media_keys,in_reply_to_user_id,referenced_tweets.id");
+        thread_url.push_str(&format!(
+            "query=conversation_id:{} from:{}",
+            conversation_id, author_username
+        ));
+        thread_url.push_str(
+            "&tweet.fields=created_at,author_id,conversation_id,public_metrics,in_reply_to_user_id",
+        );
+        thread_url.push_str(
+            "&expansions=author_id,attachments.media_keys,in_reply_to_user_id,referenced_tweets.id",
+        );
         thread_url.push_str("&media.fields=media_key,type,url,preview_image_url");
         thread_url.push_str("&user.fields=name,username");
         thread_url.push_str("&max_results=100");
 
-        let thread_res = client.get(&thread_url)
+        let thread_res = client
+            .get(&thread_url)
             .header("Authorization", format!("Bearer {}", access_token))
             .send()
             .context("Failed to fetch thread via OAuth2")?;
 
         if !thread_res.status().is_success() {
-             anyhow::bail!("Thread search OAuth2 request failed: {}", thread_res.status());
+            anyhow::bail!(
+                "Thread search OAuth2 request failed: {}",
+                thread_res.status()
+            );
         }
 
         let thread_json: Value = thread_res.json()?;
@@ -252,34 +268,48 @@ impl TwitterGobbler {
 
         match self.try_graphql_extraction(&tweet_id) {
             Ok(json_ast) => {
-                let instructions = json_ast["data"]["threaded_conversation_with_injections_v2"]["instructions"].as_array();
+                let instructions =
+                    json_ast["data"]["threaded_conversation_with_injections_v2"]["instructions"]
+                        .as_array();
                 let mut nodes = Vec::new();
                 if let Some(insts) = instructions {
                     for inst in insts {
                         if inst["type"] == "TimelineAddEntries"
-                            && let Some(entries) = inst["entries"].as_array() {
-                                for entry in entries {
-                                    if let Some(entry_id) = entry["entryId"].as_str() {
-                                        if entry_id.starts_with("tweet-") {
-                                            let text = entry["itemContent"]["tweet_results"]["result"]["legacy"]["full_text"].as_str().unwrap_or("").to_string();
-                                            let tid = entry["itemContent"]["tweet_results"]["result"]["legacy"]["id_str"].as_str().unwrap_or("").to_string();
+                            && let Some(entries) = inst["entries"].as_array()
+                        {
+                            for entry in entries {
+                                if let Some(entry_id) = entry["entryId"].as_str() {
+                                    if entry_id.starts_with("tweet-") {
+                                        let text = entry["itemContent"]["tweet_results"]["result"]
+                                            ["legacy"]["full_text"]
+                                            .as_str()
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let tid = entry["itemContent"]["tweet_results"]["result"]["legacy"]["id_str"].as_str().unwrap_or("").to_string();
+                                        if !tid.is_empty() {
+                                            nodes.push((
+                                                format!("https://x.com/i/status/{}", tid),
+                                                text,
+                                            ));
+                                        }
+                                    } else if entry_id.starts_with("conversationthread-")
+                                        && let Some(items) = entry["content"]["items"].as_array()
+                                    {
+                                        for item in items {
+                                            let node = &item["item"];
+                                            let text = node["itemContent"]["tweet_results"]["result"]["legacy"]["full_text"].as_str().unwrap_or("").to_string();
+                                            let tid = node["itemContent"]["tweet_results"]["result"]["legacy"]["id_str"].as_str().unwrap_or("").to_string();
                                             if !tid.is_empty() {
-                                                nodes.push((format!("https://x.com/i/status/{}", tid), text));
+                                                nodes.push((
+                                                    format!("https://x.com/i/status/{}", tid),
+                                                    text,
+                                                ));
                                             }
-                                        } else if entry_id.starts_with("conversationthread-")
-                                            && let Some(items) = entry["content"]["items"].as_array() {
-                                                for item in items {
-                                                    let node = &item["item"];
-                                                    let text = node["itemContent"]["tweet_results"]["result"]["legacy"]["full_text"].as_str().unwrap_or("").to_string();
-                                                    let tid = node["itemContent"]["tweet_results"]["result"]["legacy"]["id_str"].as_str().unwrap_or("").to_string();
-                                                    if !tid.is_empty() {
-                                                        nodes.push((format!("https://x.com/i/status/{}", tid), text));
-                                                    }
-                                                }
-                                            }
+                                        }
                                     }
                                 }
                             }
+                        }
                     }
                 }
                 Ok(nodes)
@@ -297,28 +327,33 @@ impl TwitterGobbler {
     fn parse_graphql_tree(&self, url: &str, root: &Value, focal_id: &str) -> String {
         let mut builder = String::new();
 
-        let instructions = match root["data"]["threaded_conversation_with_injections_v2"]["instructions"].as_array() {
-            Some(i) => i,
-            None => return "Could not locate threading instructions in AST.\n".to_string(),
-        };
+        let instructions =
+            match root["data"]["threaded_conversation_with_injections_v2"]["instructions"]
+                .as_array()
+            {
+                Some(i) => i,
+                None => return "Could not locate threading instructions in AST.\n".to_string(),
+            };
 
         let mut tweet_nodes = Vec::new();
         for instruction in instructions {
             if instruction["type"] == "TimelineAddEntries"
-                && let Some(entries) = instruction["entries"].as_array() {
-                    for entry in entries {
-                        if let Some(entry_id) = entry["entryId"].as_str() {
-                            if entry_id.starts_with("tweet-") {
-                                tweet_nodes.push(entry);
-                            } else if entry_id.starts_with("conversationthread-")
-                                && let Some(items) = entry["content"]["items"].as_array() {
-                                    for item in items {
-                                        tweet_nodes.push(&item["item"]);
-                                    }
-                                }
+                && let Some(entries) = instruction["entries"].as_array()
+            {
+                for entry in entries {
+                    if let Some(entry_id) = entry["entryId"].as_str() {
+                        if entry_id.starts_with("tweet-") {
+                            tweet_nodes.push(entry);
+                        } else if entry_id.starts_with("conversationthread-")
+                            && let Some(items) = entry["content"]["items"].as_array()
+                        {
+                            for item in items {
+                                tweet_nodes.push(&item["item"]);
+                            }
                         }
                     }
                 }
+            }
         }
 
         let mut focal_author = String::new();
@@ -327,12 +362,18 @@ impl TwitterGobbler {
 
         for node in tweet_nodes {
             let legacy = &node["itemContent"]["tweet_results"]["result"]["legacy"];
-            if legacy.is_null() { continue; }
+            if legacy.is_null() {
+                continue;
+            }
             let id = legacy["id_str"].as_str().unwrap_or("");
             if id == focal_id {
                 focal_node_opt = Some(node);
-                let user_legacy = &node["itemContent"]["tweet_results"]["result"]["core"]["user_results"]["result"]["legacy"];
-                focal_author = user_legacy["screen_name"].as_str().unwrap_or("unknown").to_string();
+                let user_legacy = &node["itemContent"]["tweet_results"]["result"]["core"]["user_results"]
+                    ["result"]["legacy"];
+                focal_author = user_legacy["screen_name"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string();
             } else {
                 thread_nodes.push(node);
             }
@@ -342,19 +383,32 @@ impl TwitterGobbler {
             crate::flavors::Flavor::Anthropic => {
                 builder.push_str(&format!("<twitter_thread source_url=\"{}\">\n", url));
                 if let Some(focal_node) = focal_node_opt {
-                    builder.push_str(&self.format_tweet_xml(focal_node, "focal_tweet", &focal_author, true));
+                    builder.push_str(&self.format_tweet_xml(
+                        focal_node,
+                        "focal_tweet",
+                        &focal_author,
+                        true,
+                    ));
                 }
                 if !thread_nodes.is_empty() {
                     builder.push_str("  <thread_context>\n");
                     for node in thread_nodes {
-                        builder.push_str(&self.format_tweet_xml(node, "tweet", &focal_author, false));
+                        builder.push_str(&self.format_tweet_xml(
+                            node,
+                            "tweet",
+                            &focal_author,
+                            false,
+                        ));
                     }
                     builder.push_str("  </thread_context>\n");
                 }
                 builder.push_str("</twitter_thread>\n");
-            },
+            }
             _ => {
-                builder.push_str(&format!("Twitter Thread by @{}\nThread URL: {}\n\n", focal_author, url));
+                builder.push_str(&format!(
+                    "Twitter Thread by @{}\nThread URL: {}\n\n",
+                    focal_author, url
+                ));
                 let mut index = 1;
                 if let Some(focal_node) = focal_node_opt {
                     builder.push_str(&self.format_tweet_md(focal_node, index));
@@ -374,8 +428,9 @@ impl TwitterGobbler {
         if let Some(media_arr) = legacy["entities"]["media"].as_array() {
             for m in media_arr {
                 if let Some(url) = m["media_url_https"].as_str() {
-                    let url_orig = url.replace("?format=jpg&name=medium", "?format=jpg&name=orig")
-                                      .replace("?format=png&name=medium", "?format=png&name=orig");
+                    let url_orig = url
+                        .replace("?format=jpg&name=medium", "?format=jpg&name=orig")
+                        .replace("?format=png&name=medium", "?format=png&name=orig");
                     media_block.push_str(&format!("\nMedia Attached:\n*({})\n", url_orig));
                 }
             }
@@ -389,9 +444,11 @@ impl TwitterGobbler {
             media_block.push_str("      <media>\n");
             for m in media_arr {
                 if let Some(url) = m["media_url_https"].as_str() {
-                    let url_orig = url.replace("?format=jpg&name=medium", "?format=jpg&name=orig")
-                                      .replace("?format=png&name=medium", "?format=png&name=orig");
-                    media_block.push_str(&format!("        <image url=\"{}\"></image>\n", url_orig));
+                    let url_orig = url
+                        .replace("?format=jpg&name=medium", "?format=jpg&name=orig")
+                        .replace("?format=png&name=medium", "?format=png&name=orig");
+                    media_block
+                        .push_str(&format!("        <image url=\"{}\"></image>\n", url_orig));
                 }
             }
             media_block.push_str("      </media>\n");
@@ -399,47 +456,74 @@ impl TwitterGobbler {
         media_block
     }
 
-    fn format_tweet_xml(&self, node: &Value, tag: &str, focal_author: &str, is_focal: bool) -> String {
+    fn format_tweet_xml(
+        &self,
+        node: &Value,
+        tag: &str,
+        focal_author: &str,
+        is_focal: bool,
+    ) -> String {
         let mut res = String::new();
         let legacy = &node["itemContent"]["tweet_results"]["result"]["legacy"];
         let id = legacy["id_str"].as_str().unwrap_or("");
         let parent_id = legacy["in_reply_to_status_id_str"].as_str().unwrap_or("");
         let text = legacy["full_text"].as_str().unwrap_or("...");
-        
-        let user_legacy = &node["itemContent"]["tweet_results"]["result"]["core"]["user_results"]["result"]["legacy"];
+
+        let user_legacy = &node["itemContent"]["tweet_results"]["result"]["core"]["user_results"]["result"]
+            ["legacy"];
         let handle = user_legacy["screen_name"].as_str().unwrap_or("unknown");
         let name = user_legacy["name"].as_str().unwrap_or("unknown");
         let created_at = legacy["created_at"].as_str().unwrap_or("unknown");
-        
+
         let likes = legacy["favorite_count"].as_i64().unwrap_or(0);
         let rts = legacy["retweet_count"].as_i64().unwrap_or(0);
         let replies = legacy["reply_count"].as_i64().unwrap_or(0);
 
         let media_block = self.extract_media_xml(legacy);
-        let relationship = if handle == focal_author { "self_reply" } else { "external_reply" };
+        let relationship = if handle == focal_author {
+            "self_reply"
+        } else {
+            "external_reply"
+        };
 
         let padding = if is_focal { "  " } else { "    " };
 
         if is_focal {
             res.push_str(&format!("{}<{} id=\"{}\">\n", padding, tag, id));
         } else {
-            res.push_str(&format!("{}<{} id=\"{}\" relationship=\"{}\" parent_id=\"{}\">\n", padding, tag, id, relationship, parent_id));
+            res.push_str(&format!(
+                "{}<{} id=\"{}\" relationship=\"{}\" parent_id=\"{}\">\n",
+                padding, tag, id, relationship, parent_id
+            ));
         }
 
         res.push_str(&format!("{}  <metadata>\n", padding));
-        res.push_str(&format!("{}    <author username=\"@{}\" display_name=\"{}\" />\n", padding, handle, name));
-        res.push_str(&format!("{}    <timestamp>{}</timestamp>\n", padding, created_at));
-        res.push_str(&format!("{}    <metrics likes=\"{}\" retweets=\"{}\" replies=\"{}\" />\n", padding, likes, rts, replies));
+        res.push_str(&format!(
+            "{}    <author username=\"@{}\" display_name=\"{}\" />\n",
+            padding, handle, name
+        ));
+        res.push_str(&format!(
+            "{}    <timestamp>{}</timestamp>\n",
+            padding, created_at
+        ));
+        res.push_str(&format!(
+            "{}    <metrics likes=\"{}\" retweets=\"{}\" replies=\"{}\" />\n",
+            padding, likes, rts, replies
+        ));
         res.push_str(&format!("{}  </metadata>\n", padding));
         res.push_str(&format!("{}  <content>\n", padding));
-        res.push_str(&format!("{}    <text>{}</text>\n", padding, text.replace("\n", &format!("\n{}    ", padding))));
+        res.push_str(&format!(
+            "{}    <text>{}</text>\n",
+            padding,
+            text.replace("\n", &format!("\n{}    ", padding))
+        ));
         if !media_block.is_empty() {
             let padded_media = media_block.replace("\n", &format!("\n{}", padding));
             res.push_str(&padded_media);
         }
         res.push_str(&format!("{}  </content>\n", padding));
         res.push_str(&format!("{}</{}>\n", padding, tag));
-        
+
         res
     }
 
@@ -447,11 +531,12 @@ impl TwitterGobbler {
         let mut res = String::new();
         let legacy = &node["itemContent"]["tweet_results"]["result"]["legacy"];
         let text = legacy["full_text"].as_str().unwrap_or("...");
-        let user_legacy = &node["itemContent"]["tweet_results"]["result"]["core"]["user_results"]["result"]["legacy"];
+        let user_legacy = &node["itemContent"]["tweet_results"]["result"]["core"]["user_results"]["result"]
+            ["legacy"];
         let handle = user_legacy["screen_name"].as_str().unwrap_or("unknown");
         let name = user_legacy["name"].as_str().unwrap_or("unknown");
         let created_at = legacy["created_at"].as_str().unwrap_or("unknown");
-        
+
         let likes = legacy["favorite_count"].as_i64().unwrap_or(0);
         let rts = legacy["retweet_count"].as_i64().unwrap_or(0);
         let replies = legacy["reply_count"].as_i64().unwrap_or(0);
@@ -459,12 +544,17 @@ impl TwitterGobbler {
         let media_block = self.extract_media(legacy);
 
         res.push_str(&format!("{}. @{} ({})\n", index, handle, name));
-        res.push_str(&format!("Posted at: {} | Likes: {} | Retweets: {} | Replies: {}\n", created_at, likes, rts, replies));
-        
+        res.push_str(&format!(
+            "Posted at: {} | Likes: {} | Retweets: {} | Replies: {}\n",
+            created_at, likes, rts, replies
+        ));
+
         let parent_id = legacy["in_reply_to_status_id_str"].as_str().unwrap_or("");
         if !parent_id.is_empty() {
-             let parent_author = legacy["in_reply_to_screen_name"].as_str().unwrap_or("unknown");
-             res.push_str(&format!("Replying to @{}\n", parent_author));
+            let parent_author = legacy["in_reply_to_screen_name"]
+                .as_str()
+                .unwrap_or("unknown");
+            res.push_str(&format!("Replying to @{}\n", parent_author));
         }
 
         res.push_str(&format!("> {}\n", text.replace("\n", "\n> ")));
@@ -477,89 +567,120 @@ impl TwitterGobbler {
 
     fn parse_oauth_tree(&self, url: &str, root: &Value) -> String {
         let mut builder = String::new();
-        
+
         // The root contains {"focal": {...}, "thread": {...}}
         let focal_json = &root["focal"];
         let thread_json = &root["thread"];
-        
+
         let focal_id = focal_json["data"]["id"].as_str().unwrap_or("");
         let focal_text = focal_json["data"]["text"].as_str().unwrap_or("...");
         let focal_author_id = focal_json["data"]["author_id"].as_str().unwrap_or("");
-        
+
         let mut username = "unknown".to_string();
         let mut display_name = "unknown".to_string();
         if let Some(users) = focal_json["includes"]["users"].as_array() {
-             for u in users {
-                  if u["id"].as_str() == Some(focal_author_id) {
-                       username = u["username"].as_str().unwrap_or("unknown").to_string();
-                       display_name = u["name"].as_str().unwrap_or("unknown").to_string();
-                       break;
-                  }
-             }
+            for u in users {
+                if u["id"].as_str() == Some(focal_author_id) {
+                    username = u["username"].as_str().unwrap_or("unknown").to_string();
+                    display_name = u["name"].as_str().unwrap_or("unknown").to_string();
+                    break;
+                }
+            }
         }
 
-        let focal_timestamp = focal_json["data"]["created_at"].as_str().unwrap_or("unknown");
-        let likes = focal_json["data"]["public_metrics"]["like_count"].as_i64().unwrap_or(0);
+        let focal_timestamp = focal_json["data"]["created_at"]
+            .as_str()
+            .unwrap_or("unknown");
+        let likes = focal_json["data"]["public_metrics"]["like_count"]
+            .as_i64()
+            .unwrap_or(0);
 
         match self.flavor {
             crate::flavors::Flavor::Anthropic => {
-                 builder.push_str(&format!("<twitter_thread source_url=\"{}\">\n", url));
-                 builder.push_str(&format!("  <focal_tweet id=\"{}\">\n", focal_id));
-                 builder.push_str("    <metadata>\n");
-                 builder.push_str(&format!("      <author username=\"@{}\" display_name=\"{}\" />\n", username, display_name));
-                 builder.push_str(&format!("      <timestamp>{}</timestamp>\n", focal_timestamp));
-                 builder.push_str(&format!("      <metrics likes=\"{}\" retweets=\"0\" replies=\"0\" />\n", likes));
-                 builder.push_str("    </metadata>\n");
-                 builder.push_str("    <content>\n");
-                 builder.push_str(&format!("      <text>{}</text>\n", focal_text.replace("\n", "\n      ")));
-                 builder.push_str("    </content>\n");
-                 builder.push_str("  </focal_tweet>\n");
-                 
-                 if let Some(data) = thread_json["data"].as_array()
-                      && !data.is_empty() {
-                           builder.push_str("  <thread_context>\n");
-                           for item in data.iter().rev() {
-                                let id = item["id"].as_str().unwrap_or("");
-                                let text = item["text"].as_str().unwrap_or("...");
-                                let created_at = item["created_at"].as_str().unwrap_or("unknown");
-                                let t_likes = item["public_metrics"]["like_count"].as_i64().unwrap_or(0);
-                                builder.push_str(&format!("    <tweet id=\"{}\">\n", id));
-                                builder.push_str("      <metadata>\n");
-                                builder.push_str(&format!("        <timestamp>{}</timestamp>\n", created_at));
-                                builder.push_str(&format!("        <metrics likes=\"{}\" retweets=\"0\" replies=\"0\" />\n", t_likes));
-                                builder.push_str("      </metadata>\n");
-                                builder.push_str("      <content>\n");
-                                builder.push_str(&format!("        <text>{}</text>\n", text.replace("\n", "\n        ")));
-                                builder.push_str("      </content>\n");
-                                builder.push_str("    </tweet>\n");
-                           }
-                           builder.push_str("  </thread_context>\n");
-                      }
-                 builder.push_str("</twitter_thread>\n");
-            },
+                builder.push_str(&format!("<twitter_thread source_url=\"{}\">\n", url));
+                builder.push_str(&format!("  <focal_tweet id=\"{}\">\n", focal_id));
+                builder.push_str("    <metadata>\n");
+                builder.push_str(&format!(
+                    "      <author username=\"@{}\" display_name=\"{}\" />\n",
+                    username, display_name
+                ));
+                builder.push_str(&format!(
+                    "      <timestamp>{}</timestamp>\n",
+                    focal_timestamp
+                ));
+                builder.push_str(&format!(
+                    "      <metrics likes=\"{}\" retweets=\"0\" replies=\"0\" />\n",
+                    likes
+                ));
+                builder.push_str("    </metadata>\n");
+                builder.push_str("    <content>\n");
+                builder.push_str(&format!(
+                    "      <text>{}</text>\n",
+                    focal_text.replace("\n", "\n      ")
+                ));
+                builder.push_str("    </content>\n");
+                builder.push_str("  </focal_tweet>\n");
+
+                if let Some(data) = thread_json["data"].as_array()
+                    && !data.is_empty()
+                {
+                    builder.push_str("  <thread_context>\n");
+                    for item in data.iter().rev() {
+                        let id = item["id"].as_str().unwrap_or("");
+                        let text = item["text"].as_str().unwrap_or("...");
+                        let created_at = item["created_at"].as_str().unwrap_or("unknown");
+                        let t_likes = item["public_metrics"]["like_count"].as_i64().unwrap_or(0);
+                        builder.push_str(&format!("    <tweet id=\"{}\">\n", id));
+                        builder.push_str("      <metadata>\n");
+                        builder
+                            .push_str(&format!("        <timestamp>{}</timestamp>\n", created_at));
+                        builder.push_str(&format!(
+                            "        <metrics likes=\"{}\" retweets=\"0\" replies=\"0\" />\n",
+                            t_likes
+                        ));
+                        builder.push_str("      </metadata>\n");
+                        builder.push_str("      <content>\n");
+                        builder.push_str(&format!(
+                            "        <text>{}</text>\n",
+                            text.replace("\n", "\n        ")
+                        ));
+                        builder.push_str("      </content>\n");
+                        builder.push_str("    </tweet>\n");
+                    }
+                    builder.push_str("  </thread_context>\n");
+                }
+                builder.push_str("</twitter_thread>\n");
+            }
             _ => {
-                 builder.push_str(&format!("Twitter Thread by @{}\nThread URL: {}\n\n", username, url));
-                 builder.push_str(&format!("1. @{} ({})\n", username, display_name));
-                 builder.push_str(&format!("Posted at: {} | Likes: {}\n", focal_timestamp, likes));
-                 builder.push_str(&format!("> {}\n", focal_text.replace("\n", "\n> ")));
-                 builder.push_str("---\n\n");
-                 
-                 let mut index = 2;
-                 if let Some(data) = thread_json["data"].as_array() {
-                      for item in data.iter().rev() {
-                           let text = item["text"].as_str().unwrap_or("...");
-                           let created_at = item["created_at"].as_str().unwrap_or("unknown");
-                           let t_likes = item["public_metrics"]["like_count"].as_i64().unwrap_or(0);
-                           builder.push_str(&format!("{}. @{} ({})\n", index, username, display_name));
-                           builder.push_str(&format!("Posted at: {} | Likes: {}\n", created_at, t_likes));
-                           builder.push_str(&format!("> {}\n", text.replace("\n", "\n> ")));
-                           builder.push_str("---\n\n");
-                           index += 1;
-                      }
-                 }
+                builder.push_str(&format!(
+                    "Twitter Thread by @{}\nThread URL: {}\n\n",
+                    username, url
+                ));
+                builder.push_str(&format!("1. @{} ({})\n", username, display_name));
+                builder.push_str(&format!(
+                    "Posted at: {} | Likes: {}\n",
+                    focal_timestamp, likes
+                ));
+                builder.push_str(&format!("> {}\n", focal_text.replace("\n", "\n> ")));
+                builder.push_str("---\n\n");
+
+                let mut index = 2;
+                if let Some(data) = thread_json["data"].as_array() {
+                    for item in data.iter().rev() {
+                        let text = item["text"].as_str().unwrap_or("...");
+                        let created_at = item["created_at"].as_str().unwrap_or("unknown");
+                        let t_likes = item["public_metrics"]["like_count"].as_i64().unwrap_or(0);
+                        builder.push_str(&format!("{}. @{} ({})\n", index, username, display_name));
+                        builder
+                            .push_str(&format!("Posted at: {} | Likes: {}\n", created_at, t_likes));
+                        builder.push_str(&format!("> {}\n", text.replace("\n", "\n> ")));
+                        builder.push_str("---\n\n");
+                        index += 1;
+                    }
+                }
             }
         }
-        
+
         builder
     }
 }
@@ -579,39 +700,53 @@ impl Gobble for TwitterGobbler {
 
         let mut access_token_opt = None;
         if let Some(mut creds) = load_credentials()
-             && let (Some(token), Some(expires_at), Some(refresh)) = (&creds.twitter_access_token, creds.twitter_token_expires_at, &creds.twitter_refresh_token) {
-                  let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-                  if now > expires_at {
-                       eprintln!("🔄 OAuth2 token expired. Refreshing...");
-                       let client = build_oauth_client();
-                       if let Ok(token_result) = client.exchange_refresh_token(&RefreshToken::new(refresh.to_string())).request(http_client) {
-                            creds.twitter_access_token = Some(token_result.access_token().secret().to_string());
-                            if let Some(rt) = token_result.refresh_token() {
-                                 creds.twitter_refresh_token = Some(rt.secret().to_string());
-                            }
-                            let exp_in = token_result.expires_in().unwrap_or(std::time::Duration::from_secs(7200));
-                            creds.twitter_token_expires_at = Some(now + exp_in.as_secs());
-                            let _ = save_credentials(&creds);
-                            access_token_opt = creds.twitter_access_token.clone();
-                       }
-                  } else {
-                       access_token_opt = Some(token.to_string());
-                  }
-             }
+            && let (Some(token), Some(expires_at), Some(refresh)) = (
+                &creds.twitter_access_token,
+                creds.twitter_token_expires_at,
+                &creds.twitter_refresh_token,
+            )
+        {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            if now > expires_at {
+                eprintln!("🔄 OAuth2 token expired. Refreshing...");
+                let client = build_oauth_client();
+                if let Ok(token_result) = client
+                    .exchange_refresh_token(&RefreshToken::new(refresh.to_string()))
+                    .request(http_client)
+                {
+                    creds.twitter_access_token =
+                        Some(token_result.access_token().secret().to_string());
+                    if let Some(rt) = token_result.refresh_token() {
+                        creds.twitter_refresh_token = Some(rt.secret().to_string());
+                    }
+                    let exp_in = token_result
+                        .expires_in()
+                        .unwrap_or(std::time::Duration::from_secs(7200));
+                    creds.twitter_token_expires_at = Some(now + exp_in.as_secs());
+                    let _ = save_credentials(&creds);
+                    access_token_opt = creds.twitter_access_token.clone();
+                }
+            } else {
+                access_token_opt = Some(token.to_string());
+            }
+        }
 
         if let Some(token) = access_token_opt {
-             eprintln!("🕵️ Attempting Primary OAuth2 Extraction Flow...");
-             match self.try_oauth2_extraction(&tweet_id, &token) {
-                  Ok(json_ast) => {
-                       eprintln!("✅ OAuth2 extraction succeeded! Parsing Thread...");
-                       let parsed = self.parse_oauth_tree(url, &json_ast);
-                       return Ok(parsed);
-                  }
-                  Err(e) => {
-                       eprintln!("⚠️ OAuth2 failed ({}). Cascading to Guest Token...", e);
-                       // Fallthrough to Guest Token logic
-                  }
-             }
+            eprintln!("🕵️ Attempting Primary OAuth2 Extraction Flow...");
+            match self.try_oauth2_extraction(&tweet_id, &token) {
+                Ok(json_ast) => {
+                    eprintln!("✅ OAuth2 extraction succeeded! Parsing Thread...");
+                    let parsed = self.parse_oauth_tree(url, &json_ast);
+                    return Ok(parsed);
+                }
+                Err(e) => {
+                    eprintln!("⚠️ OAuth2 failed ({}). Cascading to Guest Token...", e);
+                    // Fallthrough to Guest Token logic
+                }
+            }
         }
 
         eprintln!("🕵️ Attempting Legacy GraphQL Extraction Flow...");
@@ -625,11 +760,22 @@ impl Gobble for TwitterGobbler {
             }
             Err(_e) => {
                 use colored::Colorize;
-                eprintln!("\n{}", "⚠️  Twitter rate-limited or blocked the unauthenticated request.".truecolor(255, 99, 71).bold());
-                eprintln!("{}  For reliable access, run: {}", "💡".bold(), "gobble --twitter-login".truecolor(0, 255, 128).bold());
+                eprintln!(
+                    "\n{}",
+                    "⚠️  Twitter rate-limited or blocked the unauthenticated request."
+                        .truecolor(255, 99, 71)
+                        .bold()
+                );
+                eprintln!(
+                    "{}  For reliable access, run: {}",
+                    "💡".bold(),
+                    "gobble --twitter-login".truecolor(0, 255, 128).bold()
+                );
                 eprintln!("    This takes ~2 minutes and stores credentials locally.\n");
-                
-                anyhow::bail!("Unauthenticated Twitter GraphQL Extraction Failed. Please use --twitter-login.");
+
+                anyhow::bail!(
+                    "Unauthenticated Twitter GraphQL Extraction Failed. Please use --twitter-login."
+                );
             }
         }
     }
@@ -650,7 +796,10 @@ fn build_oauth_client() -> BasicClient {
 
 pub fn handle_twitter_login() -> Result<()> {
     use colored::Colorize;
-    eprintln!("{}", "🐦 Initiating Twitter OAuth 2.0 Login...".truecolor(0, 200, 255));
+    eprintln!(
+        "{}",
+        "🐦 Initiating Twitter OAuth 2.0 Login...".truecolor(0, 200, 255)
+    );
 
     let client = build_oauth_client();
     let (pkce_code_challenge, pkce_code_verifier) = PkceCodeChallenge::new_random_sha256();
@@ -663,17 +812,28 @@ pub fn handle_twitter_login() -> Result<()> {
         .set_pkce_challenge(pkce_code_challenge)
         .url();
 
-    eprintln!("\n{}\n", "Press ENTER to open your browser and authorize 'filegoblin'.".bold());
-    eprintln!("If the browser doesn't open automatically, navigate to this URL:\n{}\n", authorize_url.as_str().underline());
-    
+    eprintln!(
+        "\n{}\n",
+        "Press ENTER to open your browser and authorize 'filegoblin'.".bold()
+    );
+    eprintln!(
+        "If the browser doesn't open automatically, navigate to this URL:\n{}\n",
+        authorize_url.as_str().underline()
+    );
+
     let mut dummy = String::new();
     std::io::stdin().read_line(&mut dummy)?;
 
     if let Err(e) = open::that(authorize_url.as_str()) {
-         eprintln!("⚠️ Could not open browser automatically: {}", e);
+        eprintln!("⚠️ Could not open browser automatically: {}", e);
     }
 
-    let server = Server::http("127.0.0.1:7890").map_err(|e| anyhow::anyhow!("Failed to bind to localhost:7890. Is the port in use? {}", e))?;
+    let server = Server::http("127.0.0.1:7890").map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to bind to localhost:7890. Is the port in use? {}",
+            e
+        )
+    })?;
     eprintln!("Waiting for authorization callback on localhost:7890...");
 
     let mut auth_code = None;
@@ -685,18 +845,21 @@ pub fn handle_twitter_login() -> Result<()> {
                 for pair in query.split('&') {
                     let mut kv = pair.split('=');
                     if let (Some(k), Some(v)) = (kv.next(), kv.next())
-                        && k == "code" {
-                            auth_code = Some(AuthorizationCode::new(v.to_string()));
-                        }
+                        && k == "code"
+                    {
+                        auth_code = Some(AuthorizationCode::new(v.to_string()));
+                    }
                 }
             }
 
-            let response = Response::from_string("Success! You can now close this tab and return to the terminal.");
+            let response = Response::from_string(
+                "Success! You can now close this tab and return to the terminal.",
+            );
             let _ = request.respond(response);
             break;
         } else {
-             let response = Response::from_string("Not Found").with_status_code(404);
-             let _ = request.respond(response);
+            let response = Response::from_string("Not Found").with_status_code(404);
+            let _ = request.respond(response);
         }
     }
 
@@ -710,8 +873,14 @@ pub fn handle_twitter_login() -> Result<()> {
         .request(http_client)
         .context("Failed to retrieve token from Twitter API")?;
 
-    let expires_in = token_result.expires_in().unwrap_or(std::time::Duration::from_secs(7200));
-    let expires_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + expires_in.as_secs();
+    let expires_in = token_result
+        .expires_in()
+        .unwrap_or(std::time::Duration::from_secs(7200));
+    let expires_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + expires_in.as_secs();
 
     let mut creds = load_credentials().unwrap_or_default();
     creds.twitter_access_token = Some(token_result.access_token().secret().to_string());
@@ -723,20 +892,28 @@ pub fn handle_twitter_login() -> Result<()> {
     save_credentials(&creds)?;
 
     let display_name = match reqwest::blocking::Client::new()
-         .get("https://api.twitter.com/2/users/me")
-         .bearer_auth(token_result.access_token().secret())
-         .send() {
-              Ok(res) => {
-                   if let Ok(json) = res.json::<Value>() {
-                        json["data"]["username"].as_str().unwrap_or("Unknown").to_string()
-                   } else {
-                        "Unknown".to_string()
-                   }
-              },
-              Err(_) => "Unknown".to_string()
-         };
+        .get("https://api.twitter.com/2/users/me")
+        .bearer_auth(token_result.access_token().secret())
+        .send()
+    {
+        Ok(res) => {
+            if let Ok(json) = res.json::<Value>() {
+                json["data"]["username"]
+                    .as_str()
+                    .unwrap_or("Unknown")
+                    .to_string()
+            } else {
+                "Unknown".to_string()
+            }
+        }
+        Err(_) => "Unknown".to_string(),
+    };
 
-    eprintln!("{} Connected as @{}! Credentials saved to ~/.config/filegoblin/credentials.json", "✅".green(), display_name.bold());
+    eprintln!(
+        "{} Connected as @{}! Credentials saved to ~/.config/filegoblin/credentials.json",
+        "✅".green(),
+        display_name.bold()
+    );
 
     Ok(())
 }

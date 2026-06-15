@@ -93,12 +93,13 @@ impl TuiNode {
 
     pub fn from_arg(arg: &str) -> Self {
         if let Ok(url) = Url::parse(arg)
-            && (url.scheme() == "http" || url.scheme() == "https") {
-                return TuiNode::WebDir {
-                    url: arg.to_string(),
-                    title: None,
-                };
-            }
+            && (url.scheme() == "http" || url.scheme() == "https")
+        {
+            return TuiNode::WebDir {
+                url: arg.to_string(),
+                title: None,
+            };
+        }
         let p = PathBuf::from(arg);
         if p.is_dir() {
             TuiNode::LocalDir(p)
@@ -329,25 +330,24 @@ impl<'a> App<'a> {
                                 if let Ok(base_url) = Url::parse(url) {
                                     for element in document.select(&selector) {
                                         if let Some(href) = element.value().attr("href")
-                                            && let Ok(mut next_url) = base_url.join(href) {
-                                                let s = next_url.scheme();
-                                                if s == "http" || s == "https" {
-                                                    next_url.set_fragment(None);
-                                                    let title = element
-                                                        .text()
-                                                        .collect::<Vec<_>>()
-                                                        .join(" ");
-                                                    let title_opt = if title.trim().is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(title.trim().to_string())
-                                                    };
-                                                    items.push(TuiNode::WebDir {
-                                                        url: next_url.to_string(),
-                                                        title: title_opt,
-                                                    });
-                                                }
+                                            && let Ok(mut next_url) = base_url.join(href)
+                                        {
+                                            let s = next_url.scheme();
+                                            if s == "http" || s == "https" {
+                                                next_url.set_fragment(None);
+                                                let title =
+                                                    element.text().collect::<Vec<_>>().join(" ");
+                                                let title_opt = if title.trim().is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(title.trim().to_string())
+                                                };
+                                                items.push(TuiNode::WebDir {
+                                                    url: next_url.to_string(),
+                                                    title: title_opt,
+                                                });
                                             }
+                                        }
                                     }
                                 }
                                 items.sort_by_key(|n| n.target_str());
@@ -535,7 +535,8 @@ impl<'a> App<'a> {
                             let gobbler = filegoblin::parsers::web::WebGobbler {
                                 extract_full: false,
                             };
-                            let fallback_args = filegoblin::cli::Cli::parse_from(["filegoblin"]);
+                            let fallback_args =
+                                filegoblin::cli::Cli::parse_from(["filegoblin", "dummy"]);
                             match filegoblin::parsers::gobble::Gobble::gobble_str(
                                 &gobbler,
                                 &html,
@@ -641,16 +642,16 @@ where
         for p in &app.current_items {
             if let TuiNode::LocalDir(path) = p
                 && !app.dir_file_counts.contains_key(p)
-                    && app.selected_paths.iter().any(|s| {
-                        if let TuiNode::LocalFile(sp) = s {
-                            sp.starts_with(path)
-                        } else {
-                            false
-                        }
-                    })
-                {
-                    missing_counts.push(p.clone());
-                }
+                && app.selected_paths.iter().any(|s| {
+                    if let TuiNode::LocalFile(sp) = s {
+                        sp.starts_with(path)
+                    } else {
+                        false
+                    }
+                })
+            {
+                missing_counts.push(p.clone());
+            }
         }
         for p in missing_counts {
             if let TuiNode::LocalDir(path) = &p {

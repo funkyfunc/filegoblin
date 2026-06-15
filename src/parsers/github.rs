@@ -13,10 +13,11 @@ pub fn clone_github_repo(url: &str, out_path: &Path) -> Result<()> {
     let mut token = None;
     if cred_path.exists()
         && let Ok(content) = std::fs::read_to_string(&cred_path)
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
-                && let Some(gh_token) = json.get("github_token").and_then(|v| v.as_str()) {
-                    token = Some(gh_token.to_string());
-                }
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+        && let Some(gh_token) = json.get("github_token").and_then(|v| v.as_str())
+    {
+        token = Some(gh_token.to_string());
+    }
 
     cb.credentials(move |_url, username_from_url, _allowed_types| {
         if let Some(t) = &token {

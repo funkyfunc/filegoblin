@@ -1,6 +1,6 @@
 [package]
 name = "filegoblin"
-version = "1.8.4"
+version = "1.9.0"
 edition = "2024"
 description = "A zero-dependency, high-performance CLI tool to convert messy file formats into high-fidelity, LLM-optimized Markdown/XML/YAML."
 repository = "https://github.com/funkyfunc/filegoblin"
@@ -15,7 +15,7 @@ exclude = [
 ]
 
 [workspace]
-members = []
+members = ["scratch/gemini_parser"]
 
 [dependencies]
 aho-corasick = { version = "1.1.4", features = ["perf-literal", "std"] }

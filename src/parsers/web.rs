@@ -173,7 +173,7 @@ mod tests {
             </body></html>
         "#;
 
-        let args = crate::cli::Cli::parse_from(["filegoblin"]);
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         let result = gobbler.gobble_str(html, &args).unwrap();
 
         // Assert we stripped navigation and kept main article

@@ -34,8 +34,7 @@ impl SheetGobbler {
             path.file_name().unwrap_or_default().to_string_lossy()
         ));
 
-        let mut row_idx = 1;
-        for result in rdr.records() {
+        for (row_idx, result) in (1..).zip(rdr.records()) {
             let record = result?;
             output.push_str(&format!("Row {}: ", row_idx));
 
@@ -49,7 +48,6 @@ impl SheetGobbler {
 
             output.push_str(&col_parts.join("; "));
             output.push('\n');
-            row_idx += 1;
         }
 
         Ok(output)
@@ -65,8 +63,7 @@ impl SheetGobbler {
             if let Ok(range) = workbook.worksheet_range(&sheet_name) {
                 output.push_str(&format!("## Sheet: {}\n\n", sheet_name));
 
-                let mut row_idx = 1;
-                for row in range.rows() {
+                for (row_idx, row) in (1..).zip(range.rows()) {
                     let mut col_parts = Vec::new();
                     let mut has_data = false;
 
@@ -95,7 +92,6 @@ impl SheetGobbler {
                         output.push_str(&col_parts.join("; "));
                         output.push('\n');
                     }
-                    row_idx += 1;
                 }
                 output.push('\n');
             }

@@ -1,4 +1,3 @@
-use crate::parsers::credentials::load_credentials;
 use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -40,15 +39,11 @@ impl Gobble for GeminiGobbler {
             .extract_share_id(url)
             .context("Could not extract Gemini Share ID from URL")?;
 
-        let creds = load_credentials().context("No credentials found. You need a valid Google session. Run `filegoblin --google-login`")?;
-        let cookie_1psid = creds.google_cookie_1psid.context("No Google __Secure-1PSID cookie found. Run `filegoblin --google-login` and paste your cookie when prompted.")?;
-
         let client = reqwest::blocking::Client::new();
 
-        eprintln!("✨ Fetching initial Gemini payload to extract XSRF tokens...");
+        eprintln!("✨ Fetching initial Gemini payload...");
         let base_res = client
             .get(url)
-            .header("Cookie", format!("__Secure-1PSID={};", cookie_1psid))
             .header(
                 "User-Agent",
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -69,21 +64,20 @@ impl Gobble for GeminiGobbler {
         let f_sid = extract_wiz_value(&html, "FdrFJe").unwrap_or_else(|| "-123456789".to_string()); // Session ID
         let bl = extract_wiz_value(&html, "cfb2h")
             .context("Could not extract build label `bl` from WIZ_global_data")?; // Build label
-        let at = extract_wiz_value(&html, "SNlM0d").context(
-            "Could not extract XSRF token `at` / `SNlM0d`. The cookie might be expired or invalid.",
-        )?;
 
         eprintln!("🚀 Executing batchexecute RPC (ujx1Bf)...");
 
-        let req_param = format!(r#"[[["ujx1Bf","[[\"{}\"]]",null,"generic"]]]"#, share_id);
+        let req_param = format!(
+            r#"[[["ujx1Bf","[null,\"{}\",[4]]",null,"generic"]]]"#,
+            share_id
+        );
         let post_url = format!(
-            "https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=ujx1Bf&source-path=/share/{}&f.sid={}&bl={}",
+            "https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=ujx1Bf&source-path=/share/{}&f.sid={}&bl={}&hl=en-US&rt=c",
             share_id, f_sid, bl
         );
 
         let rpc_res = client
             .post(&post_url)
-            .header("Cookie", format!("__Secure-1PSID={};", cookie_1psid))
             .header(
                 "Content-Type",
                 "application/x-www-form-urlencoded;charset=utf-8",
@@ -92,11 +86,7 @@ impl Gobble for GeminiGobbler {
                 "User-Agent",
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             )
-            .body(format!(
-                "f.req={}&at={}",
-                urlencoding::encode(&req_param),
-                at
-            ))
+            .body(format!("f.req={}", urlencoding::encode(&req_param)))
             .send()
             .context("Failed to execute ujx1Bf batchexecute RPC")?;
 
@@ -116,58 +106,99 @@ impl Gobble for GeminiGobbler {
             return Ok(builder + "Failed to parse conversation chunks, or empty answer.");
         }
 
-        for chunk in parsed_chunks {
+        for chunk in &parsed_chunks {
             if let Some(inner_arr) = chunk[0][2].as_str()
-                && let Ok(Value::Array(conv_data)) = serde_json::from_str(inner_arr) {
-                    if let Some(Value::Array(turns)) = conv_data.first() {
-                        for turn in turns {
-                            if let Some(Value::Array(items)) = turn.get(0) {
-                                if let Some(Value::Array(user_parts)) = items.first()
-                                    && let Some(Value::Array(user_content)) = user_parts.first()
-                                        && let Some(text) =
-                                            user_content.first().and_then(|v| v.as_str())
-                                        {
-                                            builder.push_str(&format!("**User:**\n{}\n\n", text));
-                                        }
-                                if let Some(Value::Array(model_parts)) = items.get(1)
-                                    && let Some(Value::Array(model_content)) = model_parts.first()
-                                        && let Some(text) =
-                                            model_content.first().and_then(|v| v.as_str())
-                                        {
-                                            builder.push_str(&format!("**Gemini:**\n{}\n\n", text));
-                                        }
-                            } else {
-                                // Simplified flat parser for varying proto structs
-                                if let Some(user_q) = turn.get(2).and_then(|v| v.as_str()) {
-                                    builder.push_str(&format!("**User:**\n{}\n\n", user_q));
-                                } else if let Some(Value::Array(sub_items)) = turn.get(1)
-                                    && let Some(text) = sub_items.first().and_then(|v| v.as_str()) {
-                                        builder.push_str(&format!("**Message:**\n{}\n\n", text));
-                                    }
+                && let Ok(Value::Array(conv_data)) = serde_json::from_str(inner_arr)
+            {
+                if let Some(Value::Array(turns)) = conv_data.first() {
+                    for turn in turns {
+                        if let Some(Value::Array(items)) = turn.get(0) {
+                            if let Some(Value::Array(user_parts)) = items.first()
+                                && let Some(Value::Array(user_content)) = user_parts.first()
+                                && let Some(text) = user_content.first().and_then(|v| v.as_str())
+                            {
+                                builder.push_str(&format!("**User:**\n{}\n\n", text));
+                            }
+                            if let Some(Value::Array(model_parts)) = items.get(1)
+                                && let Some(Value::Array(model_content)) = model_parts.first()
+                                && let Some(text) = model_content.first().and_then(|v| v.as_str())
+                            {
+                                builder.push_str(&format!("**Gemini:**\n{}\n\n", text));
+                            }
+                        } else {
+                            // Simplified flat parser for varying proto structs
+                            if let Some(user_q) = turn.get(2).and_then(|v| v.as_str()) {
+                                builder.push_str(&format!("**User:**\n{}\n\n", user_q));
+                            } else if let Some(Value::Array(sub_items)) = turn.get(1)
+                                && let Some(text) = sub_items.first().and_then(|v| v.as_str())
+                            {
+                                builder.push_str(&format!("**Message:**\n{}\n\n", text));
                             }
                         }
-                    } else if let Some(title) = conv_data.get(2).and_then(|v| v.as_str()) {
-                        builder = format!(
-                            "# Gemini Conversation: {}\nSource URL: {}\n\n{}",
-                            title, url, builder
-                        );
                     }
+                } else if let Some(title) = conv_data.get(2).and_then(|v| v.as_str()) {
+                    builder = format!(
+                        "# Gemini Conversation: {}\nSource URL: {}\n\n{}",
+                        title, url, builder
+                    );
                 }
+            }
         }
 
         // Just in case parsing totally failed to match the proto layout, but data exists
         if builder.matches("**").count() == 0 {
-            builder.push_str("\n\n<!-- Raw parsed JSON data fell through strict parsing -->\n");
-            builder.push_str("Please open an issue to update the proto-extractor layout for this specific link format.");
+            builder.push_str("\n\n<!-- Raw parsed JSON data fell through strict parsing. Using heuristic extraction. -->\n\n");
+            for chunk in &parsed_chunks {
+                builder.push_str(&extract_text_recursive(chunk));
+            }
         }
 
         Ok(builder)
     }
 }
 
+// Helper for heuristic extraction when strict proto layout parsing fails
+fn extract_text_recursive(val: &Value) -> String {
+    let mut result = String::new();
+    match val {
+        Value::String(s) => {
+            let s_trimmed = s.trim();
+            if (s_trimmed.starts_with('[') || s_trimmed.starts_with('{'))
+                && let Ok(inner_val) = serde_json::from_str::<Value>(s)
+            {
+                result.push_str(&extract_text_recursive(&inner_val));
+            } else if s.len() > 30
+                && !s.starts_with("rc_")
+                && !s.starts_with("c_")
+                && !s.starts_with("r_")
+                && !s.starts_with("http")
+                && !s.starts_with("d7a5")
+                && !s.starts_with("d108")
+            {
+                // Clean up any remaining escaped characters or minor garbage if needed,
+                // but generally pure text strings should be clean now.
+                result.push_str(s);
+                result.push_str("\n\n");
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                result.push_str(&extract_text_recursive(item));
+            }
+        }
+        Value::Object(map) => {
+            for (_, v) in map {
+                result.push_str(&extract_text_recursive(v));
+            }
+        }
+        _ => {}
+    }
+    result
+}
+
 // Helper to extract values from `WIZ_global_data` in Google pages
 fn extract_wiz_value(html: &str, key: &str) -> Option<String> {
-    let search = format!("\"{}\",\"", key);
+    let search = format!("\"{}\":\"", key);
     let start_idx = html.find(&search)? + search.len();
     let after = &html[start_idx..];
     let end_idx = after.find("\"")?;
@@ -182,15 +213,15 @@ fn parse_batchexecute_chunks(payload: &str) -> Vec<Value> {
     // Pattern: 1 line with length, next line is JSON array string
     let mut i = 0;
     while i < lines.len() {
-        if lines[i].parse::<usize>().is_ok()
-            && i + 1 < lines.len() {
-                if let Ok(json) = serde_json::from_str::<Value>(lines[i + 1])
-                    && let Value::Array(arr) = json {
-                        chunks.push(Value::Array(arr));
-                    }
-                i += 2;
-                continue;
+        if lines[i].parse::<usize>().is_ok() && i + 1 < lines.len() {
+            if let Ok(json) = serde_json::from_str::<Value>(lines[i + 1])
+                && let Value::Array(arr) = json
+            {
+                chunks.push(Value::Array(arr));
             }
+            i += 2;
+            continue;
+        }
         i += 1;
     }
     chunks

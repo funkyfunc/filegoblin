@@ -71,21 +71,23 @@ impl Gobble for CodeGobbler {
                         // Also recurse into impl to find methods
                         for i in 0..node.child_count() {
                             if let Some(child) = node.child(i as u32)
-                                && child.kind() == "declaration_list" {
-                                    for j in 0..child.child_count() {
-                                        if let Some(method) = child.child(j as u32)
-                                            && method.kind() == "function_item" {
-                                                let method_sig_end = (0..method.child_count())
-                                                    .filter_map(|k| method.child(k as u32))
-                                                    .find(|c| c.kind() == "block")
-                                                    .map(|block| block.start_byte())
-                                                    .unwrap_or(method.end_byte());
-                                                let method_sig = &source_code
-                                                    [method.start_byte()..method_sig_end];
-                                                symbols.push(format!("  {}", method_sig.trim()));
-                                            }
+                                && child.kind() == "declaration_list"
+                            {
+                                for j in 0..child.child_count() {
+                                    if let Some(method) = child.child(j as u32)
+                                        && method.kind() == "function_item"
+                                    {
+                                        let method_sig_end = (0..method.child_count())
+                                            .filter_map(|k| method.child(k as u32))
+                                            .find(|c| c.kind() == "block")
+                                            .map(|block| block.start_byte())
+                                            .unwrap_or(method.end_byte());
+                                        let method_sig =
+                                            &source_code[method.start_byte()..method_sig_end];
+                                        symbols.push(format!("  {}", method_sig.trim()));
                                     }
                                 }
+                            }
                         }
                         continue; // Don't push children to avoid double-processing methods
                     }
@@ -142,7 +144,7 @@ impl Gobble for CodeGobbler {
         }
 
         // Sort descending to not invalidate indices when replacing
-        block_spans.sort_by(|a, b| b.0.cmp(&a.0));
+        block_spans.sort_by_key(|b| std::cmp::Reverse(b.0));
 
         let mut minified = source_code.into_bytes();
         for (start, end) in block_spans {
@@ -164,7 +166,7 @@ mod tests {
     fn test_code_skeleton_minification() {
         let gobbler = CodeGobbler;
         let p = Path::new("dummy.rs");
-        let default_args = crate::cli::Cli::parse_from(["filegoblin"]);
+        let default_args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         let result = gobbler.gobble(p, &default_args).unwrap();
 
         // Assert Structural Minification (PRD 3.3)

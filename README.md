@@ -78,6 +78,18 @@
 - **LLM-Native:** Specific structural anchors (XML/YAML) to prevent "Attention Drift."
 - **Privacy First:** Local-only PII/Secret scrubbing using Distil-PII-1B.
 - **Structural Minification:** Tree-sitter powered `--extract symbols` mode for source code.
+
+| Source | Path Example | Parsers Used | Output Format |
+|---|---|---|---|
+| **PDF** | `~/receipt.pdf` | `PdfGobbler` | Sequence of Records |
+| **Word** | `~/notes.docx` | `OfficeGobbler` | Sequence of Records |
+| **Excel** | `~/data.xlsx` | `OfficeGobbler` | Sequence of Records |
+| **Source Code** | `~/project/src` | `CodeGobbler` | Skeleton Minification |
+| **Images** | `~/screenshot.png` | *Not Supported* | N/A |
+| **Webpages** | `https://news.ycombinator.com` | `WebGobbler` | Heuristic Extraction |
+| **Google Docs** | `https://docs.google.com/...` | `GoogleDocsGobbler` | Download Hijack + Sequence of Records |
+| **Gemini AI** | `https://gemini.google.com/share/...` | `GeminiGobbler` | Human/AI Dialogue Reconstruction |
+
 - **Semantic Search:** BM25 relevance scoring via `tantivy` with zero model weights.
 - **Manifest TOC:** Auto-generated table of contents with per-file token counts.
 
