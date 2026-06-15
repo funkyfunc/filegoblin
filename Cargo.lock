@@ -2060,6 +2060,17 @@ dependencies = [
 name = "filegoblin"
 version = "1.9.0"
 dependencies = [
+ "anyhow",
+ "clap",
+ "colored",
+ "filegoblin-core",
+ "notify",
+]
+
+[[package]]
+name = "filegoblin-core"
+version = "1.9.0"
+dependencies = [
  "aho-corasick",
  "anyhow",
  "arboard",
@@ -2071,7 +2082,6 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "colored",
- "crossterm",
  "csv",
  "dashmap 6.1.0",
  "docx-rs",
@@ -2098,7 +2108,6 @@ dependencies = [
  "pulldown-cmark",
  "pulldown-cmark-to-cmark",
  "quick-xml 0.39.2",
- "ratatui",
  "regex",
  "reqwest 0.13.4",
  "robotxt",
@@ -2123,6 +2132,22 @@ dependencies = [
  "wasmtime-wasi",
  "windows",
  "zip 8.1.0",
+]
+
+[[package]]
+name = "filegoblin-tui"
+version = "1.9.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "colored",
+ "crossterm",
+ "filegoblin-core",
+ "ignore",
+ "ratatui",
+ "reqwest 0.13.4",
+ "scraper",
+ "url",
 ]
 
 [[package]]

@@ -11,35 +11,28 @@
 
 ```text
 .
-├── Cargo.toml
-├── build.rs          (Man page & shell completions generator)
-├── src/
-│   ├── main.rs       (CLI Entry & Mascot)
-│   ├── lib.rs        (Core Pipeline Logic)
-│   ├── cli.rs        (Clap Flag Definitions)
-│   ├── flavors.rs    (LLM Output Flavors)
-│   ├── curation.rs   (BM25 Search & Auto-Pruning)
-│   ├── privacy_shield.rs (PII Redaction Engine)
-│   ├── ui.rs         (Ratatui Interactive TUI)
-│   ├── compressor/   (Token Compression Pipeline)
-│   │   ├── mod.rs
-│   │   ├── level1.rs (Safe: whitespace folding)
-│   │   ├── level2.rs (Contextual: comment stripping)
-│   │   ├── level3.rs (Aggressive: stopword removal)
-│   │   └── heuristic.rs (Token estimation)
-│   └── parsers/      (File parsing engines)
-│       ├── mod.rs
-│       ├── gobble.rs  (Gobble Trait)
-│       ├── code.rs    (tree-sitter AST)
-│       ├── pdf.rs     (oxidize-pdf)
-│       ├── office.rs  (docx-rs)
-│       ├── web.rs     (HTML heuristics)
-│       ├── sheet.rs   (calamine xlsx/csv)
-│       ├── powerpoint.rs (quick-xml pptx)
-│       ├── ocr.rs     (Vision/rten hybrid)
-│       ├── twitter.rs (X/Twitter GraphQL)
-│       ├── crawler.rs (Recursive web crawler)
-│       └── wasm.rs    (WASM plugin host)
+├── Cargo.toml        (Virtual Workspace Root)
+├── crates/
+│   ├── core/         (filegoblin-core: The Engine & Parsers)
+│   │   ├── Cargo.toml
+│   │   ├── build.rs  (Man page, completions & asset fetcher)
+│   │   └── src/
+│   │       ├── lib.rs        (Core Pipeline Logic)
+│   │       ├── cli.rs        (Clap Flag Definitions)
+│   │       ├── flavors.rs    (LLM Output Flavors)
+│   │       ├── curation.rs   (BM25 Search & Auto-Pruning)
+│   │       ├── privacy_shield.rs (PII Redaction Engine)
+│   │       ├── compressor/   (Token Compression Pipeline)
+│   │       ├── parsers/      (File parsing engines)
+│   │       └── pipeline/     (Pipeline execution stages)
+│   ├── cli/          (filegoblin: The Headless Binary)
+│   │   ├── Cargo.toml
+│   │   └── src/main.rs       (CLI Entry & Mascot)
+│   └── tui/          (filegoblin-tui: The Interactive Dashboard)
+│       ├── Cargo.toml
+│       └── src/main.rs
+├── scratch/
+│   └── gemini_parser (Reverse engineering workbench)
 └── .cargo/
     └── config.toml   (Aliases)
 ```

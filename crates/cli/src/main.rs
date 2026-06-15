@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use colored::*;
-use filegoblin::{flavors::Flavor, gobble_app};
+use filegoblin_core::{flavors::Flavor, gobble_app};
 use std::io::IsTerminal;
 use std::str::FromStr;
 
@@ -53,13 +53,11 @@ fn print_mascot() {
     eprintln!("\x1b[2K{}", "Hello Goblin!".truecolor(167, 255, 0).bold());
 }
 
-use filegoblin::cli::Cli;
-
-mod ui;
+use filegoblin_core::cli::Cli;
 
 fn main() -> Result<()> {
     // Parse arguments and emit the initial "Crunching..." or Goblinism
-    let mut args = Cli::parse();
+    let args = Cli::parse();
 
     let parsed_flavor = Flavor::from_str(&args.flavor).unwrap_or(Flavor::Human);
 
@@ -89,25 +87,13 @@ fn main() -> Result<()> {
     }
 
     if args.interactive {
-        if targets.contains(&"-".to_string()) {
-            eprintln!(
-                "{} Error: Cannot run the Interactive TUI (-i) while piping stdin data.",
-                "❌".red()
-            );
-            std::process::exit(1);
-        }
-        // TUI Mode hijacks the execution
-        if let Some(selected_targets) = ui::run_tui(&mut args)? {
-            // If the user selected files and pressed enter, execute gobble on them
-            if !args.quiet {
-                print_mascot();
-            }
-
-            let targets: Vec<String> = selected_targets;
-
-            gobble_app(&targets, &parsed_flavor, &args)?;
-        }
-        return Ok(());
+        eprintln!(
+            "{} The interactive TUI has been moved to a separate binary: {}",
+            "ℹ️".blue(),
+            "fg-tui".bold()
+        );
+        eprintln!("Install it with: cargo install --path crates/tui");
+        std::process::exit(1);
     }
 
     if !args.quiet {

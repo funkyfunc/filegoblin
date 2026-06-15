@@ -1,24 +1,37 @@
 pub mod code;
+#[cfg(feature = "web")]
 pub mod crawler;
 pub mod credentials;
+#[cfg(feature = "web")]
 pub mod gemini_share;
+#[cfg(feature = "web")]
 pub mod github;
 pub mod gobble;
+#[cfg(feature = "cloud")]
 pub mod google;
+#[cfg(feature = "cloud")]
 pub mod google_docs;
+#[cfg(feature = "ocr")]
 pub mod ocr;
 pub mod office;
 pub mod pdf;
 pub mod powerpoint;
 pub mod sheet;
+#[cfg(feature = "cloud")]
 pub mod twitter;
+#[cfg(feature = "wasm")]
 pub mod wasm;
+#[cfg(feature = "web")]
 pub mod web;
+#[cfg(feature = "web")]
 pub mod youtube;
 
 // Re-export common traits so `main.rs` doesn't need to dig
 pub use self::code::CodeGobbler;
+#[cfg(feature = "web")]
 pub use self::gemini_share::GeminiGobbler;
+#[cfg(feature = "cloud")]
 pub use self::google::GoogleGobbler;
+#[cfg(feature = "cloud")]
 pub use self::google_docs::GoogleDocsGobbler;
 pub use self::office::OfficeGobbler;

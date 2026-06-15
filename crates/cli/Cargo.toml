@@ -1,0 +1,18 @@
+[package]
+name = "filegoblin"
+version = "1.9.0"
+edition = "2024"
+description = "A zero-dependency, high-performance CLI tool to convert messy file formats into high-fidelity, LLM-optimized Markdown/XML/YAML."
+repository = "https://github.com/funkyfunc/filegoblin"
+license = "MIT"
+
+[[bin]]
+name = "filegoblin"
+path = "src/main.rs"
+
+[dependencies]
+filegoblin-core = { path = "../core" }
+anyhow = "1.0.102"
+clap = { version = "4.5.60", features = ["derive", "env"] }
+colored = "3.1.1"
+notify = "8.2.0"

@@ -1,0 +1,27 @@
+[package]
+name = "filegoblin-tui"
+version = "1.9.0"
+edition = "2024"
+description = "Interactive TUI file explorer for filegoblin."
+license = "MIT"
+
+[[bin]]
+name = "fg-tui"
+path = "src/main.rs"
+
+[features]
+default = []
+web = ["filegoblin-core/web", "dep:reqwest", "dep:scraper"]
+cloud = ["filegoblin-core/cloud"]
+
+[dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.5.60", features = ["derive"] }
+colored = "3.1.1"
+crossterm = "0.29.0"
+filegoblin-core = { path = "../core" }
+ignore = "0.4.25"
+ratatui = "0.30.0"
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"], optional = true }
+scraper = { version = "0.25.0", optional = true }
+url = "2.5.8"

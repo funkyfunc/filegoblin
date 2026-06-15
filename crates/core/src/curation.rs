@@ -1,9 +1,17 @@
+#[allow(unused_imports)]
 use anyhow::Result;
+#[cfg(feature = "rag")]
 use tantivy::collector::TopDocs;
+#[cfg(feature = "rag")]
 use tantivy::query::QueryParser;
+#[cfg(feature = "rag")]
 use tantivy::schema::document::Value;
+#[cfg(feature = "rag")]
 use tantivy::schema::{STORED, Schema, TEXT};
+#[cfg(feature = "rag")]
 use tantivy::{Index, doc};
+
+use crate::pipeline::GobbleDocument;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum RelevanceRank {
@@ -34,29 +42,29 @@ fn score_file(path: &str) -> RelevanceRank {
 
 /// Enforces a strict maximum token budget on a list of file pairs using Heuristic Auto-Pruning.
 pub fn enforce_budget(
-    mut pairs: Vec<(String, String)>,
+    mut documents: Vec<GobbleDocument>,
     budget: usize,
     _verbose: bool,
-) -> (Vec<(String, String)>, usize, usize) {
+) -> (Vec<GobbleDocument>, usize, usize) {
     // 1. Calculate the initial footprint
-    let total_tokens: usize = pairs
+    let total_tokens: usize = documents
         .iter()
-        .map(|(p, c)| crate::compressor::heuristic::estimate_tokens(c, p))
+        .map(|doc| crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path))
         .sum();
 
     if total_tokens <= budget {
-        return (pairs, total_tokens, total_tokens);
+        return (documents, total_tokens, total_tokens);
     }
 
     // Sort files by relevance (asc), then by token size (desc - largest first to greedly reclaim space if stuck in same rank)
-    pairs.sort_by(|a, b| {
-        let rank_a = score_file(&a.0);
-        let rank_b = score_file(&b.0);
+    documents.sort_by(|a, b| {
+        let rank_a = score_file(&a.path);
+        let rank_b = score_file(&b.path);
         let cmp = rank_a.cmp(&rank_b);
         if cmp == std::cmp::Ordering::Equal {
             // If they have the same rank, we want the LARGEST file first so we can drop it
-            let size_a = a.1.len();
-            let size_b = b.1.len();
+            let size_a = a.content.len();
+            let size_b = b.content.len();
             size_b.cmp(&size_a)
         } else {
             cmp
@@ -68,22 +76,24 @@ pub fn enforce_budget(
 
     // Keep adding the highest ranked items until budget breaks
     // (Notice we iterate backwards over our sorted list to grab High -> Medium -> Low)
-    for (path, content) in pairs.into_iter().rev() {
-        let cost = crate::compressor::heuristic::estimate_tokens(&content, &path);
+    for mut doc in documents.into_iter().rev() {
+        let cost = crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path);
         if kept_budget + cost <= budget {
-            kept.push((path, content));
+            kept.push(doc);
             kept_budget += cost;
         } else {
             // Fallback: Rather than totally dropping a High priority file, attempt 'Skeletonization'
-            if score_file(&path) == RelevanceRank::High {
+            if score_file(&doc.path) == RelevanceRank::High {
                 let fallback = crate::compressor::CompressionPipeline::new(
                     &crate::cli::CompressionLevel::Contextual,
-                    Some(&path),
+                    Some(&doc.path),
                 )
-                .process(&content);
-                let shrink_cost = crate::compressor::heuristic::estimate_tokens(&fallback, &path);
+                .process(&doc.content);
+                let shrink_cost =
+                    crate::compressor::heuristic::estimate_tokens(&fallback, &doc.path);
                 if kept_budget + shrink_cost <= budget {
-                    kept.push((path, fallback));
+                    doc.content = fallback;
+                    kept.push(doc);
                     kept_budget += shrink_cost;
                     continue;
                 }
@@ -94,16 +104,17 @@ pub fn enforce_budget(
     }
 
     // Re-sort alphabetically for deterministic output
-    kept.sort_by(|a, b| a.0.cmp(&b.0));
+    kept.sort_by(|a, b| a.path.cmp(&b.path));
     (kept, total_tokens, kept_budget)
 }
 
 /// Creates a highly ephemeral BM25 reversed index in memory to execute a pure-Rust "RAG-lite" search over collected strings
+#[cfg(feature = "rag")]
 pub fn semantic_search(
-    pairs: Vec<(String, String)>,
+    documents: Vec<GobbleDocument>,
     query: &str,
     top_k: usize,
-) -> Result<Vec<(f32, String, String)>> {
+) -> Result<Vec<GobbleDocument>> {
     let mut schema_builder = Schema::builder();
     let path_field = schema_builder.add_text_field("path", TEXT | STORED);
     let body_field = schema_builder.add_text_field("body", TEXT | STORED);
@@ -112,10 +123,10 @@ pub fn semantic_search(
     let index = Index::create_in_ram(schema.clone());
     let mut index_writer = index.writer(50_000_000)?;
 
-    for (p, c) in &pairs {
+    for doc in &documents {
         index_writer.add_document(doc!(
-            path_field => p.as_str(),
-            body_field => c.as_str()
+            path_field => doc.path.as_str(),
+            body_field => doc.content.as_str()
         ))?;
     }
     index_writer.commit()?;
@@ -131,24 +142,28 @@ pub fn semantic_search(
     for (score, doc_address) in top_docs {
         let retrieved_doc: tantivy::TantivyDocument = searcher.doc(doc_address)?;
         let mut p = String::new();
-        let mut b = String::new();
         for field_value in retrieved_doc.field_values() {
             if field_value.field == path_field
                 && let Some(text) = (&field_value.value).as_str()
             {
                 p = text.to_string();
             }
-            if field_value.field == body_field
-                && let Some(text) = (&field_value.value).as_str()
-            {
-                b = text.to_string();
-            }
         }
-        results.push((score, p, b));
+
+        // Find the original document to retain its exact content and update its score
+        if let Some(mut doc) = documents.iter().find(|d| d.path == p).cloned() {
+            doc.relevance_score = Some(score);
+            results.push(doc);
+        }
     }
 
     // Sort by score descending (most relevant first)
-    results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.relevance_score
+            .unwrap_or(0.0)
+            .partial_cmp(&a.relevance_score.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     Ok(results)
 }
@@ -167,30 +182,31 @@ mod tests {
 
     #[test]
     fn test_enforce_budget_pruning() {
-        let pairs = vec![
-            ("app.log".to_string(), "a ".repeat(500)),  // 500 tokens
-            ("main.rs".to_string(), "fn ".repeat(100)), // 100 tokens
+        let documents = vec![
+            GobbleDocument::new("app.log".to_string(), "a ".repeat(500)),
+            GobbleDocument::new("main.rs".to_string(), "fn ".repeat(100)),
         ];
 
         // At 150 tokens, it should completely drop the log and keep the source code via greedy sort
-        let (pruned, _raw, _kept) = enforce_budget(pairs, 150, false);
+        let (pruned, _raw, _kept) = enforce_budget(documents, 150, false);
         assert_eq!(pruned.len(), 1);
-        assert_eq!(pruned[0].0, "main.rs");
+        assert_eq!(pruned[0].path, "main.rs");
     }
 
+    #[cfg(feature = "rag")]
     #[test]
     fn test_tantivy_ephemeral_search() {
-        let pairs = vec![
-            ("main.rs".to_string(), "pub fn connect_db() {}".to_string()),
-            ("utils.rs".to_string(), "pub fn parse_date() {}".to_string()),
-            (
+        let documents = vec![
+            GobbleDocument::new("main.rs".to_string(), "pub fn connect_db() {}".to_string()),
+            GobbleDocument::new("utils.rs".to_string(), "pub fn parse_date() {}".to_string()),
+            GobbleDocument::new(
                 "crawler.rs".to_string(),
                 "pub fn fetch_url() {}".to_string(),
             ),
         ];
 
-        let results = semantic_search(pairs, "connect", 1).unwrap();
+        let results = semantic_search(documents, "connect", 1).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, "main.rs");
+        assert_eq!(results[0].path, "main.rs");
     }
 }

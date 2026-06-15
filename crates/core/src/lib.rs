@@ -4,18 +4,16 @@ pub mod cost;
 pub mod curation;
 pub mod flavors;
 pub mod parsers;
+pub mod pipeline;
 pub mod privacy_shield;
 
 use crate::parsers::gobble::Gobble;
+use crate::pipeline::GobbleDocument;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::io::Read;
 use std::path::Path;
 use url::Url;
-
-// The pulldown-cmark imports are needed for pipeline processing
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
-use pulldown_cmark_to_cmark::cmark;
 
 /// filegoblin Core
 /// We keep logic in lib.rs to ensure the application is deeply testable
@@ -27,13 +25,31 @@ pub fn gobble_app(
     args: &crate::cli::Cli,
 ) -> Result<()> {
     if args.twitter_login {
-        crate::parsers::twitter::handle_twitter_login()?;
-        return Ok(());
+        #[cfg(feature = "cloud")]
+        {
+            crate::parsers::twitter::handle_twitter_login()?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "cloud"))]
+        {
+            anyhow::bail!(
+                "Twitter login requires the 'cloud' feature. Recompile with --features cloud."
+            );
+        }
     }
 
     if args.google_login {
-        crate::parsers::google::handle_google_login()?;
-        return Ok(());
+        #[cfg(feature = "cloud")]
+        {
+            crate::parsers::google::handle_google_login()?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "cloud"))]
+        {
+            anyhow::bail!(
+                "Google login requires the 'cloud' feature. Recompile with --features cloud."
+            );
+        }
     }
 
     let mut raw_pairs: Vec<(String, String)> = Vec::new();
@@ -85,7 +101,16 @@ pub fn gobble_app(
                     eprintln!("🌐 Sniffing the network for files: {}", url);
                 }
                 if args.horde {
-                    raw_pairs.extend(crate::parsers::crawler::crawl_web(&url, args)?);
+                    #[cfg(feature = "web")]
+                    {
+                        raw_pairs.extend(crate::parsers::crawler::crawl_web(&url, args)?);
+                    }
+                    #[cfg(not(feature = "web"))]
+                    {
+                        anyhow::bail!(
+                            "Horde mode crawling requires the 'web' feature. Recompile with --features web."
+                        );
+                    }
                 } else if url.domain().is_some_and(|d| d.ends_with("github.com")) {
                     if !args.quiet {
                         eprintln!(
@@ -94,19 +119,29 @@ pub fn gobble_app(
                                 .truecolor(0, 200, 255)
                         );
                     }
-                    let temp_dir = tempfile::tempdir()?;
-                    if let Err(e) = parsers::github::clone_github_repo(target, temp_dir.path()) {
-                        anyhow::bail!("Failed to clone GitHub repo: {}", e);
+                    #[cfg(feature = "web")]
+                    {
+                        let temp_dir = tempfile::tempdir()?;
+                        if let Err(e) = parsers::github::clone_github_repo(target, temp_dir.path())
+                        {
+                            anyhow::bail!("Failed to clone GitHub repo: {}", e);
+                        }
+                        let mut repo_args = args.clone();
+                        repo_args.horde = true; // Force horde mode for a repository clone
+                        match gobble_local(&temp_dir.path().to_string_lossy(), &repo_args) {
+                            Ok(local_pairs) => {
+                                raw_pairs.extend(local_pairs);
+                            }
+                            Err(e) => {
+                                anyhow::bail!("Failed to process cloned repo: {}", e);
+                            }
+                        }
                     }
-                    let mut repo_args = args.clone();
-                    repo_args.horde = true; // Force horde mode for a repository clone
-                    match gobble_local(&temp_dir.path().to_string_lossy(), &repo_args) {
-                        Ok(local_pairs) => {
-                            raw_pairs.extend(local_pairs);
-                        }
-                        Err(e) => {
-                            anyhow::bail!("Failed to process cloned repo: {}", e);
-                        }
+                    #[cfg(not(feature = "web"))]
+                    {
+                        anyhow::bail!(
+                            "GitHub cloning requires the 'web' feature. Recompile with --features web."
+                        );
                     }
                 } else if url
                     .domain()
@@ -115,52 +150,106 @@ pub fn gobble_app(
                     if !args.quiet {
                         eprintln!("▶️ Diverting to YouTubeGobbler to extract video transcripts...");
                     }
-                    let youtube = parsers::youtube::YouTubeGobbler::new();
-                    let text = youtube.gobble_str(target, args)?;
-                    raw_pairs.push((target.to_string(), text));
+                    #[cfg(feature = "web")]
+                    {
+                        let youtube = parsers::youtube::YouTubeGobbler::new();
+                        let text = youtube.gobble_str(target, args)?;
+                        raw_pairs.push((target.to_string(), text));
+                    }
+                    #[cfg(not(feature = "web"))]
+                    {
+                        anyhow::bail!(
+                            "YouTube scraping requires the 'web' feature. Recompile with --features web."
+                        );
+                    }
                 } else if url
                     .domain()
                     .is_some_and(|d| d.ends_with("twitter.com") || d.ends_with("x.com"))
                 {
-                    if !args.quiet {
-                        eprintln!("🐦 Diverting to TwitterGobbler for deep context extraction...");
+                    #[cfg(feature = "cloud")]
+                    {
+                        if !args.quiet {
+                            eprintln!(
+                                "🐦 Diverting to TwitterGobbler for deep context extraction..."
+                            );
+                        }
+                        let twitter = parsers::twitter::TwitterGobbler {
+                            flavor: flavor.clone(),
+                        };
+                        let text = twitter.gobble_str(target, args)?;
+                        raw_pairs.push((target.to_string(), text));
                     }
-                    let twitter = parsers::twitter::TwitterGobbler {
-                        flavor: flavor.clone(),
-                    };
-                    let text = twitter.gobble_str(target, args)?;
-                    raw_pairs.push((target.to_string(), text));
+                    #[cfg(not(feature = "cloud"))]
+                    {
+                        anyhow::bail!(
+                            "Twitter scraping requires the 'cloud' feature. Recompile with --features cloud."
+                        );
+                    }
                 } else if url.domain().is_some_and(|d| {
                     d.ends_with("docs.google.com") || d.ends_with("drive.google.com")
                 }) {
-                    if !args.quiet {
-                        eprintln!("📄 Diverting to GoogleDocsGobbler for Workspace extraction...");
+                    #[cfg(feature = "cloud")]
+                    {
+                        if !args.quiet {
+                            eprintln!(
+                                "📄 Diverting to GoogleDocsGobbler for Workspace extraction..."
+                            );
+                        }
+                        if let Ok(google_docs) =
+                            parsers::google_docs::GoogleDocsGobbler::new(target)
+                        {
+                            let text = google_docs.gobble_str(target, args)?;
+                            raw_pairs.push((target.to_string(), text));
+                        } else {
+                            anyhow::bail!(
+                                "Failed to initialize Google Docs extraction for {}",
+                                target
+                            );
+                        }
                     }
-                    if let Ok(google_docs) = parsers::google_docs::GoogleDocsGobbler::new(target) {
-                        let text = google_docs.gobble_str(target, args)?;
-                        raw_pairs.push((target.to_string(), text));
-                    } else {
-                        anyhow::bail!("Failed to initialize Google Docs extraction for {}", target);
+                    #[cfg(not(feature = "cloud"))]
+                    {
+                        anyhow::bail!(
+                            "Google Workspace extraction requires the 'cloud' feature. Recompile with --features cloud."
+                        );
                     }
                 } else if url
                     .domain()
                     .is_some_and(|d| d.ends_with("gemini.google.com"))
                 {
-                    if !args.quiet {
-                        eprintln!(
-                            "✨ Diverting to GeminiGobbler for shared conversation extraction..."
+                    #[cfg(feature = "web")]
+                    {
+                        if !args.quiet {
+                            eprintln!(
+                                "✨ Diverting to GeminiGobbler for shared conversation extraction..."
+                            );
+                        }
+                        let gemini = parsers::gemini_share::GeminiGobbler;
+                        let text = gemini.gobble_str(target, args)?;
+                        raw_pairs.push((target.to_string(), text));
+                    }
+                    #[cfg(not(feature = "web"))]
+                    {
+                        anyhow::bail!(
+                            "Gemini extraction requires the 'web' feature. Recompile with --features web."
                         );
                     }
-                    let gemini = parsers::gemini_share::GeminiGobbler;
-                    let text = gemini.gobble_str(target, args)?;
-                    raw_pairs.push((target.to_string(), text));
                 } else {
-                    let html_content = fetch_url(&url, args.quiet)?;
-                    let text = parsers::web::WebGobbler {
-                        extract_full: args.full,
+                    #[cfg(feature = "web")]
+                    {
+                        let html_content = fetch_url(&url, args.quiet)?;
+                        let text = parsers::web::WebGobbler {
+                            extract_full: args.full,
+                        }
+                        .gobble_str(&html_content, args)?;
+                        raw_pairs.push((target.to_string(), text));
                     }
-                    .gobble_str(&html_content, args)?;
-                    raw_pairs.push((target.to_string(), text));
+                    #[cfg(not(feature = "web"))]
+                    {
+                        anyhow::bail!(
+                            "Web extraction requires the 'web' feature. Recompile with --features web."
+                        );
+                    }
                 }
             } else {
                 if !args.quiet {
@@ -176,147 +265,22 @@ pub fn gobble_app(
         }
     }
 
-    // Execute Curation Intelligence pipelines before generic formatting steps (RAG/BM25 & Auto-Pruning)
-    let (searched_pairs, search_scores) = if let Some(query) = args.search.as_deref() {
-        if !args.quiet {
-            eprintln!(
-                "{}",
-                format!(
-                    "🧠 Searching {} files in the hoard for '{}' (Semantic Priority)...",
-                    raw_pairs.len(),
-                    query
-                )
-                .truecolor(0, 200, 255)
-            );
-        }
-        let scored_results =
-            curation::semantic_search(raw_pairs, query, 3).context("Semantic Search failed")?;
-        let scores: std::collections::HashMap<String, f32> = scored_results
-            .iter()
-            .map(|(s, p, _)| (p.clone(), *s))
-            .collect();
-        let pairs: Vec<(String, String)> =
-            scored_results.into_iter().map(|(_, p, c)| (p, c)).collect();
-        (pairs, Some(scores))
-    } else {
-        (raw_pairs, None)
-    };
+    // Convert raw_pairs to GobbleDocument structure for pipeline processing
+    let raw_documents: Vec<GobbleDocument> = raw_pairs
+        .into_iter()
+        .map(|(path, content)| GobbleDocument::new(path, content))
+        .collect();
 
-    let pruned_pairs = if let Some(budget) = args.max_tokens {
-        if !args.quiet {
-            eprintln!(
-                "{}",
-                format!("✂️ Enforcing rigid context budget ({} tokens)...", budget)
-                    .truecolor(255, 99, 71)
-            );
-        }
-        let (kept_pairs, initial_tokens, kept_budget) =
-            curation::enforce_budget(searched_pairs, budget, !args.quiet);
-        if !args.quiet {
-            eprintln!(
-                "{}",
-                format!(
-                    "⚔️ Pruned from {} baseline tokens down to {} tokens (fit {}/{} target files).",
-                    initial_tokens,
-                    kept_budget,
-                    kept_pairs.len(),
-                    targets.len()
-                )
-                .truecolor(255, 99, 71)
-            );
-        }
-        kept_pairs
-    } else {
-        searched_pairs
-    };
+    // Execute Curation Intelligence pipelines before generic formatting steps (RAG/BM25 & Auto-Pruning)
+    let pruned_docs =
+        crate::pipeline::stages::run_curation_stage(raw_documents, args, targets.len())?;
 
     // Apply Privacy Shield if --scrub is requested
-    let final_pairs = if args.scrub {
-        if !args.quiet {
-            eprintln!("{}", "🛡️ Scrubbed the secrets...".truecolor(255, 191, 0));
-        }
-        let shield =
-            privacy_shield::PrivacyShield::init().context("Failed to initialize Privacy Shield")?;
-        pruned_pairs
-            .into_iter()
-            .map(|(p, c)| (p, shield.redact(&c)))
-            .collect()
-    } else {
-        pruned_pairs
-    };
-
-    // Calculate baseline tokens BEFORE compression for savings metric
-    let pre_compression_tokens: usize = final_pairs
-        .iter()
-        .map(|(path, content)| crate::compressor::heuristic::estimate_tokens(content, path))
-        .sum();
+    let final_docs = crate::pipeline::stages::run_privacy_stage(pruned_docs, args)?;
 
     // Apply Compression Pipeline if --compress is flag
-    let compressed_pairs = if let Some(level) = args.compress.as_ref() {
-        if !args.quiet {
-            eprintln!(
-                "{}",
-                format!("🗜️ Shrinking the loot (Level: {:?})...", level).truecolor(0, 200, 255)
-            );
-        }
-        final_pairs
-            .into_iter()
-            .map(|(path, content)| {
-                // Avoid double-compressing the _tree.md as the ASCII structure breaks easily
-                if path == "_tree.md" {
-                    return (path, content);
-                }
-
-                let mut mapped_events = Vec::new();
-                let parser = Parser::new(&content);
-                let mut current_lang = None;
-
-                // Build the default pipeline for prose/mixed content
-                let default_pipeline = crate::compressor::CompressionPipeline::new(level, None);
-
-                for event in parser {
-                    match event {
-                        Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(
-                            ref lang,
-                        ))) => {
-                            current_lang = Some(lang.to_string());
-                            mapped_events.push(event.clone());
-                        }
-                        Event::End(TagEnd::CodeBlock) => {
-                            current_lang = None;
-                            mapped_events.push(event.clone());
-                        }
-                        Event::Text(ref text) => {
-                            // Apply code-block specific compression or default prose compression
-                            let transformed = if let Some(lang) = &current_lang {
-                                let pipeline =
-                                    crate::compressor::CompressionPipeline::new(level, Some(lang));
-                                pipeline.process(text)
-                            } else {
-                                default_pipeline.process(text)
-                            };
-                            mapped_events.push(Event::Text(pulldown_cmark::CowStr::Boxed(
-                                transformed.into_boxed_str(),
-                            )));
-                        }
-                        _ => {
-                            mapped_events.push(event.clone());
-                        }
-                    }
-                }
-
-                let mut minified_markdown = String::with_capacity(content.len());
-                cmark(mapped_events.into_iter(), &mut minified_markdown).unwrap();
-
-                // Always run Level 1 folder globally on the final markdown output String to clean up layout markers
-                let final_pipeline = crate::compressor::CompressionPipeline::new(level, None);
-                let fully_compressed = final_pipeline.process(&minified_markdown);
-                (path, fully_compressed)
-            })
-            .collect()
-    } else {
-        final_pairs
-    };
+    let (compressed_docs, pre_compression_tokens) =
+        crate::pipeline::stages::run_compression_stage(final_docs, args)?;
 
     // Feature: Summary Preamble (--summary)
     let mut preamble = String::new();
@@ -332,22 +296,23 @@ pub fn gobble_app(
             std::collections::HashMap::new();
         let mut readme_intro = None;
 
-        for (path, content) in &compressed_pairs {
-            if path == "_tree.md" {
+        for doc in &compressed_docs {
+            if doc.path == "_tree.md" {
                 continue;
             }
 
             // Extract extension
-            if let Some(ext_idx) = path.rfind('.') {
-                let ext = &path[ext_idx..];
+            if let Some(ext_idx) = doc.path.rfind('.') {
+                let ext = &doc.path[ext_idx..];
                 *extensions.entry(ext.to_string()).or_insert(0) += 1;
             } else {
                 *extensions.entry("no-extension".to_string()).or_insert(0) += 1;
             }
 
             // Look for README
-            if path.to_lowercase().ends_with("readme.md") && readme_intro.is_none() {
-                let intro = content
+            if doc.path.to_lowercase().ends_with("readme.md") && readme_intro.is_none() {
+                let intro = doc
+                    .content
                     .lines()
                     .skip_while(|l| l.trim().is_empty() || l.starts_with('#')) // Skip blanks and titles
                     .filter(|l| !l.trim().is_empty())
@@ -401,9 +366,9 @@ pub fn gobble_app(
         let mut post_compression_tokens = 0;
         let mut total_chars = 0;
 
-        for (path, content) in compressed_pairs.iter() {
+        for doc in compressed_docs.iter() {
             // Safe pathing logic for urls and relative filepaths
-            let safe_path = if let Ok(u) = Url::parse(path) {
+            let safe_path = if let Ok(u) = Url::parse(&doc.path) {
                 let mut p = u.path().trim_start_matches('/').to_string();
                 if p.is_empty() {
                     p = "index".to_string();
@@ -413,7 +378,7 @@ pub fn gobble_app(
                 }
                 p.replace("..", "").replace(":", "_")
             } else {
-                path.replace("..", "")
+                doc.path.replace("..", "")
             };
 
             let file_name = if safe_path.ends_with(".md") {
@@ -427,7 +392,7 @@ pub fn gobble_app(
                 std::fs::create_dir_all(parent)?;
             }
 
-            let flavored = flavors::format_output(flavor, path, content);
+            let flavored = flavors::format_output(flavor, &doc.path, &doc.content);
             std::fs::write(&file_path, &flavored)?;
 
             if !args.quiet {
@@ -436,7 +401,7 @@ pub fn gobble_app(
 
             total_chars += flavored.len();
             post_compression_tokens +=
-                crate::compressor::heuristic::estimate_tokens(&flavored, path);
+                crate::compressor::heuristic::estimate_tokens(&flavored, &doc.path);
         }
 
         if args.tokens {
@@ -474,10 +439,10 @@ pub fn gobble_app(
         }
 
         let mut out = Vec::new();
-        for (p, c) in compressed_pairs {
+        for doc in compressed_docs {
             out.push(FileNode {
-                path: p,
-                content: c,
+                path: doc.path,
+                content: doc.content,
             });
         }
         let serialized = serde_json::to_string_pretty(&out)?;
@@ -538,10 +503,12 @@ pub fn gobble_app(
             let mut current_tokens = 0;
             let mut post_compression_tokens = 0;
             let mut total_chars = 0;
-            let file_count = compressed_pairs.len();
+            let file_count = compressed_docs.len();
 
-            for (i, (path, content)) in compressed_pairs.into_iter().enumerate() {
-                let file_tokens = crate::compressor::heuristic::estimate_tokens(&content, &path);
+            for (i, doc) in compressed_docs.into_iter().enumerate() {
+                let file_tokens = doc.token_count.unwrap_or_else(|| {
+                    crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
+                });
                 post_compression_tokens += file_tokens;
 
                 // If adding this file pushes us over the threshold AND we already have content in this chunk
@@ -571,14 +538,14 @@ pub fn gobble_app(
                 }
 
                 // Append current file to the chunk
-                if path == "_tree.md" {
-                    current_combined.push_str(&content);
+                if doc.path == "_tree.md" {
+                    current_combined.push_str(&doc.content);
                 } else {
                     if i == 0 {
                         current_combined.push_str(&preamble);
                     }
-                    current_combined.push_str(&format!("// --- FILE_START: {} ---\n", path));
-                    current_combined.push_str(&content);
+                    current_combined.push_str(&format!("// --- FILE_START: {} ---\n", doc.path));
+                    current_combined.push_str(&doc.content);
                     current_combined.push_str("\n\n");
                 }
                 current_tokens += file_tokens;
@@ -703,15 +670,17 @@ pub fn gobble_app(
 
         // Original Unchunked Pipeline
         let mut combined = String::new();
-        let file_count = compressed_pairs.len();
+        let file_count = compressed_docs.len();
         let mut post_compression_tokens = 0;
 
         // Build per-file token counts for manifest
         let mut file_token_list: Vec<(String, usize)> = Vec::new();
 
-        for (path, content) in &compressed_pairs {
-            let toks = crate::compressor::heuristic::estimate_tokens(content, path);
-            file_token_list.push((path.clone(), toks));
+        for doc in &compressed_docs {
+            let toks = doc.token_count.unwrap_or_else(|| {
+                crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
+            });
+            file_token_list.push((doc.path.clone(), toks));
             post_compression_tokens += toks;
         }
 
@@ -735,24 +704,19 @@ pub fn gobble_app(
 
         combined.push_str(&preamble);
 
-        for (path, content) in compressed_pairs {
-            if path == "_tree.md" {
-                combined.push_str(&content);
+        for doc in compressed_docs {
+            if doc.path == "_tree.md" {
+                combined.push_str(&doc.content);
             } else {
-                // Inject relevance score annotation if search was used
-                if let Some(ref scores) = search_scores {
-                    if let Some(score) = scores.get(&path) {
-                        combined.push_str(&format!(
-                            "// --- FILE_START: {} --- (relevance: {:.2})\n",
-                            path, score
-                        ));
-                    } else {
-                        combined.push_str(&format!("// --- FILE_START: {} ---\n", path));
-                    }
+                if let Some(score) = doc.relevance_score {
+                    combined.push_str(&format!(
+                        "// --- FILE_START: {} --- (relevance: {:.2})\n",
+                        doc.path, score
+                    ));
                 } else {
-                    combined.push_str(&format!("// --- FILE_START: {} ---\n", path));
+                    combined.push_str(&format!("// --- FILE_START: {} ---\n", doc.path));
                 }
-                combined.push_str(&content);
+                combined.push_str(&doc.content);
                 combined.push_str("\n\n");
             }
         }
@@ -1151,6 +1115,7 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
     Ok(files)
 }
 
+#[allow(unused_variables)]
 fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
     let path = Path::new(path_str);
     let extension = path
@@ -1161,19 +1126,28 @@ fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
 
     // EXPLICIT OVERRIDE: If the user passed `--plugin <NAME>`, force execution through that WASM component.
     if let Some(plugin_name) = args.plugin.as_deref() {
-        if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(plugin_name) {
-            match (parsers::wasm::WasmGobbler {
-                wasm_path: plugin_path,
-            })
-            .gobble(path, args)
-            {
-                Ok(markdown) => return Ok(markdown),
-                Err(e) => anyhow::bail!("Explicit WASM Plugin '{}' failed: {}", plugin_name, e),
+        #[cfg(feature = "wasm")]
+        {
+            if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(plugin_name) {
+                match (parsers::wasm::WasmGobbler {
+                    wasm_path: plugin_path,
+                })
+                .gobble(path, args)
+                {
+                    Ok(markdown) => return Ok(markdown),
+                    Err(e) => anyhow::bail!("Explicit WASM Plugin '{}' failed: {}", plugin_name, e),
+                }
+            } else {
+                anyhow::bail!(
+                    "Requested explicit --plugin '{}' could not be found in ~/.filegoblin/plugins/ or ./plugins/",
+                    plugin_name
+                );
             }
-        } else {
+        }
+        #[cfg(not(feature = "wasm"))]
+        {
             anyhow::bail!(
-                "Requested explicit --plugin '{}' could not be found in ~/.filegoblin/plugins/ or ./plugins/",
-                plugin_name
+                "Explicit WASM Plugins require the 'wasm' feature. Recompile with --features wasm."
             );
         }
     }
@@ -1183,16 +1157,28 @@ fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
         "docx" => parsers::office::OfficeGobbler.gobble(path, args),
         "xlsx" | "xls" | "ods" | "csv" => parsers::sheet::SheetGobbler.gobble(path, args),
         "pptx" => parsers::powerpoint::PptxGobbler.gobble(path, args),
-        "html" | "htm" => parsers::web::WebGobbler {
-            extract_full: args.full,
+        "html" | "htm" => {
+            #[cfg(feature = "web")]
+            {
+                parsers::web::WebGobbler {
+                    extract_full: args.full,
+                }
+                .gobble(path, args)
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                anyhow::bail!(
+                    "Parsing HTML files requires the 'web' feature. Recompile with --features web, or use --fallback."
+                );
+            }
         }
-        .gobble(path, args),
         "rs" | "js" | "py" | "ts" | "go" | "c" | "cpp" => {
             parsers::code::CodeGobbler.gobble(path, args)
         }
         _ => {
             // Priority 1: Check if a user provided a dynamic WASM plugin for this extension
             #[allow(clippy::collapsible_if)]
+            #[cfg(feature = "wasm")]
             if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(&extension) {
                 if let Ok(markdown) = (parsers::wasm::WasmGobbler {
                     wasm_path: plugin_path,
@@ -1206,7 +1192,16 @@ fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
             // Priority 2: Fall back to core heuristics
             // If it's an image, pass to ocr. If text, just read.
             if ["png", "jpg", "jpeg", "webp"].contains(&extension.as_str()) {
-                parsers::ocr::OcrGobbler.gobble(path, args)
+                #[cfg(feature = "ocr")]
+                {
+                    parsers::ocr::OcrGobbler.gobble(path, args)
+                }
+                #[cfg(not(feature = "ocr"))]
+                {
+                    anyhow::bail!(
+                        "OCR extraction requires the 'ocr' feature. Recompile with --features ocr."
+                    );
+                }
             } else {
                 std::fs::read_to_string(path).context("Failed to read file as plaintext")
             }
@@ -1214,6 +1209,7 @@ fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
     }
 }
 
+#[cfg(feature = "web")]
 fn fetch_url(url: &Url, quiet: bool) -> Result<String> {
     // reqwest::blocking::Client automatically respects HTTP_PROXY and HTTPS_PROXY
     if let Ok(proxy) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("HTTP_PROXY"))
@@ -1247,6 +1243,7 @@ mod tests {
     use std::thread;
 
     #[test]
+    #[cfg(feature = "web")]
     fn test_fetch_url_and_gobble() {
         // Start a dummy local server to test the network engine without an external dependency
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

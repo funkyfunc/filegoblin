@@ -1,4 +1,12 @@
+//! # filegoblin-tui
+//!
+//! An interactive terminal file-explorer and preview interface for Filegoblin.
+//! This crate provides the `run_tui` entry point which renders a full-screen
+//! TUI powered by `ratatui` and `crossterm`, allowing users to browse local
+//! directories (and optionally web links) and select files for ingestion.
+
 use anyhow::Result;
+#[allow(unused_imports)]
 use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -11,6 +19,7 @@ use std::thread;
 use std::{io, path::PathBuf};
 use url::Url;
 
+#[allow(dead_code)]
 pub enum TuiMessage {
     DirLoaded(TuiNode, Vec<TuiNode>),
     DirLoadError(TuiNode, String),
@@ -18,6 +27,7 @@ pub enum TuiMessage {
     PreviewLoadError(TuiNode, String),
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TuiNode {
     LocalDir(PathBuf),
@@ -120,7 +130,7 @@ pub struct App<'a> {
     pub view_scroll: u16,
     pub should_quit: bool,
     pub should_execute: bool,
-    pub active_flags: &'a mut filegoblin::cli::Cli,
+    pub active_flags: &'a mut filegoblin_core::cli::Cli,
     pub dir_file_counts: std::collections::HashMap<TuiNode, usize>,
 
     // Async mechanisms
@@ -137,7 +147,7 @@ pub struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    pub fn new(flags: &'a mut filegoblin::cli::Cli) -> Self {
+    pub fn new(flags: &'a mut filegoblin_core::cli::Cli) -> Self {
         let path_str = flags.paths.first().map(|s| s.as_str()).unwrap_or(".");
         let root = TuiNode::from_arg(path_str);
         let current_dir = root.clone();
@@ -195,108 +205,114 @@ impl<'a> App<'a> {
                             }
                         });
 
-                        // Restore previous position if it exists, otherwise 0
-                        if let Some(&saved_idx) = self.history.get(&self.current_dir) {
-                            if saved_idx < self.current_items.len() {
-                                self.selected_index = saved_idx;
-                            } else if !self.current_items.is_empty() {
-                                self.selected_index = self.current_items.len() - 1;
-                            } else {
-                                self.selected_index = 0;
-                            }
+                        // Restore cursor position if we've been here before
+                        if let Some(&prev_index) = self.history.get(&node) {
+                            self.selected_index =
+                                prev_index.min(self.current_items.len().saturating_sub(1));
                         } else {
                             self.selected_index = 0;
                         }
 
-                        self.request_preview_update();
-                        ui_dirty = true;
+                        // Trigger an immediate preview load for whatever is now selected
+                        self.trigger_preview();
                     }
+                    ui_dirty = true;
                 }
                 TuiMessage::DirLoadError(node, err) => {
                     if self.current_dir == node {
                         self.is_loading_dir = false;
-                        self.current_items.clear();
+                        self.current_items = Vec::new();
                         self.preview_content = format!("Error loading directory: {}", err);
-                        ui_dirty = true;
                     }
+                    ui_dirty = true;
                 }
-                TuiMessage::PreviewLoaded(node, preview) => {
-                    self.preview_cache.insert(node.clone(), preview.clone());
+                TuiMessage::PreviewLoaded(node, content) => {
+                    self.preview_cache.insert(node.clone(), content.clone());
                     if !self.current_items.is_empty()
+                        && self.selected_index < self.current_items.len()
                         && self.current_items[self.selected_index] == node
                     {
-                        self.preview_content = preview;
-                        ui_dirty = true;
+                        self.preview_content = content;
                     }
+                    ui_dirty = true;
                 }
                 TuiMessage::PreviewLoadError(node, err) => {
                     if !self.current_items.is_empty()
+                        && self.selected_index < self.current_items.len()
                         && self.current_items[self.selected_index] == node
                     {
-                        self.preview_content = format!("Error loading preview: {}", err);
-                        ui_dirty = true;
+                        self.preview_content = format!("Preview error: {}", err);
                     }
+                    ui_dirty = true;
                 }
             }
         }
         ui_dirty
     }
 
+    /// Dispatches an asynchronous directory scan for the given node.
     pub fn sniff(&mut self) {
-        self.current_items.clear();
-
+        // If we have a cached result, use it immediately
         if let Some(cached_items) = self.dir_cache.get(&self.current_dir) {
             self.current_items = cached_items.clone();
-            if let Some(&saved_idx) = self.history.get(&self.current_dir) {
-                if saved_idx < self.current_items.len() {
-                    self.selected_index = saved_idx;
-                } else if !self.current_items.is_empty() {
-                    self.selected_index = self.current_items.len() - 1;
+            // Sort items: folders first, then files
+            self.current_items.sort_by(|a, b| {
+                let a_dir = a.is_dir();
+                let b_dir = b.is_dir();
+                if a_dir && !b_dir {
+                    std::cmp::Ordering::Less
+                } else if !a_dir && b_dir {
+                    std::cmp::Ordering::Greater
                 } else {
-                    self.selected_index = 0;
+                    a.display_name().cmp(&b.display_name())
                 }
+            });
+            if let Some(&prev_index) = self.history.get(&self.current_dir) {
+                self.selected_index = prev_index.min(self.current_items.len().saturating_sub(1));
             } else {
                 self.selected_index = 0;
             }
-            self.request_preview_update();
+            self.trigger_preview();
             return;
         }
 
-        self.preview_content = "Diving into the cave...".to_string();
         self.is_loading_dir = true;
-
         let node = self.current_dir.clone();
         let tx = self.tx_msgs.clone();
-
-        thread::spawn(move || {
-            match &node {
-                TuiNode::LocalDir(path) => {
-                    let mut items = Vec::new();
-                    if let Ok(entries) = std::fs::read_dir(path) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            let is_hidden = p
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|s| s.starts_with('.') && s != "." && s != "..")
-                                .unwrap_or(false);
-
-                            if !is_hidden {
-                                if p.is_dir() {
-                                    items.push(TuiNode::LocalDir(p));
-                                } else {
-                                    items.push(TuiNode::LocalFile(p));
-                                }
+        thread::spawn(move || match &node {
+            TuiNode::LocalDir(path) => {
+                let mut items = Vec::new();
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                            if name.starts_with('.') {
+                                continue;
+                            }
+                            if p.is_dir() {
+                                items.push(TuiNode::LocalDir(p));
+                            } else {
+                                items.push(TuiNode::LocalFile(p));
                             }
                         }
                     }
-                    let _ = tx.send(TuiMessage::DirLoaded(node, items));
                 }
-                TuiNode::WebDir { url, .. } => {
-                    // Check if it's twitter
+                let _ = tx.send(TuiMessage::DirLoaded(node, items));
+            }
+            TuiNode::WebDir {
+                #[allow(unused_variables)]
+                url,
+                ..
+            } => {
+                #[allow(unused_variables, unused_mut)]
+                let mut handled = false;
+
+                #[cfg(feature = "cloud")]
+                {
                     if url.contains("twitter.com") || url.contains("x.com") {
-                        let twitter = filegoblin::parsers::twitter::TwitterGobbler {
-                            flavor: filegoblin::flavors::Flavor::Human,
+                        handled = true;
+                        let twitter = filegoblin_core::parsers::twitter::TwitterGobbler {
+                            flavor: filegoblin_core::flavors::Flavor::Human,
                         };
                         match twitter.get_thread_nodes(url) {
                             Ok(thread_items) => {
@@ -314,8 +330,13 @@ impl<'a> App<'a> {
                                     .send(TuiMessage::DirLoadError(node.clone(), format!("{}", e)));
                             }
                         }
-                    } else {
-                        // Standard web page, extract links
+                    }
+                }
+
+                if !handled {
+                    // Standard web page, extract links
+                    #[cfg(feature = "web")]
+                    {
                         if let Ok(res) = reqwest::blocking::Client::builder()
                             .use_rustls_tls()
                             .build()
@@ -366,198 +387,220 @@ impl<'a> App<'a> {
                             ));
                         }
                     }
-                }
-                _ => {
-                    let _ = tx.send(TuiMessage::DirLoaded(node, vec![]));
+                    #[cfg(not(feature = "web"))]
+                    {
+                        let _ = tx.send(TuiMessage::DirLoadError(
+                            node.clone(),
+                            "Web scraping requires the 'web' feature.".to_string(),
+                        ));
+                    }
                 }
             }
+            _ => {}
         });
     }
 
     pub fn next(&mut self) {
-        if !self.current_items.is_empty() && !self.is_loading_dir {
+        if !self.current_items.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.current_items.len();
             self.view_scroll = 0;
-            self.request_preview_update();
+            self.trigger_preview();
         }
     }
 
     pub fn previous(&mut self) {
-        if !self.current_items.is_empty() && !self.is_loading_dir {
-            if self.selected_index > 0 {
-                self.selected_index -= 1;
-            } else {
+        if !self.current_items.is_empty() {
+            if self.selected_index == 0 {
                 self.selected_index = self.current_items.len() - 1;
+            } else {
+                self.selected_index -= 1;
             }
             self.view_scroll = 0;
-            self.request_preview_update();
-        }
-    }
-
-    pub fn toggle_selection(&mut self) {
-        if !self.current_items.is_empty() && !self.is_loading_dir {
-            let node = self.current_items[self.selected_index].clone();
-
-            if node.is_file() {
-                if self.selected_paths.contains(&node) {
-                    self.selected_paths.remove(&node);
-                } else {
-                    self.selected_paths.insert(node);
-                }
-            } else if node.is_dir() {
-                // If local dir, support nested select
-                if let TuiNode::LocalDir(path) = &node {
-                    let mut nested_files = Vec::new();
-                    for entry in ignore::WalkBuilder::new(path).build().flatten() {
-                        if entry.file_type().is_some_and(|ft| ft.is_file()) {
-                            nested_files.push(TuiNode::LocalFile(entry.into_path()));
-                        }
-                    }
-
-                    self.dir_file_counts
-                        .insert(node.clone(), nested_files.len());
-
-                    let all_selected = nested_files.iter().all(|f| self.selected_paths.contains(f));
-                    if all_selected {
-                        for f in nested_files {
-                            self.selected_paths.remove(&f);
-                        }
-                    } else {
-                        for f in nested_files {
-                            self.selected_paths.insert(f);
-                        }
-                    }
-                } else if matches!(node, TuiNode::WebDir { .. }) {
-                    // For WebDir, just select the dir node itself (we treat it as a page to scrape later)
-                    if self.selected_paths.contains(&node) {
-                        self.selected_paths.remove(&node);
-                    } else {
-                        self.selected_paths.insert(node);
-                    }
-                }
-            }
+            self.trigger_preview();
         }
     }
 
     pub fn enter_directory(&mut self) {
-        if !self.current_items.is_empty() && !self.is_loading_dir {
-            let node = self.current_items[self.selected_index].clone();
-            if node.is_dir() {
-                // Save current position before diving
-                self.history
-                    .insert(self.current_dir.clone(), self.selected_index);
-                self.nav_stack.push(self.current_dir.clone());
+        if self.current_items.is_empty() || self.selected_index >= self.current_items.len() {
+            return;
+        }
 
-                self.current_dir = node;
-                self.selected_index = 0;
-                self.sniff();
-            }
+        let selected = &self.current_items[self.selected_index];
+        if selected.is_dir() {
+            self.history
+                .insert(self.current_dir.clone(), self.selected_index);
+            self.nav_stack.push(self.current_dir.clone());
+            self.current_dir = selected.clone();
+            self.current_items = Vec::new();
+            self.selected_index = 0;
+            self.preview_content = "Loading...".to_string();
+            self.sniff();
         }
     }
 
     pub fn leave_directory(&mut self) {
-        if self.current_dir != self.root_dir && !self.is_loading_dir {
-            // Find parent using chronological navigation stack
-            let parent_node = self.nav_stack.pop().or_else(|| {
-                // Fallback for local files just in case
-                match &self.current_dir {
-                    TuiNode::LocalDir(p) | TuiNode::LocalFile(p) => p
-                        .parent()
-                        .map(|parent| TuiNode::LocalDir(parent.to_path_buf())),
-                    _ => None,
-                }
-            });
+        if let Some(prev_dir) = self.nav_stack.pop() {
+            self.current_dir = prev_dir;
+            self.current_items = Vec::new();
+            self.selected_index = 0;
+            self.preview_content = "Loading...".to_string();
+            self.sniff();
+        }
+    }
 
-            if let Some(parent) = parent_node {
-                self.current_dir = parent;
-                self.sniff();
+    pub fn toggle_selection(&mut self) {
+        if self.current_items.is_empty() || self.selected_index >= self.current_items.len() {
+            return;
+        }
+
+        let item = self.current_items[self.selected_index].clone();
+
+        match &item {
+            TuiNode::LocalDir(path) => {
+                // Toggle all files in the directory recursively
+                let walker = ignore::WalkBuilder::new(path).build();
+                let mut all_files: Vec<TuiNode> = Vec::new();
+                for entry in walker.flatten() {
+                    if entry.file_type().is_some_and(|ft| ft.is_file()) {
+                        all_files.push(TuiNode::LocalFile(entry.path().to_path_buf()));
+                    }
+                }
+
+                // If all are selected, deselect all. Otherwise, select all.
+                let all_selected = all_files.iter().all(|f| self.selected_paths.contains(f));
+                if all_selected {
+                    for f in all_files {
+                        self.selected_paths.remove(&f);
+                    }
+                } else {
+                    for f in all_files {
+                        self.selected_paths.insert(f);
+                    }
+                }
             }
+            _ => {
+                if self.selected_paths.contains(&item) {
+                    self.selected_paths.remove(&item);
+                } else {
+                    self.selected_paths.insert(item);
+                }
+            }
+        }
+
+        // Auto-advance after toggling
+        if self.selected_index < self.current_items.len().saturating_sub(1) {
+            self.selected_index += 1;
+            self.view_scroll = 0;
+            self.trigger_preview();
         }
     }
 
     pub fn scroll_down(&mut self) {
-        self.view_scroll = self.view_scroll.saturating_add(3);
+        self.view_scroll = self.view_scroll.saturating_add(5);
     }
 
     pub fn scroll_up(&mut self) {
-        self.view_scroll = self.view_scroll.saturating_sub(3);
+        self.view_scroll = self.view_scroll.saturating_sub(5);
     }
 
-    fn request_preview_update(&mut self) {
-        if self.current_items.is_empty() {
-            self.preview_content = "Nothing here but dust and spiders. Feed me a file!".to_string();
+    fn trigger_preview(&mut self) {
+        if self.current_items.is_empty() || self.selected_index >= self.current_items.len() {
             return;
         }
 
         let node = self.current_items[self.selected_index].clone();
 
-        if let Some(cached_preview) = self.preview_cache.get(&node) {
-            self.preview_content = cached_preview.clone();
+        // Check cache first
+        if let Some(cached) = self.preview_cache.get(&node) {
+            self.preview_content = cached.clone();
             return;
         }
 
         match &node {
-            TuiNode::LocalDir(path) => {
-                let item_count = std::fs::read_dir(path).map(|d| d.count()).unwrap_or(0);
-                self.preview_content = format!(
-                    "📁 Cave: {}\n\nThis cave contains {} items.\n\nPress Right Arrow or 'l' to enter the cave.\nPress Space to select the entire cave for consumption.",
-                    path.file_name().unwrap_or_default().to_string_lossy(),
-                    item_count
-                );
+            TuiNode::LocalDir(_) => {
+                self.preview_content = "Directory — press → to enter.".to_string();
             }
-            TuiNode::LocalFile(path) => match std::fs::read_to_string(path) {
-                Ok(content) => self.preview_content = content,
-                Err(_) => {
-                    self.preview_content =
-                        "This one is too gristly! (Binary or unreadable file)".to_string()
+            TuiNode::LocalFile(path) => {
+                // Direct file read for preview — keep it sync for speed
+                self.preview_content = if let Ok(content) = std::fs::read_to_string(path) {
+                    content.chars().take(5000).collect()
+                } else if let Ok(bytes) = std::fs::read(path) {
+                    format!(
+                        "[Binary file: {} bytes]\n{}",
+                        bytes.len(),
+                        bytes
+                            .iter()
+                            .take(256)
+                            .map(|b| format!("{:02X}", b))
+                            .collect::<Vec<_>>()
+                            .chunks(16)
+                            .map(|chunk| chunk.join(" "))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                } else {
+                    "This one is too gristly! (Binary or unreadable file)".to_string()
                 }
-            },
-            TuiNode::WebDir { url, title: _ } => {
-                self.preview_content = "Fetching web preview from network...".to_string();
-                let tx = self.tx_msgs.clone();
-                let url_c = url.clone();
-                thread::spawn(move || {
-                    if let Ok(res) = reqwest::blocking::Client::builder()
-                        .use_rustls_tls()
-                        .build()
-                        .unwrap()
-                        .get(&url_c)
-                        .send()
-                    {
-                        if !res.status().is_success() {
-                            let _ = tx.send(TuiMessage::PreviewLoadError(
-                                node,
-                                format!("HTTP Error: {}", res.status()),
-                            ));
-                            return;
-                        }
-                        if let Ok(html) = res.text() {
-                            let gobbler = filegoblin::parsers::web::WebGobbler {
-                                extract_full: false,
-                            };
-                            let fallback_args =
-                                filegoblin::cli::Cli::parse_from(["filegoblin", "dummy"]);
-                            match filegoblin::parsers::gobble::Gobble::gobble_str(
-                                &gobbler,
-                                &html,
-                                &fallback_args,
-                            ) {
-                                Ok(md) => {
-                                    let _ = tx.send(TuiMessage::PreviewLoaded(node, md));
-                                }
-                                Err(e) => {
-                                    let _ = tx
-                                        .send(TuiMessage::PreviewLoadError(node, format!("{}", e)));
+            }
+            TuiNode::WebDir {
+                #[allow(unused_variables)]
+                url,
+                title: _,
+            } => {
+                #[cfg(feature = "web")]
+                {
+                    self.preview_content = "Fetching web preview from network...".to_string();
+                    let tx = self.tx_msgs.clone();
+                    let url_c = url.clone();
+                    thread::spawn(move || {
+                        if let Ok(res) = reqwest::blocking::Client::builder()
+                            .use_rustls_tls()
+                            .build()
+                            .unwrap()
+                            .get(&url_c)
+                            .send()
+                        {
+                            if !res.status().is_success() {
+                                let _ = tx.send(TuiMessage::PreviewLoadError(
+                                    node,
+                                    format!("HTTP Error: {}", res.status()),
+                                ));
+                                return;
+                            }
+                            if let Ok(html) = res.text() {
+                                let gobbler = filegoblin_core::parsers::web::WebGobbler {
+                                    extract_full: false,
+                                };
+                                let fallback_args =
+                                    filegoblin_core::cli::Cli::parse_from(["filegoblin", "dummy"]);
+                                match filegoblin_core::parsers::gobble::Gobble::gobble_str(
+                                    &gobbler,
+                                    &html,
+                                    &fallback_args,
+                                ) {
+                                    Ok(md) => {
+                                        let _ = tx.send(TuiMessage::PreviewLoaded(node, md));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(TuiMessage::PreviewLoadError(
+                                            node,
+                                            format!("{}", e),
+                                        ));
+                                    }
                                 }
                             }
+                        } else {
+                            let _ = tx.send(TuiMessage::PreviewLoadError(
+                                node,
+                                "Network request failed".to_string(),
+                            ));
                         }
-                    } else {
-                        let _ = tx.send(TuiMessage::PreviewLoadError(
-                            node,
-                            "Network request failed".to_string(),
-                        ));
-                    }
-                });
+                    });
+                }
+                #[cfg(not(feature = "web"))]
+                {
+                    self.preview_content = "Web previews require the 'web' feature.".to_string();
+                }
             }
             TuiNode::TweetNode { text_preview, .. } => {
                 self.preview_content = text_preview.clone();
@@ -566,7 +609,9 @@ impl<'a> App<'a> {
     }
 }
 
-pub fn run_tui(args: &mut filegoblin::cli::Cli) -> Result<Option<Vec<String>>> {
+/// Launches the interactive TUI, returning the list of selected file paths
+/// if the user presses Enter, or `None` if they quit without selecting.
+pub fn run_tui(args: &mut filegoblin_core::cli::Cli) -> Result<Option<Vec<String>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -860,9 +905,9 @@ where
             let write_color = if app.active_flags.write.is_some() { C_PRIMARY } else { C_MUTED };
             let compress_color = if app.active_flags.compress.is_some() { C_PRIMARY } else { C_MUTED };
             let compress_label = match &app.active_flags.compress {
-                Some(filegoblin::cli::CompressionLevel::Contextual) => "co[m]press:CTX",
-                Some(filegoblin::cli::CompressionLevel::Aggressive) => "co[m]press:AGG",
-                Some(filegoblin::cli::CompressionLevel::Safe)       => "co[m]press:SAF",
+                Some(filegoblin_core::cli::CompressionLevel::Contextual) => "co[m]press:CTX",
+                Some(filegoblin_core::cli::CompressionLevel::Aggressive) => "co[m]press:AGG",
+                Some(filegoblin_core::cli::CompressionLevel::Safe)       => "co[m]press:SAF",
                 None                                                => "co[m]press",
             };
 
@@ -1029,14 +1074,14 @@ where
                     }
                     KeyCode::Char('m') => {
                         app.active_flags.compress = match app.active_flags.compress {
-                            None => Some(filegoblin::cli::CompressionLevel::Contextual),
-                            Some(filegoblin::cli::CompressionLevel::Contextual) => {
-                                Some(filegoblin::cli::CompressionLevel::Aggressive)
+                            None => Some(filegoblin_core::cli::CompressionLevel::Contextual),
+                            Some(filegoblin_core::cli::CompressionLevel::Contextual) => {
+                                Some(filegoblin_core::cli::CompressionLevel::Aggressive)
                             }
-                            Some(filegoblin::cli::CompressionLevel::Aggressive) => {
-                                Some(filegoblin::cli::CompressionLevel::Safe)
+                            Some(filegoblin_core::cli::CompressionLevel::Aggressive) => {
+                                Some(filegoblin_core::cli::CompressionLevel::Safe)
                             }
-                            Some(filegoblin::cli::CompressionLevel::Safe) => None,
+                            Some(filegoblin_core::cli::CompressionLevel::Safe) => None,
                         };
                     }
                     KeyCode::Char('s') => app.active_flags.scrub = !app.active_flags.scrub,
