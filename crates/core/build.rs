@@ -2,13 +2,19 @@ use clap::CommandFactory;
 use clap_complete::{generate_to, shells::Shell};
 use clap_mangen::Man;
 use std::fs;
-use std::path::PathBuf;
 
 include!("src/cli.rs");
 
 fn main() -> std::io::Result<()> {
     // Generate explicitly into standard target structure
-    let generated_dir = PathBuf::from("target/generated");
+    // We navigate up to the workspace root to ensure it behaves consistently
+    let generated_dir = std::env::current_dir()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/generated");
     fs::create_dir_all(&generated_dir)?;
 
     let mut cmd = Cli::command();

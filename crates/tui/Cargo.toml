@@ -5,9 +5,6 @@ edition = "2024"
 description = "Interactive TUI file explorer for filegoblin."
 license = "MIT"
 
-[[bin]]
-name = "fg-tui"
-path = "src/main.rs"
 
 [features]
 default = []

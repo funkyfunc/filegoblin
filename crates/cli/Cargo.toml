@@ -10,8 +10,13 @@ license = "MIT"
 name = "filegoblin"
 path = "src/main.rs"
 
+[features]
+default = []
+tui = ["dep:filegoblin-tui"]
+
 [dependencies]
 filegoblin-core = { path = "../core" }
+filegoblin-tui = { path = "../tui", optional = true }
 anyhow = "1.0.102"
 clap = { version = "4.5.60", features = ["derive", "env"] }
 colored = "3.1.1"

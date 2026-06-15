@@ -30,7 +30,7 @@
 │   │   └── src/main.rs       (CLI Entry & Mascot)
 │   └── tui/          (filegoblin-tui: The Interactive Dashboard)
 │       ├── Cargo.toml
-│       └── src/main.rs
+│       └── src/lib.rs
 ├── scratch/
 │   └── gemini_parser (Reverse engineering workbench)
 └── .cargo/

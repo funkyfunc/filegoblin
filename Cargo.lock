@@ -2064,6 +2064,7 @@ dependencies = [
  "clap",
  "colored",
  "filegoblin-core",
+ "filegoblin-tui",
  "notify",
 ]
 

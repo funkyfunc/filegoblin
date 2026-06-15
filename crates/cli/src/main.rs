@@ -56,8 +56,7 @@ fn print_mascot() {
 use filegoblin_core::cli::Cli;
 
 fn main() -> Result<()> {
-    // Parse arguments and emit the initial "Crunching..." or Goblinism
-    let args = Cli::parse();
+    let mut args = Cli::parse();
 
     let parsed_flavor = Flavor::from_str(&args.flavor).unwrap_or(Flavor::Human);
 
@@ -87,13 +86,30 @@ fn main() -> Result<()> {
     }
 
     if args.interactive {
-        eprintln!(
-            "{} The interactive TUI has been moved to a separate binary: {}",
-            "ℹ️".blue(),
-            "fg-tui".bold()
-        );
-        eprintln!("Install it with: cargo install --path crates/tui");
-        std::process::exit(1);
+        #[cfg(feature = "tui")]
+        {
+            if let Some(selected_targets) = filegoblin_tui::run_tui(&mut args)? {
+                if !args.quiet {
+                    eprintln!(
+                        "{}",
+                        "    (^w^)  <- \"Crunching time!\""
+                            .truecolor(167, 255, 0)
+                            .bold()
+                    );
+                }
+                gobble_app(&selected_targets, &parsed_flavor, &args)?;
+            }
+            return Ok(());
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            eprintln!(
+                "{} Interactive mode requires the 'tui' feature.",
+                "❌".red()
+            );
+            eprintln!("Rebuild with: cargo install --path crates/cli --all-features");
+            std::process::exit(1);
+        }
     }
 
     if !args.quiet {
