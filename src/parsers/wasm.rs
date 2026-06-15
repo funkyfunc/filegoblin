@@ -99,7 +99,7 @@ mod tests {
         let gobbler = WasmGobbler {
             wasm_path: wasm_file.to_path_buf(),
         };
-        let args = crate::cli::Cli::parse_from(["filegoblin"]);
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         let result = gobbler.gobble(target_file, &args).unwrap();
 
         assert!(result.contains("DUMMY PARSER HIT!"));

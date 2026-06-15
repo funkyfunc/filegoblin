@@ -108,18 +108,20 @@ pub fn gobble_app(
                             anyhow::bail!("Failed to process cloned repo: {}", e);
                         }
                     }
-                } else if url.domain().is_some_and(|d| {
-                    d.ends_with("youtube.com") || d.ends_with("youtu.be")
-                }) {
+                } else if url
+                    .domain()
+                    .is_some_and(|d| d.ends_with("youtube.com") || d.ends_with("youtu.be"))
+                {
                     if !args.quiet {
                         eprintln!("▶️ Diverting to YouTubeGobbler to extract video transcripts...");
                     }
                     let youtube = parsers::youtube::YouTubeGobbler::new();
                     let text = youtube.gobble_str(target, args)?;
                     raw_pairs.push((target.to_string(), text));
-                } else if url.domain().is_some_and(|d| {
-                    d.ends_with("twitter.com") || d.ends_with("x.com")
-                }) {
+                } else if url
+                    .domain()
+                    .is_some_and(|d| d.ends_with("twitter.com") || d.ends_with("x.com"))
+                {
                     if !args.quiet {
                         eprintln!("🐦 Diverting to TwitterGobbler for deep context extraction...");
                     }
@@ -132,11 +134,14 @@ pub fn gobble_app(
                     d.ends_with("docs.google.com") || d.ends_with("drive.google.com")
                 }) {
                     if !args.quiet {
-                        eprintln!("📄 Diverting to GoogleGobbler for Workspace extraction...");
+                        eprintln!("📄 Diverting to GoogleDocsGobbler for Workspace extraction...");
                     }
-                    let google = parsers::google::GoogleGobbler;
-                    let text = google.gobble_str(target, args)?;
-                    raw_pairs.push((target.to_string(), text));
+                    if let Ok(google_docs) = parsers::google_docs::GoogleDocsGobbler::new(target) {
+                        let text = google_docs.gobble_str(target, args)?;
+                        raw_pairs.push((target.to_string(), text));
+                    } else {
+                        anyhow::bail!("Failed to initialize Google Docs extraction for {}", target);
+                    }
                 } else if url
                     .domain()
                     .is_some_and(|d| d.ends_with("gemini.google.com"))
@@ -945,7 +950,7 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
     files.push(("_tree.md".to_string(), tree_out));
 
     // Process all collected files
-    
+
     // HARDCODED Security & Privacy Exclusion
     let mut skipped = 0;
     files_to_process.retain(|p| {
@@ -953,19 +958,31 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
         let path_str = p.to_string_lossy();
         let is_radioactive = matches!(
             name.as_ref(),
-            ".env" | ".env.local" | ".env.development" | ".env.test" | ".env.production" | "id_rsa" | "id_ed25519" | "credentials.json"
-        ) || name.ends_with(".pem") || path_str.contains(".aws/credentials") || path_str.contains(".ssh/");
-        
+            ".env"
+                | ".env.local"
+                | ".env.development"
+                | ".env.test"
+                | ".env.production"
+                | "id_rsa"
+                | "id_ed25519"
+                | "credentials.json"
+        ) || name.ends_with(".pem")
+            || path_str.contains(".aws/credentials")
+            || path_str.contains(".ssh/");
+
         if is_radioactive {
             skipped += 1;
         }
-        
+
         !is_radioactive
     });
 
     if skipped > 0 && !args.quiet {
         use colored::Colorize;
-        eprintln!("{}", format!("🛡️ SKIPPED {} RADIOACTIVE FILE(S)", skipped).truecolor(255, 0, 0));
+        eprintln!(
+            "{}",
+            format!("🛡️ SKIPPED {} RADIOACTIVE FILE(S)", skipped).truecolor(255, 0, 0)
+        );
     }
     // Apply --include glob filtering if specified
     if !args.include.is_empty() {
@@ -1256,7 +1273,7 @@ mod tests {
         let html_content = fetch_url(&parsed_url, true).unwrap();
         assert!(html_content.contains("Goblin network testing!"));
 
-        let args = crate::cli::Cli::parse_from(["filegoblin"]);
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         let parsed_content = crate::parsers::web::WebGobbler {
             extract_full: false,
         }
@@ -1270,7 +1287,7 @@ mod tests {
         // Fallback for an unknown extension (.xyz)
         let test_file = "dummy.xyz";
         std::fs::write(test_file, "Plaintext fallback text").unwrap();
-        let args = crate::cli::Cli::parse_from(["filegoblin"]);
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         let res = route_and_gobble(test_file, &args).unwrap();
         assert_eq!(res, "Plaintext fallback text");
         std::fs::remove_file(test_file).ok();

@@ -1,26 +1,15 @@
-## Session Handoff: 2026-03-10 (Post Phase 15.5)
+# Handoff: Gemini & Google Docs Network Gobblers
 
-### 1. What was just completed
+## 1. What was just completed
+- **Gemini Share Links (Phase 1):** Implemented `GeminiGobbler` to parse `https://gemini.google.com/share/...` URLs. It intercepts the underlying `batchexecute` JSON payloads to perfectly reconstruct human prompts and AI responses in clean Markdown.
+- **Private Google Docs (Phase 2):** Pivoted away from cookie extraction (which failed due to Google's App-Bound Encryption and TLS fingerprinting) to a native OS "Download Hijack" strategy. `GoogleDocsGobbler` now triggers the user's default browser to hit the `export?format=txt` endpoint and watches the `~/Downloads` folder for the result. This completely bypasses all authentication hurdles by leveraging the user's existing browser session.
+- **Cleanup:** Added `scratch/` to `.gitignore` and removed temporary artifacts (`af_callbacks.js`, `share.html`, etc.) used during the reverse-engineering phase.
+- **Version Bump:** Bumped version to `v1.9.0` to reflect the new feature additions.
 
-- **Security & Privacy Hardening (Phase 15.5):**
-  - **Credential Storage Security**: `credentials.json` now explicitly demands `-rw-------` (`0600`) permissions using `std::os::unix::fs::PermissionsExt` so malicious host-machine tenants cannot read users' API tokens or session cookies.
-  - **Radioactive Exclusions**: `gobble_local` directory traversal now strictly guards against common secrets files, bypassing them natively. It skips `.env`, `.pem`, `id_rsa`, `.aws/credentials`, and others even if they explicitly match a user pass-through `--include` flag!
-  - **GitHub Clone Memory Safety**: Converted the Github cloning logic to strictly utilize `tempfile::tempdir()`, implementing Drop bindings. This guarantees cleanup of remote repository folders even if a user panics or sends a `SIGINT` (Ctrl+C).
+## 2. Broken Tests, Compilation Errors, or Pending Bugs
+- None! `cargo horde-check` passes with zero warnings.
+- *Known Edge Case:* The Google Docs download hijack relies on `std::env::var("HOME")` + `Downloads`. If a user has changed their default browser download path to something else (e.g., Desktop), the file watcher will time out after 15 seconds. This could be improved in the future by inspecting browser config files, but is acceptable for now.
 
-### 2. State & Issues
-- The binary builds warning-free with `cargo horde-check` after applying significant deep `rust-clippy` transformations over `src/parsers/twitter.rs`.
-- We applied the tag bump for `v1.8.3` to `Cargo.toml`.
-
-### 3. Next Steps for the Next Machine
-
-#### Priority 1: Jupyter Notebook Gobbler (`.ipynb`)
-- Add support for `.ipynb` files to iterate through JSON cells.
-- Append python code blocks correctly and optionally parse markdown blocks natively, ignoring heavy metadata chunks to strip tokens.
-
-#### Priority 2: Slack / Discord Exports (JSON)
-- Parse Slack `.json` arrays and Discord chat exports into readable markdown dialogue.
-- Format similarly to the Gemini share parser.
-
-#### Priority 3: SQLite Dump Gobbler
-- Ingest `.db` directly by querying the schema using `rusqlite`.
-- Extract top N sample rows per table, similar to how Code Skeletonization (`--extract symbols`) extracts headers without full values.
+## 3. Immediate Next Steps / Tasks for the Next Session
+- **Web Crawling Architecture:** The user has expressed interest in a recursive web crawler ("Horde Mode") and created `/web_crawler_architecture.md`. Review this workflow to begin expanding `filegoblin`'s capability to traverse standard webpages.
+- **Horde-Mode Refactor:** Ensure that the new network gobblers (`GeminiGobbler` and `GoogleDocsGobbler`) integrate properly if/when a recursive web crawler is introduced.

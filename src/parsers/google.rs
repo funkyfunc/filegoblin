@@ -54,7 +54,7 @@ impl GoogleGobbler {
                 .as_secs();
             if now > expires_at {
                 eprintln!("🔄 Google OAuth2 token expired. Refreshing...");
-                let client = build_google_oauth_client();
+                let client = build_google_oauth_client()?;
                 if let Ok(token_result) = client
                     .exchange_refresh_token(&RefreshToken::new(refresh.to_string()))
                     .request(http_client)
@@ -202,20 +202,38 @@ impl Gobble for GoogleGobbler {
     }
 }
 
-fn build_google_oauth_client() -> BasicClient {
+fn build_google_oauth_client() -> Result<BasicClient> {
     // Developers can supply their own Google OAuth Client ID/Secret via Env, or fallback to a dummy/provided one.
     // PKCE for desktop/native apps typically uses empty or dummy secrets.
     let client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_else(|_| {
         "1046465451998-vt1kdb6487hsvntg1s9h1uijsdj8412s.apps.googleusercontent.com".to_string()
     }); // Public dummy / user injected
 
-    BasicClient::new(
+    if client_id == "1046465451998-vt1kdb6487hsvntg1s9h1uijsdj8412s.apps.googleusercontent.com"
+        || client_id.is_empty()
+    {
+        anyhow::bail!(
+            "No valid GOOGLE_CLIENT_ID found.\n\n\
+             To use Google integration, you must provide your own OAuth 2.0 Client ID.\n\
+             1. Go to the Google Cloud Console (https://console.cloud.google.com/)\n\
+             2. Create a new project and enable the 'Google Drive API' and 'Google Docs API'\n\
+             3. Configure the OAuth consent screen\n\
+             4. Create credentials -> OAuth client ID -> Desktop app\n\
+             5. Set the GOOGLE_CLIENT_ID environment variable:\n\
+             \n\
+             export GOOGLE_CLIENT_ID=\"your-client-id.apps.googleusercontent.com\"\n\
+             \n\
+             Then run `filegoblin --google-login` again."
+        );
+    }
+
+    Ok(BasicClient::new(
         ClientId::new(client_id),
         None,
         AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".to_string()).unwrap(),
         Some(TokenUrl::new("https://oauth2.googleapis.com/token".to_string()).unwrap()),
     )
-    .set_redirect_uri(RedirectUrl::new("http://127.0.0.1:7890/callback".to_string()).unwrap())
+    .set_redirect_uri(RedirectUrl::new("http://127.0.0.1:7890/callback".to_string()).unwrap()))
 }
 
 pub fn handle_google_login() -> Result<()> {
@@ -225,7 +243,7 @@ pub fn handle_google_login() -> Result<()> {
         "🌐 Initiating Google OAuth 2.0 PKCE Login...".truecolor(0, 200, 255)
     );
 
-    let client = build_google_oauth_client();
+    let client = build_google_oauth_client()?;
     let (pkce_code_challenge, pkce_code_verifier) = PkceCodeChallenge::new_random_sha256();
 
     let (authorize_url, _csrf_state) = client
@@ -276,9 +294,10 @@ pub fn handle_google_login() -> Result<()> {
                 for pair in query.split('&') {
                     let mut kv = pair.split('=');
                     if let (Some(k), Some(v)) = (kv.next(), kv.next())
-                        && k == "code" {
-                            auth_code = Some(AuthorizationCode::new(v.to_string()));
-                        }
+                        && k == "code"
+                    {
+                        auth_code = Some(AuthorizationCode::new(v.to_string()));
+                    }
                 }
             }
 
@@ -319,27 +338,6 @@ pub fn handle_google_login() -> Result<()> {
     creds.google_token_expires_at = Some(expires_at);
 
     eprintln!("{} Setup Google Access Tokens!", "✅".green());
-
-    eprintln!(
-        "\n{}",
-        "✨ GEMINI SHARE LINK INGESTION SETUP ✨"
-            .truecolor(255, 191, 0)
-            .bold()
-    );
-    eprintln!(
-        "To ingest Gemini share links, we need your active Google session cookie (`__Secure-1PSID`)."
-    );
-    eprintln!("You can grab this by inspecting cookies on gemini.google.com.");
-    eprintln!("(Press ENTER to skip if you do not want Gemini integration).");
-    eprintln!("Cookie > ");
-
-    let mut cookie_input = String::new();
-    std::io::stdin().read_line(&mut cookie_input)?;
-    let cookie = cookie_input.trim();
-    if !cookie.is_empty() {
-        creds.google_cookie_1psid = Some(cookie.to_string());
-        eprintln!("{} Saved Gemini session cookie!", "✅".green());
-    }
 
     save_credentials(&creds)?;
 

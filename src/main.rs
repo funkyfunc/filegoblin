@@ -74,7 +74,12 @@ fn main() -> Result<()> {
     targets.extend(args.paths.clone());
 
     // 3. Prevent running with no targets
-    if targets.is_empty() && !args.interactive {
+    if targets.is_empty()
+        && !args.interactive
+        && !args.google_login
+        && !args.twitter_login
+        && !args.clipboard
+    {
         eprintln!(
             "{} Error: No target path provided and no stdin stream detected.",
             "❌".red()
@@ -146,33 +151,30 @@ fn main() -> Result<()> {
                 Ok(Ok(event)) => {
                     // Only react to actual modifications or creates
                     match event.kind {
-                        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
-                            if last_run.elapsed() >= debounce_duration {
-                                if !args.quiet {
-                                    // Clear screen
-                                    print!("\x1B[2J\x1B[1;1H");
-                                    eprintln!(
-                                        "{}",
-                                        format!(
-                                            "🔄 File changed: {:?}. Regenerating...",
-                                            event
-                                                .paths
-                                                .first()
-                                                .unwrap_or(&std::path::PathBuf::new())
-                                        )
-                                        .truecolor(0, 200, 255)
-                                    );
-                                }
-                                if let Err(e) = gobble_app(&targets, &parsed_flavor, &args) {
-                                    eprintln!("{} Watch regeneration failed: {}", "⚠️".yellow(), e);
-                                }
-                                last_run = std::time::Instant::now();
-                                if !args.quiet {
-                                    eprintln!(
-                                        "\n{}",
-                                        "👀 Watching for changes...".truecolor(255, 191, 0).bold()
-                                    );
-                                }
+                        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                            if last_run.elapsed() >= debounce_duration =>
+                        {
+                            if !args.quiet {
+                                // Clear screen
+                                print!("\x1B[2J\x1B[1;1H");
+                                eprintln!(
+                                    "{}",
+                                    format!(
+                                        "🔄 File changed: {:?}. Regenerating...",
+                                        event.paths.first().unwrap_or(&std::path::PathBuf::new())
+                                    )
+                                    .truecolor(0, 200, 255)
+                                );
+                            }
+                            if let Err(e) = gobble_app(&targets, &parsed_flavor, &args) {
+                                eprintln!("{} Watch regeneration failed: {}", "⚠️".yellow(), e);
+                            }
+                            last_run = std::time::Instant::now();
+                            if !args.quiet {
+                                eprintln!(
+                                    "\n{}",
+                                    "👀 Watching for changes...".truecolor(255, 191, 0).bold()
+                                );
                             }
                         }
                         _ => {}
