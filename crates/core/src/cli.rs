@@ -18,7 +18,7 @@ pub enum CompressionLevel {
 )]
 pub struct Cli {
     /// The target files, directories, or URLs to ingest
-    #[arg(required_unless_present_any = ["interactive", "google_login", "clipboard"])]
+    #[arg(required_unless_present_any = ["interactive", "clipboard"])]
     pub paths: Vec<String>,
 
     // --- OUTPUT FORMATTING ---
@@ -129,10 +129,6 @@ pub struct Cli {
     /// OS native file explorer integration (Open the output file/dir)
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub open: bool,
-
-    /// Authenticate via Google OAuth 2.0 PKCE to enable Docs/Drive ingestion
-    #[arg(long, help_heading = "Developer Utilities")]
-    pub google_login: bool,
 
     /// Paste from system clipboard as the primary input target (equivalent to pbpaste/xclip)
     #[arg(long, help_heading = "Developer Utilities")]

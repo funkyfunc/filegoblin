@@ -8,9 +8,6 @@ pub struct LocalCredentials {
     pub twitter_access_token: Option<String>,
     pub twitter_refresh_token: Option<String>,
     pub twitter_token_expires_at: Option<u64>,
-    pub google_access_token: Option<String>,
-    pub google_refresh_token: Option<String>,
-    pub google_token_expires_at: Option<u64>,
     pub google_cookie_1psid: Option<String>,
 }
 

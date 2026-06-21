@@ -58,7 +58,6 @@
 - [x] Interactive Terminal Dashboard (`-i`) with ratatui
 - [x] Pipeline-Safe Streams (`-q` for clean stdout)
 - [x] WASM Plugin Extensibility (`--plugin`)
-- [x] Cloud Resource Ingestion (Google Drive API)
 
 ---
 
@@ -156,14 +155,7 @@ curl -s "https://api.github.com/users/octocat" | filegoblin -q --json
 filegoblin --clipboard > context.md
 ```
 
-**Cloud Resources (Google Drive):**
-```bash
-# Authenticate once to securely cache PKCE token and provide session cookies
-filegoblin --google-login
 
-# Ingest Google Drive items directly
-filegoblin https://docs.google.com/document/d/1X...
-```
 
 **Development & Intelligence:**
 ```bash

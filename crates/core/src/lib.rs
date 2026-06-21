@@ -24,21 +24,6 @@ pub fn gobble_app(
     flavor: &flavors::Flavor,
     args: &crate::cli::Cli,
 ) -> Result<()> {
-
-    if args.google_login {
-        #[cfg(feature = "cloud")]
-        {
-            crate::parsers::google::handle_google_login()?;
-            return Ok(());
-        }
-        #[cfg(not(feature = "cloud"))]
-        {
-            anyhow::bail!(
-                "Google login requires the 'cloud' feature. Recompile with --features cloud."
-            );
-        }
-    }
-
     let mut raw_pairs: Vec<(String, String)> = Vec::new();
 
     if args.clipboard {
@@ -90,7 +75,12 @@ pub fn gobble_app(
                 if args.horde {
                     #[cfg(feature = "web")]
                     {
-                        raw_pairs.extend(crate::parsers::crawler::crawl_web(&url, args)?);
+                        match crate::parsers::crawler::crawl_web(&url, args) {
+                            Ok(pairs) => raw_pairs.extend(pairs),
+                            Err(e) => {
+                                eprintln!("{} Horde crawl failed for {}: {}", "⚠️".yellow(), url, e)
+                            }
+                        }
                     }
                     #[cfg(not(feature = "web"))]
                     {
@@ -111,7 +101,8 @@ pub fn gobble_app(
                         let temp_dir = tempfile::tempdir()?;
                         if let Err(e) = parsers::github::clone_github_repo(target, temp_dir.path())
                         {
-                            anyhow::bail!("Failed to clone GitHub repo: {}", e);
+                            eprintln!("{} Failed to clone GitHub repo: {}", "⚠️".yellow(), e);
+                            continue;
                         }
                         let mut repo_args = args.clone();
                         repo_args.horde = true; // Force horde mode for a repository clone
@@ -120,7 +111,7 @@ pub fn gobble_app(
                                 raw_pairs.extend(local_pairs);
                             }
                             Err(e) => {
-                                anyhow::bail!("Failed to process cloned repo: {}", e);
+                                eprintln!("{} Failed to process cloned repo: {}", "⚠️".yellow(), e);
                             }
                         }
                     }
@@ -133,12 +124,26 @@ pub fn gobble_app(
                 } else {
                     #[cfg(feature = "web")]
                     {
-                        let html_content = fetch_url(&url, args.quiet)?;
-                        let text = parsers::web::WebGobbler {
-                            extract_full: args.full,
+                        match fetch_url(&url, args.quiet) {
+                            Ok(html_content) => {
+                                match (parsers::web::WebGobbler {
+                                    extract_full: args.full,
+                                })
+                                .gobble_str(&html_content, args)
+                                {
+                                    Ok(text) => raw_pairs.push((target.to_string(), text)),
+                                    Err(e) => eprintln!(
+                                        "{} Failed to extract web content from {}: {}",
+                                        "⚠️".yellow(),
+                                        url,
+                                        e
+                                    ),
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("{} Failed to fetch URL {}: {}", "⚠️".yellow(), url, e)
+                            }
                         }
-                        .gobble_str(&html_content, args)?;
-                        raw_pairs.push((target.to_string(), text));
                     }
                     #[cfg(not(feature = "web"))]
                     {
@@ -151,13 +156,19 @@ pub fn gobble_app(
                 if !args.quiet {
                     eprintln!("📁 Sniffing for files at local path: {}", target);
                 }
-                raw_pairs.extend(gobble_local(target, args)?);
+                match gobble_local(target, args) {
+                    Ok(pairs) => raw_pairs.extend(pairs),
+                    Err(e) => eprintln!("{} Failed to sniff path {}: {}", "⚠️".yellow(), target, e),
+                }
             }
         } else {
             if !args.quiet {
                 eprintln!("📁 Sniffing for files at local path: {}", target);
             }
-            raw_pairs.extend(gobble_local(target, args)?);
+            match gobble_local(target, args) {
+                Ok(pairs) => raw_pairs.extend(pairs),
+                Err(e) => eprintln!("{} Failed to sniff path {}: {}", "⚠️".yellow(), target, e),
+            }
         }
     }
 
@@ -770,8 +781,10 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
     let root = std::path::Path::new(target);
 
     if !root.is_dir() || !args.horde {
-        let content = route_and_gobble(target, args)?;
-        files.push((target.to_string(), content));
+        match route_and_gobble(target, args) {
+            Ok(content) => files.push((target.to_string(), content)),
+            Err(e) => eprintln!("{} Error summarizing {}: {}", "⚠️".yellow(), target, e),
+        }
         return Ok(files);
     }
 
@@ -957,31 +970,43 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
         }
     }
 
-    for file_path in files_to_process {
-        if let Ok(rel_path) = file_path.strip_prefix(if root.is_file() {
-            root.parent().unwrap_or(root)
-        } else {
-            root
-        }) {
-            let rel_str = rel_path.to_string_lossy().into_owned();
+    use rayon::prelude::*;
+    let parsed_files: Vec<(String, String)> = files_to_process
+        .into_par_iter()
+        .filter_map(|file_path| {
+            if let Ok(rel_path) = file_path.strip_prefix(if root.is_file() {
+                root.parent().unwrap_or(root)
+            } else {
+                root
+            }) {
+                let rel_str = rel_path.to_string_lossy().into_owned();
 
-            // --diff-format: use unified diff output instead of full file content
-            let content = if args.diff_format {
-                if let Some(ref git_ref) = args.git_diff {
-                    let diff_result = std::process::Command::new("git")
-                        .args(["diff", git_ref, "--", file_path.to_str().unwrap()])
-                        .current_dir(root)
-                        .output();
-                    match diff_result {
-                        Ok(output) if output.status.success() => {
-                            let diff_text = String::from_utf8_lossy(&output.stdout).to_string();
-                            if diff_text.trim().is_empty() {
+                // --diff-format: use unified diff output instead of full file content
+                let content = if args.diff_format {
+                    if let Some(ref git_ref) = args.git_diff {
+                        let diff_result = std::process::Command::new("git")
+                            .args(["diff", git_ref, "--", file_path.to_str().unwrap()])
+                            .current_dir(root)
+                            .output();
+                        match diff_result {
+                            Ok(output) if output.status.success() => {
+                                let diff_text = String::from_utf8_lossy(&output.stdout).to_string();
+                                if diff_text.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(diff_text)
+                                }
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        match route_and_gobble(file_path.to_str().unwrap(), args) {
+                            Ok(c) => Some(c),
+                            Err(e) => {
+                                eprintln!("{} Error summarizing {}: {}", "⚠️".yellow(), rel_str, e);
                                 None
-                            } else {
-                                Some(diff_text)
                             }
                         }
-                        _ => None,
                     }
                 } else {
                     match route_and_gobble(file_path.to_str().unwrap(), args) {
@@ -991,22 +1016,16 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
                             None
                         }
                     }
-                }
-            } else {
-                match route_and_gobble(file_path.to_str().unwrap(), args) {
-                    Ok(c) => Some(c),
-                    Err(e) => {
-                        eprintln!("{} Error summarizing {}: {}", "⚠️".yellow(), rel_str, e);
-                        None
-                    }
-                }
-            };
+                };
 
-            if let Some(c) = content {
-                files.push((rel_str, c));
+                content.map(|c| (rel_str, c))
+            } else {
+                None
             }
-        }
-    }
+        })
+        .collect();
+
+    files.extend(parsed_files);
 
     Ok(files)
 }

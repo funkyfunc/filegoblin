@@ -1,6 +1,6 @@
 [package]
 name = "filegoblin-tui"
-version = "1.9.0"
+version = "1.9.1"
 edition = "2024"
 description = "Interactive TUI file explorer for filegoblin."
 license = "MIT"
@@ -9,7 +9,6 @@ license = "MIT"
 [features]
 default = []
 web = ["filegoblin-core/web", "dep:reqwest", "dep:scraper"]
-cloud = ["filegoblin-core/cloud"]
 
 [dependencies]
 anyhow = "1.0.102"

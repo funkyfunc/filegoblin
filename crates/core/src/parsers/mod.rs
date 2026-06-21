@@ -3,21 +3,8 @@ pub mod code;
 pub mod crawler;
 pub mod credentials;
 #[cfg(feature = "web")]
-pub mod crawler;
-pub mod credentials;
-#[cfg(feature = "web")]
 pub mod github;
 pub mod gobble;
-#[cfg(feature = "cloud")]
-pub mod google;
-#[cfg(feature = "cloud")]
-pub mod google;
-#[cfg(feature = "ocr")]
-pub mod ocr;
-pub mod office;
-pub mod pdf;
-pub mod powerpoint;
-pub mod sheet;
 #[cfg(feature = "ocr")]
 pub mod ocr;
 pub mod office;
@@ -28,11 +15,7 @@ pub mod sheet;
 pub mod wasm;
 #[cfg(feature = "web")]
 pub mod web;
-#[cfg(feature = "web")]
-pub mod web;
 
 // Re-export common traits so `main.rs` doesn't need to dig
 pub use self::code::CodeGobbler;
-#[cfg(feature = "cloud")]
-pub use self::google::GoogleGobbler;
 pub use self::office::OfficeGobbler;

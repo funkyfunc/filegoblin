@@ -307,32 +307,6 @@ impl<'a> App<'a> {
                 #[allow(unused_variables, unused_mut)]
                 let mut handled = false;
 
-                #[cfg(feature = "cloud")]
-                {
-                    if url.contains("twitter.com") || url.contains("x.com") {
-                        handled = true;
-                        let twitter = filegoblin_core::parsers::twitter::TwitterGobbler {
-                            flavor: filegoblin_core::flavors::Flavor::Human,
-                        };
-                        match twitter.get_thread_nodes(url) {
-                            Ok(thread_items) => {
-                                let items: Vec<TuiNode> = thread_items
-                                    .into_iter()
-                                    .map(|(tid, text)| TuiNode::TweetNode {
-                                        url: tid,
-                                        text_preview: text,
-                                    })
-                                    .collect();
-                                let _ = tx.send(TuiMessage::DirLoaded(node.clone(), items));
-                            }
-                            Err(e) => {
-                                let _ = tx
-                                    .send(TuiMessage::DirLoadError(node.clone(), format!("{}", e)));
-                            }
-                        }
-                    }
-                }
-
                 if !handled {
                     // Standard web page, extract links
                     #[cfg(feature = "web")]

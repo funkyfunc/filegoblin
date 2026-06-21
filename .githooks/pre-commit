@@ -1,0 +1,27 @@
+#!/bin/sh
+
+echo "🧟 Running Horde Check (Formatting, Clippy, Tests)..."
+
+# Check formatting
+cargo fmt --check
+if [ $? -ne 0 ]; then
+    echo "❌ Code format check failed! Run 'cargo fmt' to fix it."
+    exit 1
+fi
+
+# Check clippy
+cargo clippy -- -D warnings
+if [ $? -ne 0 ]; then
+    echo "❌ Clippy found warnings/errors! Please fix them before committing."
+    exit 1
+fi
+
+# Run tests
+cargo test
+if [ $? -ne 0 ]; then
+    echo "❌ Tests failed! Please fix them before committing."
+    exit 1
+fi
+
+echo "✅ Horde Check passed! Proceeding with commit."
+exit 0

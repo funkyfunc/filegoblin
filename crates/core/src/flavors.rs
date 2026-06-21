@@ -26,29 +26,35 @@ impl std::str::FromStr for Flavor {
 }
 
 pub fn format_output(flavor: &Flavor, filename: &str, content: &str) -> String {
+    format!(
+        "{}{}{}",
+        format_header(flavor, filename, content.len()),
+        content.trim(),
+        format_footer(flavor)
+    )
+}
+
+pub fn format_header(flavor: &Flavor, filename: &str, approx_len: usize) -> String {
     match flavor {
-        Flavor::Human => {
-            format!("{}\n", content.trim())
-        }
-        Flavor::Anthropic => {
-            format!(
-                "<file path=\"{}\">\n<content>\n{}\n</content>\n</file>\n",
-                filename,
-                content.trim()
-            )
-        }
+        Flavor::Human => String::new(),
+        Flavor::Anthropic => format!("<file path=\"{}\">\n<content>\n", filename),
         Flavor::Gpt => {
-            let tokens = content.len() / 4; // Absolute rough estimate
+            let tokens = approx_len / 4;
             format!(
-                "---\nfile: {}\ntokens: {}\nmode: full\n---\n```\n{}\n```\n",
-                filename,
-                tokens,
-                content.trim()
+                "---\nfile: {}\ntokens: {}\nmode: full\n---\n```\n",
+                filename, tokens
             )
         }
-        Flavor::Gemini => {
-            format!("{}\n", content.trim())
-        }
+        Flavor::Gemini => String::new(),
+    }
+}
+
+pub fn format_footer(flavor: &Flavor) -> String {
+    match flavor {
+        Flavor::Human => "\n".to_string(),
+        Flavor::Anthropic => "\n</content>\n</file>\n".to_string(),
+        Flavor::Gpt => "\n```\n".to_string(),
+        Flavor::Gemini => "\n".to_string(),
     }
 }
 

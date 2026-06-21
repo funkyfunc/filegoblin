@@ -56,7 +56,7 @@ fn print_mascot() {
 use filegoblin_core::cli::Cli;
 
 fn main() -> Result<()> {
-    let mut args = Cli::parse();
+    let args = Cli::parse();
 
     let parsed_flavor = Flavor::from_str(&args.flavor).unwrap_or(Flavor::Human);
 
@@ -71,11 +71,7 @@ fn main() -> Result<()> {
     targets.extend(args.paths.clone());
 
     // 3. Prevent running with no targets
-    if targets.is_empty()
-        && !args.interactive
-        && !args.google_login
-        && !args.clipboard
-    {
+    if targets.is_empty() && !args.interactive && !args.clipboard {
         eprintln!(
             "{} Error: No target path provided and no stdin stream detected.",
             "❌".red()
