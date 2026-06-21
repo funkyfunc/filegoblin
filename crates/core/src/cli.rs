@@ -18,7 +18,7 @@ pub enum CompressionLevel {
 )]
 pub struct Cli {
     /// The target files, directories, or URLs to ingest
-    #[arg(required_unless_present_any = ["interactive", "twitter_login", "google_login", "clipboard"])]
+    #[arg(required_unless_present_any = ["interactive", "google_login", "clipboard"])]
     pub paths: Vec<String>,
 
     // --- OUTPUT FORMATTING ---
@@ -130,11 +130,7 @@ pub struct Cli {
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub open: bool,
 
-    /// Authenticate via Twitter OAuth 2.0 PKCE to bypass rate-limits and enable reliable thread ingestion
-    #[arg(long, help_heading = "Developer Utilities")]
-    pub twitter_login: bool,
-
-    /// Authenticate via Google OAuth 2.0 PKCE to enable Docs/Drive ingestion and interactive Gemini session import
+    /// Authenticate via Google OAuth 2.0 PKCE to enable Docs/Drive ingestion
     #[arg(long, help_heading = "Developer Utilities")]
     pub google_login: bool,
 

@@ -3,8 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/cli",
-    "crates/tui",
-    "scratch/gemini_parser"
+    "crates/tui"
 ]
 
 [profile.release]

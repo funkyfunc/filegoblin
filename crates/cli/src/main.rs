@@ -74,7 +74,6 @@ fn main() -> Result<()> {
     if targets.is_empty()
         && !args.interactive
         && !args.google_login
-        && !args.twitter_login
         && !args.clipboard
     {
         eprintln!(

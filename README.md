@@ -31,8 +31,6 @@
 │   └── tui/          (filegoblin-tui: The Interactive Dashboard)
 │       ├── Cargo.toml
 │       └── src/lib.rs
-├── scratch/
-│   └── gemini_parser (Reverse engineering workbench)
 └── .cargo/
     └── config.toml   (Aliases)
 ```
@@ -41,7 +39,7 @@
 
 ## ⚡ Current Capabilities (v1.7.0)
 
-- [x] 10 Core Parsers (PDF, Office, Web, Code, Excel, PowerPoint, Images, Twitter, WASM Plugins)
+- [x] Core Parsers (PDF, Office, Web, Code, Excel, PowerPoint, Images, WASM Plugins)
 - [x] URL Ingestion & Recursive Crawling (`--horde`)
 - [x] Glob Filtering (`--include`, `--exclude`) & Depth Control (`--depth`)
 - [x] 4 LLM Flavors (`human`, `anthropic`, `gpt`, `gemini`)
@@ -60,7 +58,7 @@
 - [x] Interactive Terminal Dashboard (`-i`) with ratatui
 - [x] Pipeline-Safe Streams (`-q` for clean stdout)
 - [x] WASM Plugin Extensibility (`--plugin`)
-- [x] Cloud Resource Ingestion (Google Docs, Drive, Gemini, Twitter URL parsing + Authentication)
+- [x] Cloud Resource Ingestion (Google Drive API)
 
 ---
 
@@ -80,8 +78,6 @@
 | **Source Code** | `~/project/src` | `CodeGobbler` | Skeleton Minification |
 | **Images** | `~/screenshot.png` | *Not Supported* | N/A |
 | **Webpages** | `https://news.ycombinator.com` | `WebGobbler` | Heuristic Extraction |
-| **Google Docs** | `https://docs.google.com/...` | `GoogleDocsGobbler` | Download Hijack + Sequence of Records |
-| **Gemini AI** | `https://gemini.google.com/share/...` | `GeminiGobbler` | Human/AI Dialogue Reconstruction |
 
 - **Semantic Search:** BM25 relevance scoring via `tantivy` with zero model weights.
 - **Manifest TOC:** Auto-generated table of contents with per-file token counts.
@@ -160,14 +156,13 @@ curl -s "https://api.github.com/users/octocat" | filegoblin -q --json
 filegoblin --clipboard > context.md
 ```
 
-**Cloud Resources (Google Docs/Drive/Gemini):**
+**Cloud Resources (Google Drive):**
 ```bash
 # Authenticate once to securely cache PKCE token and provide session cookies
 filegoblin --google-login
 
-# Ingest Google Docs/Drive items or Gemini share links directly
+# Ingest Google Drive items directly
 filegoblin https://docs.google.com/document/d/1X...
-filegoblin https://gemini.google.com/share/...
 ```
 
 **Development & Intelligence:**

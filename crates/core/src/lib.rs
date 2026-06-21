@@ -24,19 +24,6 @@ pub fn gobble_app(
     flavor: &flavors::Flavor,
     args: &crate::cli::Cli,
 ) -> Result<()> {
-    if args.twitter_login {
-        #[cfg(feature = "cloud")]
-        {
-            crate::parsers::twitter::handle_twitter_login()?;
-            return Ok(());
-        }
-        #[cfg(not(feature = "cloud"))]
-        {
-            anyhow::bail!(
-                "Twitter login requires the 'cloud' feature. Recompile with --features cloud."
-            );
-        }
-    }
 
     if args.google_login {
         #[cfg(feature = "cloud")]
@@ -141,97 +128,6 @@ pub fn gobble_app(
                     {
                         anyhow::bail!(
                             "GitHub cloning requires the 'web' feature. Recompile with --features web."
-                        );
-                    }
-                } else if url
-                    .domain()
-                    .is_some_and(|d| d.ends_with("youtube.com") || d.ends_with("youtu.be"))
-                {
-                    if !args.quiet {
-                        eprintln!("▶️ Diverting to YouTubeGobbler to extract video transcripts...");
-                    }
-                    #[cfg(feature = "web")]
-                    {
-                        let youtube = parsers::youtube::YouTubeGobbler::new();
-                        let text = youtube.gobble_str(target, args)?;
-                        raw_pairs.push((target.to_string(), text));
-                    }
-                    #[cfg(not(feature = "web"))]
-                    {
-                        anyhow::bail!(
-                            "YouTube scraping requires the 'web' feature. Recompile with --features web."
-                        );
-                    }
-                } else if url
-                    .domain()
-                    .is_some_and(|d| d.ends_with("twitter.com") || d.ends_with("x.com"))
-                {
-                    #[cfg(feature = "cloud")]
-                    {
-                        if !args.quiet {
-                            eprintln!(
-                                "🐦 Diverting to TwitterGobbler for deep context extraction..."
-                            );
-                        }
-                        let twitter = parsers::twitter::TwitterGobbler {
-                            flavor: flavor.clone(),
-                        };
-                        let text = twitter.gobble_str(target, args)?;
-                        raw_pairs.push((target.to_string(), text));
-                    }
-                    #[cfg(not(feature = "cloud"))]
-                    {
-                        anyhow::bail!(
-                            "Twitter scraping requires the 'cloud' feature. Recompile with --features cloud."
-                        );
-                    }
-                } else if url.domain().is_some_and(|d| {
-                    d.ends_with("docs.google.com") || d.ends_with("drive.google.com")
-                }) {
-                    #[cfg(feature = "cloud")]
-                    {
-                        if !args.quiet {
-                            eprintln!(
-                                "📄 Diverting to GoogleDocsGobbler for Workspace extraction..."
-                            );
-                        }
-                        if let Ok(google_docs) =
-                            parsers::google_docs::GoogleDocsGobbler::new(target)
-                        {
-                            let text = google_docs.gobble_str(target, args)?;
-                            raw_pairs.push((target.to_string(), text));
-                        } else {
-                            anyhow::bail!(
-                                "Failed to initialize Google Docs extraction for {}",
-                                target
-                            );
-                        }
-                    }
-                    #[cfg(not(feature = "cloud"))]
-                    {
-                        anyhow::bail!(
-                            "Google Workspace extraction requires the 'cloud' feature. Recompile with --features cloud."
-                        );
-                    }
-                } else if url
-                    .domain()
-                    .is_some_and(|d| d.ends_with("gemini.google.com"))
-                {
-                    #[cfg(feature = "web")]
-                    {
-                        if !args.quiet {
-                            eprintln!(
-                                "✨ Diverting to GeminiGobbler for shared conversation extraction..."
-                            );
-                        }
-                        let gemini = parsers::gemini_share::GeminiGobbler;
-                        let text = gemini.gobble_str(target, args)?;
-                        raw_pairs.push((target.to_string(), text));
-                    }
-                    #[cfg(not(feature = "web"))]
-                    {
-                        anyhow::bail!(
-                            "Gemini extraction requires the 'web' feature. Recompile with --features web."
                         );
                     }
                 } else {
