@@ -1,0 +1,1 @@
+See `GEMINI.md` for the core agent instructions and project context.
