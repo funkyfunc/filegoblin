@@ -1,11 +1,15 @@
-# Current Tasks
+# Current Session Tasks (Completed)
 
-- [x] Analyze codebase for ToS-violating parsers (Gemini/Twitter).
-- [x] Remove ToS-violating parsers and API keys.
-- [x] Fix OpenSSL linking issue on macOS.
-- [x] Create a `horde-check` GitHub workflow and local `pre-commit` hook.
-- [x] Remove Google Drive integration to strictly enforce Zero-Dependency Local-First mandate.
-- [x] Update documentation and release new `v1.9.1` version tag.
+- `[x]` Geometric PDF table extraction via `oxidize-pdf` bounding box heuristics.
+- `[x]` `.docx` table extraction recursively resolving into "Sequence of Records".
+- `[x]` Native `.ipynb` Jupyter parser built on `serde_json`, capturing output streams natively.
+- `[x]` OpenXML state machine upgrade for `.pptx` table extraction.
+- `[x]` `ArchiveGobbler`: In-memory extraction for `.zip`, `.tar.gz`, and `.tgz` routed through temp-directories.
+- `[x]` `EpubGobbler`: E-book HTML flattening and Markdown formatting via zip extraction.
+- `[x]` Version bumped to `1.10.0` in all `Cargo.toml` files.
 
-## Pending items
-- There are no immediate pending items or compilation errors. The codebase is fully verified.
+# Pending Tasks (Next Session)
+
+- `[ ]` Dependency Graph "PageRank" Heuristic Pruning (using Tree-sitter).
+- `[ ]` Git Context & Diffs parsing (`--diff` flag or `.patch` ingestion).
+- `[ ]` Database Schema Extraction (`.sqlite`, `.db`).

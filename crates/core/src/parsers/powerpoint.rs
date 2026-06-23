@@ -51,7 +51,6 @@ impl Gobble for PptxGobbler {
     }
 }
 
-/// A simple quick-xml reader that grabs all text inside <a:t> nodes
 fn extract_text_from_slide_xml(xml: &str) -> String {
     use quick_xml::Reader;
     use quick_xml::events::Event;
@@ -62,20 +61,39 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
     let mut output = String::new();
     let mut in_text_node = false;
 
-    // A paragraph usually contains multiple runs. We'll add newlines after a paragraph.
-    // For simplicity, we just extract text strings sequentially.
+    // Table state trackers
+    let mut in_table = false;
+    let mut current_row_idx = 0;
+    let mut current_col_idx = 0;
+    let mut current_cell_text = String::new();
+    let mut headers: Vec<String> = Vec::new();
+
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 match e.name().as_ref() {
+                    b"a:tbl" => {
+                        in_table = true;
+                        current_row_idx = 0;
+                        output.push('\n'); // Pad before table
+                    }
+                    b"a:tr" if in_table => {
+                        current_col_idx = 0;
+                        if current_row_idx > 0 {
+                            output.push_str(&format!("\nRow {}: ", current_row_idx));
+                        }
+                    }
+                    b"a:tc" if in_table => {
+                        current_cell_text.clear();
+                    }
                     b"a:t" => in_text_node = true,
-                    b"a:p" => output.push_str("\n- "), // Start of a paragraph/bullet
+                    b"a:p" if !in_table => output.push_str("\n- "), // Start of a paragraph/bullet outside tables
                     _ => (),
                 }
             }
             Ok(Event::Text(e)) => {
                 if in_text_node {
-                    // Try to decode as UTF-8 string, manually replacing common XML escapes if quick-xml's unescape isn't available
+                    // Try to decode as UTF-8 string, manually replacing common XML escapes
                     let raw_str = std::str::from_utf8(e.as_ref()).unwrap_or_default();
                     let decoded = raw_str
                         .replace("&amp;", "&")
@@ -83,16 +101,47 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
                         .replace("&gt;", ">")
                         .replace("&quot;", "\"")
                         .replace("&apos;", "'");
-                    output.push_str(&decoded);
+
+                    if in_table {
+                        current_cell_text.push_str(&decoded);
+                    } else {
+                        output.push_str(&decoded);
+                    }
                 }
             }
             Ok(Event::End(ref e)) => match e.name().as_ref() {
+                b"a:tbl" => {
+                    in_table = false;
+                    headers.clear();
+                    output.push('\n'); // Pad after table
+                }
+                b"a:tr" if in_table => {
+                    current_row_idx += 1;
+                }
+                b"a:tc" if in_table => {
+                    let text = current_cell_text.trim().to_string();
+                    if current_row_idx == 0 {
+                        // Header row
+                        headers.push(if text.is_empty() {
+                            format!("Col {}", current_col_idx)
+                        } else {
+                            text
+                        });
+                    } else {
+                        let header = headers
+                            .get(current_col_idx)
+                            .cloned()
+                            .unwrap_or_else(|| format!("Col {}", current_col_idx));
+                        output.push_str(&format!("{}: {}; ", header, text));
+                    }
+                    current_col_idx += 1;
+                }
                 b"a:t" => in_text_node = false,
-                b"a:p" => output.push('\n'),
+                b"a:p" if !in_table => output.push('\n'),
                 _ => (),
             },
             Ok(Event::Eof) => break,
-            Err(_) => break, // Silently ignore malformed XML chunks rather than crashing the whole horde
+            Err(_) => break, // Silently ignore malformed XML chunks
             _ => (),
         }
     }
@@ -103,4 +152,30 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
         .filter(|line| !line.trim().is_empty() && line.trim() != "-")
         .collect::<Vec<&str>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_powerpoint_table_extraction() {
+        let xml = r#"
+            <a:p><a:r><a:t>Regular Text</a:t></a:r></a:p>
+            <a:tbl>
+                <a:tr>
+                    <a:tc><a:txBody><a:p><a:r><a:t>Header1</a:t></a:r></a:p></a:txBody></a:tc>
+                    <a:tc><a:txBody><a:p><a:r><a:t>Header2</a:t></a:r></a:p></a:txBody></a:tc>
+                </a:tr>
+                <a:tr>
+                    <a:tc><a:txBody><a:p><a:r><a:t>Value1</a:t></a:r></a:p></a:txBody></a:tc>
+                    <a:tc><a:txBody><a:p><a:r><a:t>Value2</a:t></a:r></a:p></a:txBody></a:tc>
+                </a:tr>
+            </a:tbl>
+        "#;
+
+        let result = extract_text_from_slide_xml(xml);
+        assert!(result.contains("Regular Text"));
+        assert!(result.contains("Row 1: Header1: Value1; Header2: Value2;"));
+    }
 }

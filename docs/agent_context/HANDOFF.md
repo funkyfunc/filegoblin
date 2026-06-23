@@ -1,16 +1,24 @@
-# Session Handoff Summary
+# Handoff Report: v1.10.0
 
-## Completed Work
-- **ToS Scrubbing:** Completely scrubbed out `GeminiGobbler` and `TwitterGobbler` to ensure total compliance with third-party Terms of Service. Removed associated GitHub release binaries and workflows.
-- **Google Drive Removal:** Removed the `GoogleGobbler`, the `cloud` feature flag, and all OAuth2 loopback dependencies. This drastically slims down the binary and adheres strongly to the "Zero-Dependency Local-First" philosophy.
-- **Build Resilience:** Fixed a build failure caused by missing `openssl@3` and `pkgconf` via Homebrew on macOS.
-- **Quality Assurance:** Added a `pre-commit` hook and a `horde-check.yml` GitHub workflow to enforce `cargo clippy`, `cargo fmt`, and `cargo test` across all commits.
-- **Version Bump:** Bumped version to `v1.9.1` across all crates and cut a new release tag.
+## What Was Completed
+This session focused heavily on expanding `filegoblin`'s file format support to handle complex data structures natively, drastically improving the signal-to-noise ratio for LLMs:
+1. **Geometric PDF Tables**: Migrated PDF parsing to `oxidize-pdf`'s geometric TableDetector to parse tables without destroying their layout.
+2. **Word & PowerPoint Tables**: Built "Sequence of Records" parsing natively into our `docx-rs` and `quick-xml` handlers, collapsing `.docx` and `.pptx` grid layouts into a readable `Row N: Header: Value` format.
+3. **Jupyter Notebooks (.ipynb)**: Built a `serde_json` parser that isolates markdown, code cells, and strips huge base64 images while retaining `text/plain` cell outputs.
+4. **Archive Gobbling (.zip, .tar.gz)**: Refactored `lib.rs::gobble_local` to intercept archives, decompress them in-memory (using `tar` and `flate2`), and run the full `filegoblin` crawler recursively on their contents.
+5. **E-Book Extraction (.epub)**: Added `EpubGobbler` to natively unzip and parse HTML chapters through `WebGobbler`.
 
-## Current State
-- **Compilation:** 0 errors, 0 warnings.
-- **Tests:** All tests pass.
-- **Bugs/Issues:** None currently pending.
+All features were built strictly following TDD (mock unit tests written for each parser) and currently pass `cargo horde-check` with zero Clippy warnings.
+All `Cargo.toml` files were bumped to `v1.10.0`.
 
-## Next Steps for Next Session
-- Continue monitoring user requests or feature expansion based on the PRD. The current architecture is stable and compliant.
+## Known Issues / Broken Tests
+- **None.** The test suite is currently 100% green and passes strict linting.
+- *Minor note:* Borderless PDF tables are currently not processed optimally by `oxidize-pdf`, but this is upstream.
+
+## Next Steps
+For the next agent session, you should focus on the remaining items from `ROADMAP.md`:
+1. **Tree-sitter PageRank Pruning:** Implement the dependency graph ranking so we can intelligently prune the least important source code files when we hit LLM token limits (`--max-tokens`).
+2. **Database Support:** Add schema extraction for local `.sqlite` files.
+3. **Git Integration:** Add support for parsing `git diff` outputs or `.patch` files so the LLM can understand code trajectory.
+
+*Good luck, Goblin!*

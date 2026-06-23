@@ -780,6 +780,58 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
     let mut files = Vec::new();
     let root = std::path::Path::new(target);
 
+    // ARCHIVE INTERCEPTION
+    if root.is_file() {
+        let ext = root
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext == "zip" || ext == "gz" || ext == "tgz" {
+            if !args.quiet {
+                eprintln!(
+                    "{} Extracting archive: {}",
+                    "📦".truecolor(0, 200, 255),
+                    target
+                );
+            }
+            let temp_dir = tempfile::tempdir()?;
+            if ext == "zip" {
+                let file = std::fs::File::open(root)?;
+                let mut archive = zip::ZipArchive::new(file)?;
+                archive.extract(temp_dir.path())?;
+            } else if ext == "gz" || ext == "tgz" {
+                let file = std::fs::File::open(root)?;
+                let tar = flate2::read::GzDecoder::new(file);
+                let mut archive = tar::Archive::new(tar);
+                archive.unpack(temp_dir.path())?;
+            }
+
+            let mut archive_args = args.clone();
+            archive_args.horde = true; // Force horde to recurse
+
+            let temp_path_str = temp_dir.path().to_string_lossy().to_string();
+            let mut extracted_pairs = gobble_local(&temp_path_str, &archive_args)?;
+
+            // Map ugly temp paths back to {archive_name}/{internal_path}
+            let target_name = root
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            for (path, _) in &mut extracted_pairs {
+                if path == "_tree.md" {
+                    continue;
+                }
+                if let Some(stripped) = path.strip_prefix(&temp_path_str) {
+                    let cleaned = stripped.trim_start_matches(['/', '\\']);
+                    *path = format!("{}/{}", target_name, cleaned);
+                }
+            }
+            return Ok(extracted_pairs);
+        }
+    }
+
     if !root.is_dir() || !args.horde {
         match route_and_gobble(target, args) {
             Ok(content) => files.push((target.to_string(), content)),
@@ -1068,6 +1120,19 @@ fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
     }
 
     match extension.as_str() {
+        "epub" => {
+            #[cfg(feature = "web")]
+            {
+                parsers::epub::EpubGobbler.gobble(path, args)
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                anyhow::bail!(
+                    "Parsing EPUB files requires the 'web' feature. Recompile with --features web."
+                );
+            }
+        }
+        "ipynb" => parsers::jupyter::JupyterGobbler.gobble(path, args),
         "pdf" => parsers::pdf::PdfGobbler.gobble(path, args),
         "docx" => parsers::office::OfficeGobbler.gobble(path, args),
         "xlsx" | "xls" | "ods" | "csv" => parsers::sheet::SheetGobbler.gobble(path, args),

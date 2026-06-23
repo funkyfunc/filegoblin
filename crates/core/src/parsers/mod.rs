@@ -3,8 +3,11 @@ pub mod code;
 pub mod crawler;
 pub mod credentials;
 #[cfg(feature = "web")]
+pub mod epub;
+#[cfg(feature = "web")]
 pub mod github;
 pub mod gobble;
+pub mod jupyter;
 #[cfg(feature = "ocr")]
 pub mod ocr;
 pub mod office;
