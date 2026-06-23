@@ -143,102 +143,102 @@ impl Tier2Refiner {
     }
 }
 
-pub struct PrivacyShield {
-    trigger: PiiTrigger,
-    refiner: Tier2Refiner,
+pub struct DeterministicScrubber {
     ac: AhoCorasick,
     regexes: Vec<Regex>,
-    neural_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
-impl PrivacyShield {
-    pub fn init() -> Result<Self> {
-        // Sentinel Tier 1 Init
+impl DeterministicScrubber {
+    pub fn new() -> Result<Self> {
         let patterns = vec!["SSN", "Passport", "Credit Card"];
         let ac = AhoCorasick::builder()
             .match_kind(MatchKind::LeftmostFirst)
             .build(&patterns)
             .context("Failed to build Aho-Corasick automaton")?;
 
-        // Standard PII Regexes for immediate scrubbing
         let regexes = vec![
-            Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),   // SSN
-            Regex::new(r"\b(?:\d[ -]*?){13,16}\b").unwrap(), // Credit Card
-            Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b").unwrap(), // Email
-            Regex::new(r"\b(?i)api[_-]?key.{1,20}?[a-zA-Z0-9]{20,}\b").unwrap(), // Generic API Key Assignment
+            Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),
+            Regex::new(r"\b(?:\d[ -]*?){13,16}\b").unwrap(),
+            Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b").unwrap(),
+            Regex::new(r"\b(?i)api[_-]?key.{1,20}?[a-zA-Z0-9]{20,}\b").unwrap(),
         ];
 
-        // Trigger Tier 3 Init
-        let mut trigger = PiiTrigger::new(16, 4.0); // Changed window size to 16 and entropy threshold to 4.0 to trigger on smaller chunks in tests
+        Ok(Self { ac, regexes })
+    }
+
+    pub fn scrub(&self, input: &str) -> String {
+        let mut output = input.to_string();
+        output = self.ac.replace_all(&output, &["[REDACTED]"; 3]);
+        for re in &self.regexes {
+            output = re.replace_all(&output, "[REDACTED]").to_string();
+        }
+        output
+    }
+}
+
+pub struct HeuristicScrubber {
+    trigger: PiiTrigger,
+    refiner: Tier2Refiner,
+    neural_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+impl HeuristicScrubber {
+    pub fn new() -> Result<Self> {
+        let mut trigger = PiiTrigger::new(16, 4.0);
         if cfg!(test) {
             trigger = trigger.force(true);
         }
 
-        // Refiner Tier 2 Init
-        let refiner = Tier2Refiner::new(0.85); // Default confidence threshold
-
-        // Memory safety bounds as per `redation_extra_info.md`
-        let neural_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(4)); // Max 4 concurrent neural inferences
+        let refiner = Tier2Refiner::new(0.85);
+        let neural_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
 
         Ok(Self {
             trigger,
             refiner,
-            ac,
-            regexes,
             neural_semaphore,
+        })
+    }
+
+    pub fn scrub(&self, input: &str) -> String {
+        let mut output = input.to_string();
+        let triggers = self.trigger.scan(&output);
+        let merged_triggers = IndexMerger::merge(triggers, 64);
+
+        if !merged_triggers.is_empty() && self.neural_semaphore.try_acquire().is_ok() {
+            let mut chunk_replacements = Vec::new();
+            for (start, end) in &merged_triggers {
+                let chunk = &output[*start..*end];
+                let local_redactions = self.refiner.process_chunk(chunk);
+                for (l_start, l_end) in local_redactions {
+                    chunk_replacements.push((start + l_start, start + l_end));
+                }
+            }
+            chunk_replacements.sort_by_key(|&(s, _)| std::cmp::Reverse(s));
+            for (rs, re) in chunk_replacements {
+                output.replace_range(rs..re, "[REDACTED]");
+            }
+        }
+        output
+    }
+}
+
+pub struct PrivacyShield {
+    deterministic: DeterministicScrubber,
+    heuristic: HeuristicScrubber,
+}
+
+impl PrivacyShield {
+    pub fn init() -> Result<Self> {
+        Ok(Self {
+            deterministic: DeterministicScrubber::new()?,
+            heuristic: HeuristicScrubber::new()?,
         })
     }
 
     /// Main entry point for scrubbing a string line/content
     pub fn redact(&self, input: &str) -> String {
-        let mut output = input.to_string();
-
-        // Pass 1a: Aho-Corasick Deterministic (Anchors)
-        output = self.ac.replace_all(&output, &["[REDACTED]"; 3]);
-
-        // Pass 1b: Regex Patterns (Digits/Formats)
-        for re in &self.regexes {
-            output = re.replace_all(&output, "[REDACTED]").to_string();
-        }
-
-        // Pass 3: Neural Trigger (For ambiguous soft PII)
-        let triggers = self.trigger.scan(&output);
-        let merged_triggers = IndexMerger::merge(triggers, 64); // 64-byte look-back buffer
-
-        if !merged_triggers.is_empty() {
-            // As this is a synchronous function currently but tokio Semaphore is async,
-            // we use try_acquire to immediately grab a permit if available or skip/block.
-            // For production, if strict concurrency limits apply to synchronous ingestion,
-            // we should block thread or handle asynchronously.
-            // In a blocking context, we can use `acquire` within a block_on or try_acquire.
-            let permit = self.neural_semaphore.try_acquire();
-
-            if permit.is_ok() {
-                // We have a permit to use RAM for inference!
-                // Process the chunk back to front to avoid shifting indices
-                // Since this is just replacing text, we can build a list of replacements.
-                let mut chunk_replacements = Vec::new();
-
-                for (start, end) in &merged_triggers {
-                    let chunk = &output[*start..*end];
-                    let local_redactions = self.refiner.process_chunk(chunk);
-                    for (l_start, l_end) in local_redactions {
-                        chunk_replacements.push((start + l_start, start + l_end));
-                    }
-                }
-
-                // Apply Refiner redactions from back to front
-                chunk_replacements.sort_by_key(|&(s, _)| std::cmp::Reverse(s));
-                for (rs, re) in chunk_replacements {
-                    output.replace_range(rs..re, "[REDACTED]");
-                }
-            } else {
-                // In aggressive mode, we might drop the thread or queue it.
-                // For now, if we hit RAM bounds, we skip (or fail-open).
-            }
-        }
-
-        output
+        let det_out = self.deterministic.scrub(input);
+        self.heuristic.scrub(&det_out)
     }
 }
 

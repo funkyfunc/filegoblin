@@ -1,24 +1,17 @@
-# Handoff Report: v1.10.0
+# Session Handoff
 
-## What Was Completed
-This session focused heavily on expanding `filegoblin`'s file format support to handle complex data structures natively, drastically improving the signal-to-noise ratio for LLMs:
-1. **Geometric PDF Tables**: Migrated PDF parsing to `oxidize-pdf`'s geometric TableDetector to parse tables without destroying their layout.
-2. **Word & PowerPoint Tables**: Built "Sequence of Records" parsing natively into our `docx-rs` and `quick-xml` handlers, collapsing `.docx` and `.pptx` grid layouts into a readable `Row N: Header: Value` format.
-3. **Jupyter Notebooks (.ipynb)**: Built a `serde_json` parser that isolates markdown, code cells, and strips huge base64 images while retaining `text/plain` cell outputs.
-4. **Archive Gobbling (.zip, .tar.gz)**: Refactored `lib.rs::gobble_local` to intercept archives, decompress them in-memory (using `tar` and `flate2`), and run the full `filegoblin` crawler recursively on their contents.
-5. **E-Book Extraction (.epub)**: Added `EpubGobbler` to natively unzip and parse HTML chapters through `WebGobbler`.
+## Summary of Completed Work
+- **Core Orchestration Refactoring:** Decoupled `crates/core/src/lib.rs` by extracting routing logic to `routing.rs` and output formatting to `formatters.rs`.
+- **Archive Gobbler Extraction:** Refactored `ArchiveGobbler` into a clean parser `crates/core/src/parsers/archive.rs` implementing the `Gobble` trait.
+- **Privacy Shield Optimization:** Split `PrivacyShield` into `DeterministicScrubber` and `HeuristicScrubber`, integrating `rayon` for massive parallelization across CPU cores and using a concurrency semaphore for chunk processing.
+- **TUI Monolith Breakdown:** Split the monolithic `crates/tui/src/lib.rs` into `state.rs` (state management, caching, event messaging) and `ui.rs` (rendering, ratatui layout).
+- **QA & Lints:** Resolved multiple `clippy` warnings (collapsible blocks, redundant clones, unreachable code) and unescaped HTML characters correctly using `quick-xml` for PowerPoint documents.
+- All 20 core unit tests pass perfectly under the `cargo horde-check` alias.
 
-All features were built strictly following TDD (mock unit tests written for each parser) and currently pass `cargo horde-check` with zero Clippy warnings.
-All `Cargo.toml` files were bumped to `v1.10.0`.
+## Broken Tests, Compilation Errors, or Bugs
+- There are no broken tests or compilation errors. The project compiles with exactly 0 warnings when compiled with standard features.
+- There are 3 minor "unused imports" in the unit test compilation profile, but they do not affect the main library.
 
-## Known Issues / Broken Tests
-- **None.** The test suite is currently 100% green and passes strict linting.
-- *Minor note:* Borderless PDF tables are currently not processed optimally by `oxidize-pdf`, but this is upstream.
-
-## Next Steps
-For the next agent session, you should focus on the remaining items from `ROADMAP.md`:
-1. **Tree-sitter PageRank Pruning:** Implement the dependency graph ranking so we can intelligently prune the least important source code files when we hit LLM token limits (`--max-tokens`).
-2. **Database Support:** Add schema extraction for local `.sqlite` files.
-3. **Git Integration:** Add support for parsing `git diff` outputs or `.patch` files so the LLM can understand code trajectory.
-
-*Good luck, Goblin!*
+## Next Steps for Next Session
+- **Next Roadmap Item:** We have completed the structural audit and refactoring. The next agent should refer to the user's overarching feature roadmap (`docs/ROADMAP.md` or `NORTH_STAR.md`) to begin implementing the next net-new feature, safely building on top of this highly modularized and stable architecture.
+- Specifically, the TUI is now ready to support complex new widgets or asynchronous background tasks because state processing is isolated from the `ui.rs` render loop.

@@ -92,16 +92,10 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
                 }
             }
             Ok(Event::Text(e)) => {
-                if in_text_node {
-                    // Try to decode as UTF-8 string, manually replacing common XML escapes
-                    let raw_str = std::str::from_utf8(e.as_ref()).unwrap_or_default();
-                    let decoded = raw_str
-                        .replace("&amp;", "&")
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&quot;", "\"")
-                        .replace("&apos;", "'");
-
+                if in_text_node
+                    && let Ok(text) = std::str::from_utf8(e.as_ref())
+                    && let Ok(decoded) = quick_xml::escape::unescape(text)
+                {
                     if in_table {
                         current_cell_text.push_str(&decoded);
                     } else {

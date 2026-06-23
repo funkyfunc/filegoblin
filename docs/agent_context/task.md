@@ -1,15 +1,17 @@
-# Current Session Tasks (Completed)
-
-- `[x]` Geometric PDF table extraction via `oxidize-pdf` bounding box heuristics.
-- `[x]` `.docx` table extraction recursively resolving into "Sequence of Records".
-- `[x]` Native `.ipynb` Jupyter parser built on `serde_json`, capturing output streams natively.
-- `[x]` OpenXML state machine upgrade for `.pptx` table extraction.
-- `[x]` `ArchiveGobbler`: In-memory extraction for `.zip`, `.tar.gz`, and `.tgz` routed through temp-directories.
-- `[x]` `EpubGobbler`: E-book HTML flattening and Markdown formatting via zip extraction.
-- `[x]` Version bumped to `1.10.0` in all `Cargo.toml` files.
-
-# Pending Tasks (Next Session)
-
-- `[ ]` Dependency Graph "PageRank" Heuristic Pruning (using Tree-sitter).
-- `[ ]` Git Context & Diffs parsing (`--diff` flag or `.patch` ingestion).
-- `[ ]` Database Schema Extraction (`.sqlite`, `.db`).
+- `[x]` Core Library Monolith Breakdown
+  - `[x]` Extract `routing.rs` from `crates/core/src/lib.rs`
+  - `[x]` Extract `formatters.rs` from `crates/core/src/lib.rs`
+  - `[x]` Refactor `crates/core/src/lib.rs` to act as an orchestrator
+- `[/]` Parsers & Data Pipeline Refactoring
+  - `[x]` Extract `ArchiveGobbler` into `crates/core/src/parsers/archive.rs`
+  - `[x]` Optimize `quick-xml` string allocations in `crates/core/src/parsers/powerpoint.rs`
+  - `[x]` Parallelize Privacy Pipeline via `rayon` in `crates/core/src/pipeline/stages.rs`
+  - `[x]` Modularize Scrubber logic in `crates/core/src/privacy_shield.rs`
+  - `[x]` Remove unnecessary clones via `Arc` in `crates/core/src/parsers/crawler.rs`
+- `[x]` TUI Monolith Breakdown
+  - `[x]` Extract `crates/tui/src/state.rs` (State, App, TuiNode)
+  - `[x]` Extract `crates/tui/src/ui.rs` (Rendering, Event Loop)
+  - `[x]` Refactor `crates/tui/src/lib.rs` into a clean entry pointfication
+- `[x]` Verification
+  - `[x]` Run `cargo horde-check`
+  - `[x]` Manual Testing (Archive extraction tested via unit tests; TUI navigation deferred to user)

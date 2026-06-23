@@ -81,8 +81,9 @@ pub fn run_privacy_stage(
         }
         let shield =
             privacy_shield::PrivacyShield::init().context("Failed to initialize Privacy Shield")?;
+        use rayon::prelude::*;
         pruned_docs
-            .into_iter()
+            .into_par_iter()
             .map(|mut doc| {
                 doc.content = shield.redact(&doc.content);
                 doc

@@ -82,7 +82,8 @@ impl GoblinCrawler {
         tx.send(seed_url.clone())?;
 
         let active_tasks = Arc::new(tokio::sync::Semaphore::new(10));
-        let target_domain = self.seed_domain.clone();
+        let target_domain = Arc::new(self.seed_domain.clone());
+        let shared_args = Arc::new(args.clone());
 
         let mut join_set = tokio::task::JoinSet::new();
         let in_flight = Arc::new(AtomicUsize::new(1));
@@ -109,7 +110,7 @@ impl GoblinCrawler {
                     let target_domain_clone = target_domain.clone();
                     let rate_limiter = self.rate_limiter.clone();
                     let in_flight_clone = in_flight.clone();
-                    let flags_clone = args.clone();
+                    let flags_clone = shared_args.clone();
 
                     join_set.spawn(async move {
                         rate_limiter.until_key_ready(&target_domain_clone).await;

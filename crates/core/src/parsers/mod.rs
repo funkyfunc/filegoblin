@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod code;
 #[cfg(feature = "web")]
 pub mod crawler;
