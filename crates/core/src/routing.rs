@@ -4,9 +4,11 @@ use colored::Colorize;
 use std::io::Read;
 use url::Url;
 
-pub fn route_targets(targets: &[String], args: &crate::cli::Cli) -> Result<Vec<(String, String)>> {
-    let mut raw_pairs: Vec<(String, String)> = Vec::new();
-
+pub fn route_targets(
+    targets: &[String],
+    args: &crate::cli::Cli,
+    tx: std::sync::mpsc::SyncSender<crate::pipeline::GobbleDocument>,
+) -> Result<()> {
     if args.clipboard {
         if !args.quiet {
             eprintln!("📋 Reading from system clipboard...");
@@ -17,38 +19,44 @@ pub fn route_targets(targets: &[String], args: &crate::cli::Cli) -> Result<Vec<(
             .get_text()
             .context("Failed to read text from clipboard")?;
         if !text.is_empty() {
-            raw_pairs.push(("clipboard".to_string(), text));
+            let _ = tx.send(crate::pipeline::GobbleDocument::new(
+                "clipboard".to_string(),
+                text,
+            ));
         }
     }
 
-    if targets.is_empty() && raw_pairs.is_empty() {
-        return Ok(raw_pairs);
+    if targets.is_empty() {
+        return Ok(());
     }
 
     for target in targets {
         if target == "-" {
-            route_stdin(&mut raw_pairs);
+            route_stdin(&tx);
         } else if let Ok(url) = Url::parse(target) {
             if url.scheme() == "http" || url.scheme() == "https" {
-                route_url_target(&url, target, args, &mut raw_pairs)?;
+                route_url_target(&url, target, args, &tx)?;
             } else {
-                route_local_target(target, args, &mut raw_pairs);
+                route_local_target(target, args, &tx);
             }
         } else {
-            route_local_target(target, args, &mut raw_pairs);
+            route_local_target(target, args, &tx);
         }
     }
 
-    Ok(raw_pairs)
+    Ok(())
 }
 
-fn route_stdin(raw_pairs: &mut Vec<(String, String)>) {
+fn route_stdin(tx: &std::sync::mpsc::SyncSender<crate::pipeline::GobbleDocument>) {
     let mut buffer = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut buffer) {
         eprintln!("{} Error reading stdin: {}", "⚠️".yellow(), e);
     }
     if !buffer.is_empty() {
-        raw_pairs.push(("stdin".to_string(), buffer));
+        let _ = tx.send(crate::pipeline::GobbleDocument::new(
+            "stdin".to_string(),
+            buffer,
+        ));
     }
 }
 
@@ -57,7 +65,7 @@ fn route_url_target(
     url: &Url,
     target: &str,
     args: &crate::cli::Cli,
-    raw_pairs: &mut Vec<(String, String)>,
+    tx: &std::sync::mpsc::SyncSender<crate::pipeline::GobbleDocument>,
 ) -> Result<()> {
     if !args.quiet {
         eprintln!("🌐 Sniffing the network for files: {}", url);
@@ -66,7 +74,11 @@ fn route_url_target(
         #[cfg(feature = "web")]
         {
             match crate::parsers::crawler::crawl_web(url, args) {
-                Ok(pairs) => raw_pairs.extend(pairs),
+                Ok(pairs) => {
+                    for (p, c) in pairs {
+                        let _ = tx.send(crate::pipeline::GobbleDocument::new(p, c));
+                    }
+                }
                 Err(e) => {
                     eprintln!("{} Horde crawl failed for {}: {}", "⚠️".yellow(), url, e)
                 }
@@ -120,7 +132,12 @@ fn route_url_target(
                     })
                     .gobble_str(&html_content, args)
                     {
-                        Ok(text) => raw_pairs.push((target.to_string(), text)),
+                        Ok(text) => {
+                            let _ = tx.send(crate::pipeline::GobbleDocument::new(
+                                target.to_string(),
+                                text,
+                            ));
+                        }
                         Err(e) => eprintln!(
                             "{} Failed to extract web content from {}: {}",
                             "⚠️".yellow(),
@@ -144,12 +161,20 @@ fn route_url_target(
     Ok(())
 }
 
-fn route_local_target(target: &str, args: &crate::cli::Cli, raw_pairs: &mut Vec<(String, String)>) {
+fn route_local_target(
+    target: &str,
+    args: &crate::cli::Cli,
+    tx: &std::sync::mpsc::SyncSender<crate::pipeline::GobbleDocument>,
+) {
     if !args.quiet {
         eprintln!("📁 Sniffing for files at local path: {}", target);
     }
     match crate::gobble_local(target, args) {
-        Ok(pairs) => raw_pairs.extend(pairs),
+        Ok(pairs) => {
+            for (p, c) in pairs {
+                let _ = tx.send(crate::pipeline::GobbleDocument::new(p, c));
+            }
+        }
         Err(e) => eprintln!("{} Failed to sniff path {}: {}", "⚠️".yellow(), target, e),
     }
 }

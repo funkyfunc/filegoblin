@@ -1,2 +1,2 @@
 [alias]
-horde-check = "!sh -c 'cargo clippy -- -D warnings && cargo fmt --check && cargo test'"
+horde-check = "!cargo clippy --workspace -- -D warnings && cargo fmt --check && cargo test --workspace"

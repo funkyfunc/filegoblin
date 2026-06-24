@@ -1,6 +1,6 @@
 [package]
 name = "filegoblin-tui"
-version = "1.10.1"
+version = "1.11.0"
 edition = "2024"
 description = "Interactive TUI file explorer for filegoblin."
 license = "MIT"

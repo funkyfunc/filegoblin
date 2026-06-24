@@ -1,3 +1,5 @@
+pub mod pagerank;
+
 #[allow(unused_imports)]
 use anyhow::Result;
 #[cfg(feature = "rag")]

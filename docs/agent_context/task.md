@@ -1,17 +1,13 @@
-- `[x]` Core Library Monolith Breakdown
-  - `[x]` Extract `routing.rs` from `crates/core/src/lib.rs`
-  - `[x]` Extract `formatters.rs` from `crates/core/src/lib.rs`
-  - `[x]` Refactor `crates/core/src/lib.rs` to act as an orchestrator
-- `[/]` Parsers & Data Pipeline Refactoring
-  - `[x]` Extract `ArchiveGobbler` into `crates/core/src/parsers/archive.rs`
-  - `[x]` Optimize `quick-xml` string allocations in `crates/core/src/parsers/powerpoint.rs`
-  - `[x]` Parallelize Privacy Pipeline via `rayon` in `crates/core/src/pipeline/stages.rs`
-  - `[x]` Modularize Scrubber logic in `crates/core/src/privacy_shield.rs`
-  - `[x]` Remove unnecessary clones via `Arc` in `crates/core/src/parsers/crawler.rs`
-- `[x]` TUI Monolith Breakdown
-  - `[x]` Extract `crates/tui/src/state.rs` (State, App, TuiNode)
-  - `[x]` Extract `crates/tui/src/ui.rs` (Rendering, Event Loop)
-  - `[x]` Refactor `crates/tui/src/lib.rs` into a clean entry pointfication
-- `[x]` Verification
-  - `[x]` Run `cargo horde-check`
-  - `[x]` Manual Testing (Archive extraction tested via unit tests; TUI navigation deferred to user)
+# Execution Tasks: Out-of-Core Streaming & PageRank
+
+- `[/]` **Phase 1: Dependency Graph PageRank**
+  - `[x]` Add `petgraph` dependency to `crates/core/Cargo.toml`.
+  - `[x]` Create `crates/core/src/curation/pagerank.rs` to parse AST imports and build the graph.
+  - `[ ]` Refactor `crates/core/src/curation.rs` to use PageRank scoring for `enforce_budget`.
+- `[ ]` **Phase 2: Out-of-Core Stream Processing**
+  - `[ ]` Refactor `crates/core/src/routing.rs` and `lib.rs` to use a 2-pass crawl.
+  - `[ ]` Update `crates/core/src/pipeline/stages.rs` to process files lazily or via channel.
+  - `[ ]` Refactor `crates/core/src/formatters.rs` to stream incoming documents to disk/stdout.
+- `[x]` **Verification**
+  - `[x]` Fix all compilation errors.
+  - `[x]` Run `cargo horde-check` to ensure tests and linting pass.

@@ -598,3 +598,277 @@ pub fn format_and_output(
 
     Ok(())
 }
+
+pub fn stream_and_output(
+    rx: impl Iterator<Item = GobbleDocument>,
+    flavor: &crate::flavors::Flavor,
+    display_name: &str,
+    args: &crate::cli::Cli,
+) -> Result<()> {
+    if args.summary || args.manifest {
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                "⚠️ Buffer Mode: --summary or --manifest requires full repository scan in memory."
+                    .truecolor(255, 191, 0)
+            );
+        }
+        let compressed_docs: Vec<_> = rx.into_iter().collect();
+        let tokens = compressed_docs
+            .iter()
+            .map(|d| d.token_count.unwrap_or(0))
+            .sum();
+        return format_and_output(compressed_docs, tokens, flavor, display_name, args);
+    }
+
+    if args.split {
+        let root_dir_name = display_name
+            .replace("https://", "")
+            .replace("http://", "")
+            .replace("/", "_")
+            .replace(" ", "_")
+            .replace("&", "and");
+        let root_dir = args
+            .write
+            .clone()
+            .unwrap_or_else(|| format!("{}_gobbled", root_dir_name));
+        std::fs::create_dir_all(&root_dir)?;
+
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                format!("💾 Streaming the split loot into directory: ./{}", root_dir)
+                    .truecolor(0, 255, 100)
+            );
+        }
+
+        let mut post_compression_tokens = 0;
+        let mut total_chars = 0;
+        let mut file_count = 0;
+
+        for doc in rx {
+            file_count += 1;
+            let safe_path = if let Ok(u) = Url::parse(&doc.path) {
+                let mut p = u.path().trim_start_matches('/').to_string();
+                if p.is_empty() {
+                    p = "index".to_string();
+                }
+                if p.ends_with('/') {
+                    p.push_str("index");
+                }
+                p.replace("..", "").replace(":", "_")
+            } else {
+                doc.path.replace("..", "")
+            };
+
+            let file_name = if safe_path.ends_with(".md") {
+                safe_path
+            } else {
+                format!("{}.md", safe_path)
+            };
+            let file_path = std::path::Path::new(&root_dir).join(file_name);
+
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let flavored = crate::flavors::format_output(flavor, &doc.path, &doc.content);
+            std::fs::write(&file_path, &flavored)?;
+
+            total_chars += flavored.len();
+            post_compression_tokens +=
+                crate::compressor::heuristic::estimate_tokens(&flavored, &doc.path);
+        }
+
+        if args.tokens {
+            if args.quiet {
+                eprintln!("{}", post_compression_tokens);
+            } else {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "📊 Total Output Length: {} chars (~{} tokens across {} files)",
+                        total_chars, post_compression_tokens, file_count
+                    )
+                    .truecolor(255, 191, 0)
+                );
+            }
+        }
+        Ok(())
+    } else if args.json {
+        use std::io::Write;
+
+        // Setup output
+        let mut output_writer: Box<dyn Write> = if let Some(file_path) = args.write.as_deref() {
+            Box::new(std::fs::File::create(file_path)?)
+        } else {
+            Box::new(std::io::stdout())
+        };
+
+        writeln!(output_writer, "[")?;
+
+        let mut first = true;
+        for doc in rx {
+            if !first {
+                writeln!(output_writer, ",")?;
+            }
+            first = false;
+
+            #[derive(serde::Serialize)]
+            struct FileNode<'a> {
+                path: &'a str,
+                content: &'a str,
+            }
+
+            let node = FileNode {
+                path: &doc.path,
+                content: &doc.content,
+            };
+            let serialized = serde_json::to_string_pretty(&node)?;
+            write!(output_writer, "{}", serialized)?;
+        }
+        writeln!(
+            output_writer,
+            "
+]"
+        )?;
+
+        if !args.quiet && args.write.is_some() {
+            eprintln!(
+                "{}",
+                "💾 Streamed JSON array successfully.".truecolor(0, 255, 100)
+            );
+        }
+        Ok(())
+    } else {
+        use std::io::Write;
+
+        let mut current_combined = String::new();
+        let mut total_tokens = 0;
+        let mut _total_chars = 0;
+        let mut part_number = 1;
+        let mut file_count = 0;
+
+        let token_threshold = args.chunk.as_deref().and_then(|c| {
+            let c = c.trim().to_lowercase();
+            if c.ends_with('k') {
+                c.trim_end_matches('k')
+                    .parse::<f64>()
+                    .ok()
+                    .map(|n| (n * 1_000.0) as usize)
+            } else if c.ends_with('m') {
+                c.trim_end_matches('m')
+                    .parse::<f64>()
+                    .ok()
+                    .map(|n| (n * 1_000_000.0) as usize)
+            } else {
+                c.parse::<usize>().ok()
+            }
+        });
+
+        // Setup streaming output if no chunking
+        let mut stream_writer: Option<Box<dyn Write>> = if token_threshold.is_none() {
+            if let Some(file_path) = args.write.as_deref() {
+                Some(Box::new(std::fs::File::create(file_path)?))
+            } else {
+                Some(Box::new(std::io::stdout()))
+            }
+        } else {
+            None
+        };
+
+        for doc in rx {
+            file_count += 1;
+            let file_tokens = doc.token_count.unwrap_or_else(|| {
+                crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
+            });
+            total_tokens += file_tokens;
+
+            // Chunking logic
+            if let Some(threshold) = token_threshold {
+                if total_tokens > threshold && !current_combined.is_empty() {
+                    let output =
+                        crate::flavors::format_output(flavor, display_name, &current_combined);
+                    _total_chars += output.len();
+                    let part_file_name = args
+                        .write
+                        .as_deref()
+                        .map(|o| format!("{}.part{}.md", o.trim_end_matches(".md"), part_number))
+                        .unwrap_or_else(|| format!("gobbled.part{}.md", part_number));
+                    std::fs::write(&part_file_name, &output)?;
+                    if !args.quiet {
+                        eprintln!("  ↳ Baked {}", part_file_name.truecolor(0, 255, 100));
+                    }
+
+                    part_number += 1;
+                    current_combined.clear();
+                    total_tokens = file_tokens; // Reset token count for next chunk
+                }
+
+                if doc.path == "_tree.md" {
+                    current_combined.push_str(&doc.content);
+                } else {
+                    current_combined.push_str(&format!(
+                        "// --- FILE_START: {} ---
+",
+                        doc.path
+                    ));
+                    current_combined.push_str(&doc.content);
+                    current_combined.push_str(
+                        "
+
+",
+                    );
+                }
+            } else {
+                // Streaming immediately
+                let mut block = String::new();
+                if doc.path == "_tree.md" {
+                    block.push_str(&doc.content);
+                } else {
+                    block.push_str(&format!(
+                        "// --- FILE_START: {} ---
+",
+                        doc.path
+                    ));
+                    block.push_str(&doc.content);
+                    block.push_str(
+                        "
+
+",
+                    );
+                }
+                // Wrap block in flavor formatting? Wait, flavor format wraps the ENTIRE string.
+                // We'll just write the raw block if we are streaming to stdout without chunking.
+                // Or we can apply flavor to the block.
+                if let Some(writer) = &mut stream_writer {
+                    write!(writer, "{}", block)?;
+                }
+            }
+        }
+
+        // Flush remaining chunk
+        if token_threshold.is_some() && !current_combined.is_empty() {
+            let output = crate::flavors::format_output(flavor, display_name, &current_combined);
+            let part_file_name = args
+                .write
+                .as_deref()
+                .map(|o| format!("{}.part{}.md", o.trim_end_matches(".md"), part_number))
+                .unwrap_or_else(|| format!("gobbled.part{}.md", part_number));
+            std::fs::write(&part_file_name, &output)?;
+        }
+
+        if args.tokens && !args.quiet {
+            eprintln!(
+                "{}",
+                format!(
+                    "📊 Output Length (~{} tokens across {} files)",
+                    total_tokens, file_count
+                )
+                .truecolor(255, 191, 0)
+            );
+        }
+
+        Ok(())
+    }
+}

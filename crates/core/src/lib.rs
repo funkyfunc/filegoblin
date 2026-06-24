@@ -8,7 +8,7 @@ pub mod pipeline;
 pub mod privacy_shield;
 
 use crate::parsers::gobble::Gobble;
-use crate::pipeline::GobbleDocument;
+
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::Path;
@@ -25,11 +25,13 @@ pub fn gobble_app(
     flavor: &flavors::Flavor,
     args: &crate::cli::Cli,
 ) -> Result<()> {
-    let raw_pairs = routing::route_targets(targets, args)?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(100);
 
-    if raw_pairs.is_empty() {
-        return Ok(());
-    }
+    let targets_clone = targets.to_vec();
+    let args_clone = args.clone();
+    std::thread::spawn(move || {
+        let _ = routing::route_targets(&targets_clone, &args_clone, tx);
+    });
 
     let display_name = if targets.len() == 1 {
         targets[0].clone()
@@ -41,30 +43,41 @@ pub fn gobble_app(
         format!("{} and {} others", targets[0], targets.len() - 1)
     };
 
-    // Convert raw_pairs to GobbleDocument structure for pipeline processing
-    let raw_documents: Vec<GobbleDocument> = raw_pairs
-        .into_iter()
-        .map(|(path, content)| GobbleDocument::new(path, content))
-        .collect();
-
-    // Execute Curation Intelligence pipelines before generic formatting steps (RAG/BM25 & Auto-Pruning)
-    let pruned_docs =
-        crate::pipeline::stages::run_curation_stage(raw_documents, args, targets.len())?;
-
-    // Apply Privacy Shield if --scrub is requested
-    let final_docs = crate::pipeline::stages::run_privacy_stage(pruned_docs, args)?;
-
-    // Apply Compression Pipeline if --compress is flag
-    let (compressed_docs, pre_compression_tokens) =
-        crate::pipeline::stages::run_compression_stage(final_docs, args)?;
-
-    formatters::format_and_output(
-        compressed_docs,
-        pre_compression_tokens,
-        flavor,
-        &display_name,
-        args,
-    )
+    // If --search is used, we must load everything into memory to build the RAG index
+    if args.search.is_some() {
+        let raw_documents: Vec<crate::pipeline::GobbleDocument> = rx.into_iter().collect();
+        let pruned_docs =
+            crate::pipeline::stages::run_curation_stage(raw_documents, args, targets.len())?;
+        let final_docs = crate::pipeline::stages::run_privacy_stage(pruned_docs, args)?;
+        let (compressed_docs, pre_compression_tokens) =
+            crate::pipeline::stages::run_compression_stage(final_docs, args)?;
+        formatters::format_and_output(
+            compressed_docs,
+            pre_compression_tokens,
+            flavor,
+            &display_name,
+            args,
+        )
+    } else {
+        // True Out-of-Core Stream Processing
+        // For streaming, formatters must process documents one by one.
+        let shield = if args.scrub {
+            crate::privacy_shield::PrivacyShield::init().ok()
+        } else {
+            None
+        };
+        let stream = rx.into_iter().map(move |mut doc| {
+            if let Some(s) = &shield {
+                doc.content = s.redact(&doc.content);
+            }
+            if let Some(level) = &args.compress {
+                doc.content = crate::compressor::CompressionPipeline::new(level, Some(&doc.path))
+                    .process(&doc.content);
+            }
+            doc
+        });
+        formatters::stream_and_output(stream, flavor, &display_name, args)
+    }
 }
 
 pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String, String)>> {
@@ -125,6 +138,67 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
     }
     tree_out.push_str("\n```\n\n");
     files.push(("_tree.md".to_string(), tree_out));
+
+    // PASS 1: PageRank Graphing for --max-tokens cutoff
+    if let Some(budget) = args.max_tokens {
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                "🕸️  Building Dependency Graph for PageRank pruning...".truecolor(255, 99, 71)
+            );
+        }
+        let mut docs_for_pagerank = Vec::new();
+        let mut total_tokens = 0;
+
+        for path in &files_to_process {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                let tokens = crate::compressor::heuristic::estimate_tokens(
+                    &content,
+                    &path.to_string_lossy(),
+                );
+                total_tokens += tokens;
+                let path_str = path.to_string_lossy().to_string();
+                docs_for_pagerank.push((path_str, content, tokens));
+            }
+        }
+
+        if total_tokens > budget {
+            let pr_input: Vec<(&String, &String)> =
+                docs_for_pagerank.iter().map(|(p, c, _)| (p, c)).collect();
+            let ranks = crate::curation::pagerank::compute_pagerank(&pr_input);
+
+            docs_for_pagerank.sort_by(|(path_a, _, _), (path_b, _, _)| {
+                let rank_a = ranks.get(path_a).unwrap_or(&0.0);
+                let rank_b = ranks.get(path_b).unwrap_or(&0.0);
+                // Sort descending by rank
+                rank_b
+                    .partial_cmp(rank_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            let mut kept_budget = 0;
+            let mut kept_paths = std::collections::HashSet::new();
+            for (path, _, tokens) in docs_for_pagerank {
+                if kept_budget + tokens <= budget {
+                    kept_paths.insert(path);
+                    kept_budget += tokens;
+                }
+            }
+            let before = files_to_process.len();
+            files_to_process.retain(|p| kept_paths.contains(&p.to_string_lossy().to_string()));
+            if !args.quiet {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "⚔️ PageRank pruned from {} to {} files.",
+                        before,
+                        files_to_process.len()
+                    )
+                    .truecolor(255, 99, 71)
+                );
+            }
+        }
+    }
 
     // Process all collected files
 
