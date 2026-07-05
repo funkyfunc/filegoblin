@@ -907,6 +907,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "compression-prompt"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31da355c1197580a6ba692bbb1b9c20af0e6ff4e86c39db60c76f4efa740e443"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "chrono",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tiktoken-rs",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "const-str"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1954,6 +1972,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fancy-regex"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "531e46835a22af56d1e3b66f04844bed63158bc094a628bec1d321d9b4c44bf2"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "fast-float2"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2024,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "filegoblin"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2036,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "filegoblin-core"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2049,6 +2078,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "colored",
+ "compression-prompt",
  "csv",
  "dashmap 6.1.0",
  "docx-rs",
@@ -2105,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "filegoblin-tui"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3785,9 +3815,9 @@ dependencies = [
 
 [[package]]
 name = "memchr"
-version = "2.8.0"
+version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
 name = "memfd"
@@ -7077,7 +7107,7 @@ dependencies = [
  "anyhow",
  "base64",
  "bitflags 2.11.0",
- "fancy-regex",
+ "fancy-regex 0.11.0",
  "filedescriptor",
  "finl_unicode",
  "fixedbitset 0.4.2",
@@ -7173,6 +7203,21 @@ dependencies = [
  "quick-error",
  "weezl",
  "zune-jpeg 0.4.21",
+]
+
+[[package]]
+name = "tiktoken-rs"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25563eeba904d770acf527e8b370fe9a5547bacd20ff84a0b6c3bc41288e5625"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bstr",
+ "fancy-regex 0.13.0",
+ "lazy_static",
+ "regex",
+ "rustc-hash 1.1.0",
 ]
 
 [[package]]

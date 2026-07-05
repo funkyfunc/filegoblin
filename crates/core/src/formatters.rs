@@ -4,12 +4,25 @@ use colored::Colorize;
 use url::Url;
 
 pub fn format_and_output(
-    compressed_docs: Vec<GobbleDocument>,
+    mut compressed_docs: Vec<GobbleDocument>,
     pre_compression_tokens: usize,
     flavor: &crate::flavors::Flavor,
     display_name: &str,
     args: &crate::cli::Cli,
 ) -> Result<()> {
+    // All flavors benefit from deterministic alphabetical sorting for prefix caching and consistency.
+    // However, if '_tree.md' is present, we must keep it at the very beginning of the payload.
+    compressed_docs.sort_by(|a, b| {
+        if a.path == "_tree.md" && b.path == "_tree.md" {
+            std::cmp::Ordering::Equal
+        } else if a.path == "_tree.md" {
+            std::cmp::Ordering::Less
+        } else if b.path == "_tree.md" {
+            std::cmp::Ordering::Greater
+        } else {
+            a.path.cmp(&b.path)
+        }
+    });
     // Feature: Summary Preamble (--summary)
     let mut preamble = String::new();
     if args.summary {

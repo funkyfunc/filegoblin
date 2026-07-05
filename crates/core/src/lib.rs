@@ -544,13 +544,14 @@ fn fetch_url(url: &Url, quiet: bool) -> Result<String> {
 mod tests {
     use super::*;
     use clap::Parser;
-    use std::io::Write;
-    use std::net::TcpListener;
-    use std::thread;
 
     #[test]
     #[cfg(feature = "web")]
     fn test_fetch_url_and_gobble() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::thread;
+
         // Start a dummy local server to test the network engine without an external dependency
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();

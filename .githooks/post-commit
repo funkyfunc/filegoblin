@@ -1,0 +1,10 @@
+#!/bin/sh
+
+echo "🧟 Installing the latest filegoblin binary locally..."
+cargo install --path crates/cli --locked --force
+
+if [ $? -eq 0 ]; then
+    echo "✅ filegoblin successfully installed to ~/.cargo/bin!"
+else
+    echo "❌ Failed to install filegoblin!"
+fi

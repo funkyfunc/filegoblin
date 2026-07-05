@@ -2,7 +2,7 @@ pub mod heuristic;
 pub mod level1;
 pub mod level2;
 pub mod level3;
-
+pub mod statistical_filter;
 use crate::cli::CompressionLevel;
 use std::borrow::Cow;
 
@@ -31,9 +31,9 @@ impl CompressionPipeline {
             transformers.push(Box::new(level2::Minifier));
         }
 
-        if *level == CompressionLevel::Aggressive {
-            // Level 3 (Aggressive)
-            transformers.push(Box::new(level3::StopwordPruner));
+        if *level == CompressionLevel::Aggressive && language.is_none() {
+            // Level 3 (Aggressive) - only for prose
+            transformers.push(Box::new(statistical_filter::StatFilter::new()));
         }
 
         Self { transformers }

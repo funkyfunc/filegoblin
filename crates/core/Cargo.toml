@@ -79,6 +79,7 @@ zip = "8.1.0"
 tar = "0.4.46"
 flate2 = "1.1.9"
 petgraph = "0.8.3"
+compression-prompt = "0.1.2"
 
 [build-dependencies]
 cc = "1.0"
