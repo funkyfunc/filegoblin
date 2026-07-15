@@ -159,3 +159,31 @@ Turns `--scrub` into a real, scriptable, zero-weight PII/secret scrubber. Same b
 - `cargo clippy --workspace -- -D warnings`: clean; feature clippy (web/wasm/rag/tui): clean.
 - Smoke: typed report end-to-end; `--scrub-style plain`; `--scrub-fail` exits 3 (dirty) / 0 (clean);
   `.filegoblin-scrub.json` allowlist + custom pattern honored.
+
+---
+
+# Phase 7b — Consistent Pseudonymization + JSON Extraction Contract
+
+## Item 2 — pseudonymization (`privacy_shield.rs`, `cli.rs`)
+- `RedactStyle::Pseudonym` (third clap variant). `PseudoInterner` (a `Mutex` field on the shared
+  shield) maps `(label, value) → stable index`; `[EMAIL_1]`, `[EMAIL_2]`, reused everywhere so the
+  same value is consistent across all documents in a run.
+- Bug found + fixed by the unit test: indices must be assigned in *reading* order, but redaction is
+  applied back-to-front (to keep byte offsets valid). Reworked `redact` to compute replacements
+  front-to-back (assigning pseudonym indices then) into a `Vec<(s,e,rep)>`, then apply `.rev()`.
+
+## Item 3 — JSON machine contract (`formatters.rs`, `lib.rs`, `cli/main.rs`)
+- JSON records are now `{path, format, tokens, content}`. `detect_format(path)` maps to a coarse
+  type (pdf/spreadsheet/code/image/text/…); `tokens` reuses `heuristic::estimate_tokens`.
+- `--json` added to `needs_buffer` so it always uses the buffered `format_and_output`, which sorts
+  alphabetically → deterministic output (verified: two horde runs → identical md5).
+- `gobble_app` now returns `GobbleOutcome { redactions, produced }` (produced = non-empty content
+  docs, excl. `_tree.md`). `main.rs` exit-code contract: `3` for `--scrub-fail` matches, `4` when
+  `--json` produced nothing, else `0`. The streaming `stream_and_output` json branch is now
+  unreachable via the app (kept intact for direct callers).
+
+## Verification (Phase 7b)
+- `cargo test --workspace`: 41 core tests pass (added `pseudonym_style_is_consistent`), 0 failed.
+- clippy `-D warnings` clean (default + web/wasm/rag/tui); fmt clean.
+- Smoke: pseudonym consistency (`[EMAIL_1]`/`[EMAIL_2]` reused), JSON `{format,tokens}`, empty
+  stdin `--json` exits 4, horde `--json` deterministic across runs.

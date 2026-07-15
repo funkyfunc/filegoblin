@@ -341,6 +341,27 @@ fn default_rules() -> Result<Vec<RegexRule>> {
 // The shield
 // ---------------------------------------------------------------------------
 
+/// Assigns stable, indexed placeholders per (label, value) for `Pseudonym` mode.
+/// `EMAIL`'s first distinct value becomes `[EMAIL_1]`, the next `[EMAIL_2]`, and any
+/// later occurrence of a seen value reuses its index.
+#[derive(Default)]
+struct PseudoInterner {
+    assigned: HashMap<(String, String), usize>,
+    next_index: HashMap<String, usize>,
+}
+
+impl PseudoInterner {
+    fn placeholder(&mut self, label: &str, value: &str) -> String {
+        let key = (label.to_string(), value.to_string());
+        let idx = *self.assigned.entry(key).or_insert_with(|| {
+            let counter = self.next_index.entry(label.to_string()).or_insert(0);
+            *counter += 1;
+            *counter
+        });
+        format!("[{}_{}]", label, idx)
+    }
+}
+
 pub struct PrivacyShield {
     rules: Vec<RegexRule>,
     trigger: PiiTrigger,
@@ -349,6 +370,8 @@ pub struct PrivacyShield {
     /// Per-run tally by label. Interior-mutable + `Sync` so one shared shield can
     /// accumulate across rayon workers and the streaming pipeline.
     counters: Mutex<BTreeMap<String, usize>>,
+    /// Stable placeholder assignments for `Pseudonym` mode (shared across the run).
+    interner: Mutex<PseudoInterner>,
 }
 
 impl PrivacyShield {
@@ -365,6 +388,7 @@ impl PrivacyShield {
             allowlist: HashSet::new(),
             style,
             counters: Mutex::new(BTreeMap::new()),
+            interner: Mutex::new(PseudoInterner::default()),
         })
     }
 
@@ -445,7 +469,7 @@ impl PrivacyShield {
 
     /// Redacts `input`, tallying counts by kind as a side effect.
     pub fn redact(&self, input: &str) -> String {
-        let mut kept = self.scan(input);
+        let kept = self.scan(input); // already sorted ascending by start
         if kept.is_empty() {
             return input.to_string();
         }
@@ -458,19 +482,33 @@ impl PrivacyShield {
             }
         }
 
+        // Compute replacements in reading order so pseudonym indices are assigned
+        // first-seen-first (`[EMAIL_1]` before `[EMAIL_2]`), independent of the
+        // back-to-front application below.
+        let replacements: Vec<(usize, usize, String)> = kept
+            .iter()
+            .filter_map(|m| {
+                let s = floor_char_boundary(input, m.start);
+                let e = ceil_char_boundary(input, m.end);
+                if s >= e {
+                    return None;
+                }
+                let replacement = match self.style {
+                    RedactStyle::Typed => format!("[{}]", m.kind.label()),
+                    RedactStyle::Plain => "[REDACTED]".to_string(),
+                    RedactStyle::Pseudonym => self
+                        .interner
+                        .lock()
+                        .unwrap()
+                        .placeholder(&m.kind.label(), &input[s..e]),
+                };
+                Some((s, e, replacement))
+            })
+            .collect();
+
         // Apply from the end so earlier byte offsets stay valid.
-        kept.sort_by_key(|m| std::cmp::Reverse(m.start));
         let mut output = input.to_string();
-        for m in kept {
-            let s = floor_char_boundary(input, m.start);
-            let e = ceil_char_boundary(input, m.end);
-            if s >= e {
-                continue;
-            }
-            let replacement = match self.style {
-                RedactStyle::Typed => format!("[{}]", m.kind.label()),
-                RedactStyle::Plain => "[REDACTED]".to_string(),
-            };
+        for (s, e, replacement) in replacements.into_iter().rev() {
             output.replace_range(s..e, &replacement);
         }
         output
@@ -560,6 +598,19 @@ mod tests {
     fn plain_style() {
         let s = PrivacyShield::new(RedactStyle::Plain).unwrap();
         assert_eq!(s.redact("mail dino@example.com x"), "mail [REDACTED] x");
+    }
+
+    #[test]
+    fn pseudonym_style_is_consistent() {
+        let s = PrivacyShield::new(RedactStyle::Pseudonym).unwrap();
+        // Same value → same placeholder, even across separate redact() calls (shared run).
+        assert_eq!(
+            s.redact("from a@x.com to b@x.com"),
+            "from [EMAIL_1] to [EMAIL_2]"
+        );
+        assert_eq!(s.redact("reply a@x.com again"), "reply [EMAIL_1] again");
+        // Distinct kinds get independent counters.
+        assert_eq!(s.redact("key AKIAIOSFODNN7EXAMPLE"), "key [AWS_KEY_1]");
     }
 
     #[test]

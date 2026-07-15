@@ -94,9 +94,12 @@ fn main() -> Result<()> {
                             .bold()
                     );
                 }
-                let redacted = gobble_app(&selected_targets, &parsed_flavor, &args)?;
-                if args.scrub_fail && redacted > 0 {
+                let outcome = gobble_app(&selected_targets, &parsed_flavor, &args)?;
+                if args.scrub_fail && outcome.redactions > 0 {
                     std::process::exit(3);
+                }
+                if args.json && outcome.produced == 0 {
+                    std::process::exit(4);
                 }
             }
             return Ok(());
@@ -116,12 +119,19 @@ fn main() -> Result<()> {
         print_mascot();
     }
 
-    let redacted = gobble_app(&targets, &parsed_flavor, &args)?;
+    let outcome = gobble_app(&targets, &parsed_flavor, &args)?;
 
-    // `--scrub-fail`: exit non-zero when anything was redacted (CI / pre-send gate).
-    // Checked before entering watch mode, which is a long-running loop.
-    if args.scrub_fail && redacted > 0 && !args.watch {
-        std::process::exit(3);
+    // Exit-code contract, checked before watch mode (a long-running loop):
+    //  - `--scrub-fail`: non-zero (3) when the Privacy Shield redacted anything.
+    //  - `--json`: non-zero (4) when nothing could be extracted, so an agent/script
+    //    distinguishes a genuine empty result from a total extraction failure.
+    if !args.watch {
+        if args.scrub_fail && outcome.redactions > 0 {
+            std::process::exit(3);
+        }
+        if args.json && outcome.produced == 0 {
+            std::process::exit(4);
+        }
     }
 
     if args.watch {

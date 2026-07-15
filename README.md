@@ -140,6 +140,10 @@ git ls-files -z | xargs -0 cat | filegoblin - --scrub --scrub-fail -q || echo "s
 
 # Exempt a known-public value, or add your own pattern via ./.filegoblin-scrub.json
 filegoblin ./config --horde --scrub --scrub-allow "support@example.com"
+
+# Consistent pseudonyms: the same value maps to [EMAIL_1] everywhere, so an LLM can
+# still tell that an entity recurs — without ever seeing it.
+cat ticket.txt | filegoblin - --scrub --scrub-style pseudonym
 ```
 Detection is 100% local with **zero model weights**: validated rules (Luhn for cards, range
 checks for SSN, mod-97 for IBAN) plus cloud/token prefixes (AWS, GitHub, Stripe, Slack, Google,
@@ -147,10 +151,19 @@ OpenAI, JWT, private-key blocks, connection strings) and a Shannon-entropy catch
 secrets. A value-free audit tally is printed to stderr (`🛡️ Privacy Shield redacted 4 item(s): …`).
 An optional `.filegoblin-scrub.json` supplies an `allowlist` and custom `patterns`.
 
-**Scripting Pipeline (JSON & Quiet):**
+**Machine Contract (`--json`) — extract any file to clean text for agents/scripts:**
 ```bash
+# One weird binary format → clean text + metadata, in a single call
+filegoblin report.pdf --json | jq '.[0] | {format, tokens}'
+# → { "format": "pdf", "tokens": 1234 }
+
 filegoblin ./src/ --horde -q --json | jq '.[].path'
 ```
+`--json` emits a **deterministic, alphabetically-sorted** array; each record is
+`{ "path", "format", "tokens", "content" }` (`format` is a coarse type like `pdf`,
+`spreadsheet`, `code`, `image`, `text`; `tokens` is an LLM token estimate). Exit codes:
+`0` success, `4` when nothing could be extracted (so a caller can tell an empty result
+from a total failure), `3` when `--scrub --scrub-fail` redacted something.
 
 **Token Compression (Reduce LLM context sizes):**
 ```bash

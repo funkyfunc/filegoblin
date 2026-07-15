@@ -26,14 +26,23 @@ use url::Url;
 pub mod formatters;
 pub mod routing;
 
-/// Runs the full ingest → format pipeline. Returns the number of Privacy Shield
-/// redactions performed (0 when `--scrub` is off), so the caller can honour
-/// `--scrub-fail` as a process exit code.
+/// Outcome of a run, used by the CLI to choose an exit code.
+pub struct GobbleOutcome {
+    /// Number of Privacy Shield redactions performed (0 when `--scrub` is off).
+    pub redactions: usize,
+    /// Number of non-empty content documents produced (excludes the tree map).
+    /// Only meaningful on the buffered path, which includes every `--json` run;
+    /// the streaming path reports 0 and callers only consult this for `--json`.
+    pub produced: usize,
+}
+
+/// Runs the full ingest → format pipeline and reports what happened, so the caller
+/// can honour `--scrub-fail` and the `--json` "nothing extracted" exit code.
 pub fn gobble_app(
     targets: &[String],
     flavor: &flavors::Flavor,
     args: &crate::cli::Cli,
-) -> Result<usize> {
+) -> Result<GobbleOutcome> {
     let (tx, rx) = std::sync::mpsc::sync_channel(100);
 
     let targets_clone = targets.to_vec();
@@ -65,9 +74,12 @@ pub fn gobble_app(
     //  - --search builds a RAG index; --max-tokens ranks documents against each
     //    other to enforce a global budget;
     //  - --copy / --open / --cost / --tokens-only / --summary / --manifest all
-    //    operate on the complete output (whole-payload clipboard, totals, TOC).
+    //    operate on the complete output (whole-payload clipboard, totals, TOC);
+    //  - --json is a machine contract: buffering lets us emit a deterministic,
+    //    alphabetically-sorted array with per-file metadata.
     // Everything else streams out-of-core.
-    let needs_buffer = args.search.is_some()
+    let needs_buffer = args.json
+        || args.search.is_some()
         || args.max_tokens.is_some()
         || args.copy
         || args.open
@@ -76,7 +88,7 @@ pub fn gobble_app(
         || args.summary
         || args.manifest;
 
-    if needs_buffer {
+    let produced = if needs_buffer {
         let raw_documents: Vec<crate::pipeline::GobbleDocument> = rx.into_iter().collect();
         let pruned_docs =
             crate::pipeline::stages::run_curation_stage(raw_documents, args, targets.len())?;
@@ -84,6 +96,10 @@ pub fn gobble_app(
             crate::pipeline::stages::run_privacy_stage(pruned_docs, args, shield.as_deref())?;
         let (compressed_docs, pre_compression_tokens) =
             crate::pipeline::stages::run_compression_stage(final_docs, args)?;
+        let produced = compressed_docs
+            .iter()
+            .filter(|d| d.path != "_tree.md" && !d.content.trim().is_empty())
+            .count();
         formatters::format_and_output(
             compressed_docs,
             pre_compression_tokens,
@@ -91,6 +107,7 @@ pub fn gobble_app(
             &display_name,
             args,
         )?;
+        produced
     } else {
         // True Out-of-Core Stream Processing: process documents one by one.
         let shield_stream = shield.clone();
@@ -105,17 +122,22 @@ pub fn gobble_app(
             doc
         });
         formatters::stream_and_output(stream, flavor, &display_name, args)?;
-    }
+        0
+    };
 
-    // Emit the audit report (never the values) and return the redaction total.
-    if let Some(s) = &shield {
+    // Emit the audit report (never the values) and return the outcome.
+    let redactions = if let Some(s) = &shield {
         if !args.quiet {
             print_scrub_report(&s.counts());
         }
-        Ok(s.total())
+        s.total()
     } else {
-        Ok(0)
-    }
+        0
+    };
+    Ok(GobbleOutcome {
+        redactions,
+        produced,
+    })
 }
 
 /// Constructs a Privacy Shield from the CLI flags: redaction style, an optional

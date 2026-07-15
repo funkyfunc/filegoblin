@@ -16,6 +16,10 @@ pub enum RedactStyle {
     Typed,
     /// Replace every match with an opaque `[REDACTED]`.
     Plain,
+    /// Replace with a stable, indexed placeholder per value, e.g. `[EMAIL_1]`. The same
+    /// value maps to the same placeholder everywhere so a downstream LLM can still track
+    /// that an entity recurs, without ever seeing it.
+    Pseudonym,
 }
 
 /// The mischievous librarian - A high-performance, robust file ingester.

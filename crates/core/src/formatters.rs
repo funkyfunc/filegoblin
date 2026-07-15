@@ -3,6 +3,33 @@ use anyhow::Result;
 use colored::Colorize;
 use url::Url;
 
+/// Maps a document path to a coarse format label for the `--json` machine contract.
+fn detect_format(path: &str) -> String {
+    if path == "_tree.md" {
+        return "tree".to_string();
+    }
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "pdf" => "pdf",
+        "docx" => "docx",
+        "xlsx" | "xls" | "ods" | "csv" => "spreadsheet",
+        "pptx" => "pptx",
+        "epub" => "epub",
+        "ipynb" => "jupyter",
+        "html" | "htm" => "html",
+        "png" | "jpg" | "jpeg" | "webp" => "image",
+        "rs" | "js" | "ts" | "py" | "go" | "c" | "cpp" => "code",
+        "zip" | "gz" | "tgz" => "archive",
+        "md" | "markdown" => "markdown",
+        _ => "text",
+    }
+    .to_string()
+}
+
 pub fn format_and_output(
     mut compressed_docs: Vec<GobbleDocument>,
     pre_compression_tokens: usize,
@@ -172,16 +199,25 @@ pub fn format_and_output(
             }
         }
     } else if args.json {
-        // Build strictly structured JSON array format matching our (String, String) pairs
+        // Stable machine contract: a deterministic (alphabetically sorted above) array
+        // of records, each carrying the detected format and an LLM token estimate so an
+        // agent can extract a file and budget it in one call.
         #[derive(serde::Serialize)]
         struct FileNode {
             path: String,
+            format: String,
+            tokens: usize,
             content: String,
         }
 
         let mut out = Vec::new();
         for doc in compressed_docs {
+            let tokens = doc.token_count.unwrap_or_else(|| {
+                crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
+            });
             out.push(FileNode {
+                format: detect_format(&doc.path),
+                tokens,
                 path: doc.path,
                 content: doc.content,
             });
