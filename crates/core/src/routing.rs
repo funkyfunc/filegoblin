@@ -108,7 +108,9 @@ fn route_url_target(
             repo_args.horde = true; // Force horde mode for a repository clone
             match crate::gobble_local(&temp_dir.path().to_string_lossy(), &repo_args) {
                 Ok(local_pairs) => {
-                    raw_pairs.extend(local_pairs);
+                    for (p, c) in local_pairs {
+                        let _ = tx.send(crate::pipeline::GobbleDocument::new(p, c));
+                    }
                 }
                 Err(e) => {
                     eprintln!("{} Failed to process cloned repo: {}", "⚠️".yellow(), e);

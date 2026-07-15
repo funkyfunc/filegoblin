@@ -305,7 +305,6 @@ where
             let compress_color = if app.active_flags.compress.is_some() { C_PRIMARY } else { C_MUTED };
             let compress_label = match &app.active_flags.compress {
                 Some(filegoblin_core::cli::CompressionLevel::Contextual) => "co[m]press:CTX",
-                Some(filegoblin_core::cli::CompressionLevel::Aggressive) => "co[m]press:AGG",
                 Some(filegoblin_core::cli::CompressionLevel::Safe)       => "co[m]press:SAF",
                 None                                                => "co[m]press",
             };
@@ -475,9 +474,6 @@ where
                         app.active_flags.compress = match app.active_flags.compress {
                             None => Some(filegoblin_core::cli::CompressionLevel::Contextual),
                             Some(filegoblin_core::cli::CompressionLevel::Contextual) => {
-                                Some(filegoblin_core::cli::CompressionLevel::Aggressive)
-                            }
-                            Some(filegoblin_core::cli::CompressionLevel::Aggressive) => {
                                 Some(filegoblin_core::cli::CompressionLevel::Safe)
                             }
                             Some(filegoblin_core::cli::CompressionLevel::Safe) => None,

@@ -1,7 +1,10 @@
-# Project filegoblin: Technical Product Requirements Document (PRD) v1.5
+# Project filegoblin: Technical Product Requirements Document (PRD)
 
-**Version:** 1.5.0 (The Comprehensive Hoard)
-**Status:** Ready for Development
+**Version:** tracks the crate version (currently 1.11.x). This PRD is the original
+design vision; where it diverges from shipped code (e.g. it names an ONNX
+Distil-PII-1B model and `docx-lite`/`ooxml` parsers), the code and `docs/ADR.md`
+are authoritative. See `docs/ADR.md` for the decisions that superseded parts of this document.
+**Status:** Living design reference
 **Target Stack:** Rust (Stable)
 
 ---

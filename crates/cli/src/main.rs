@@ -10,21 +10,22 @@ fn print_mascot() {
 
     let is_tty = std::io::stderr().is_terminal();
 
+    let tagline = format!("   --m-m--  filegoblin v{}", env!("CARGO_PKG_VERSION"));
     let frames = [
         vec![
-            r#"    (-_-)  <-- "...""#,
-            r#"     (W)"#,
-            r#"   --m-m--  filegoblin v1.5.0"#,
+            r#"    (-_-)  <-- "...""#.to_string(),
+            r#"     (W)"#.to_string(),
+            tagline.clone(),
         ],
         vec![
-            r#"    (o_o)  <-- "I'm hungry for files.""#,
-            r#"     (W)"#,
-            r#"   --m-m--  filegoblin v1.5.0"#,
+            r#"    (o_o)  <-- "I'm hungry for files.""#.to_string(),
+            r#"     (W)"#.to_string(),
+            tagline.clone(),
         ],
         vec![
-            r#"    (^w^)  <-- "Crunching time!""#,
-            r#"     (V)"#,
-            r#"   --m-m--  filegoblin v1.5.0"#,
+            r#"    (^w^)  <-- "Crunching time!""#.to_string(),
+            r#"     (V)"#.to_string(),
+            tagline.clone(),
         ],
     ];
 
@@ -44,7 +45,7 @@ fn print_mascot() {
             let r = 167 + ((255 - 167) / 2) * (i as u8);
             let g = 255 - (20 * i as u8);
             let b = 0;
-            eprintln!("\x1b[2K{}", line.truecolor(r, g, b).bold());
+            eprintln!("\x1b[2K{}", line.as_str().truecolor(r, g, b).bold());
         }
         if i < frames.len() - 1 {
             thread::sleep(Duration::from_millis(150));
@@ -56,7 +57,8 @@ fn print_mascot() {
 use filegoblin_core::cli::Cli;
 
 fn main() -> Result<()> {
-    let args = Cli::parse();
+    #[cfg_attr(not(feature = "tui"), allow(unused_mut))]
+    let mut args = Cli::parse();
 
     let parsed_flavor = Flavor::from_str(&args.flavor).unwrap_or(Flavor::Human);
 
@@ -92,7 +94,10 @@ fn main() -> Result<()> {
                             .bold()
                     );
                 }
-                gobble_app(&selected_targets, &parsed_flavor, &args)?;
+                let redacted = gobble_app(&selected_targets, &parsed_flavor, &args)?;
+                if args.scrub_fail && redacted > 0 {
+                    std::process::exit(3);
+                }
             }
             return Ok(());
         }
@@ -111,7 +116,13 @@ fn main() -> Result<()> {
         print_mascot();
     }
 
-    gobble_app(&targets, &parsed_flavor, &args)?;
+    let redacted = gobble_app(&targets, &parsed_flavor, &args)?;
+
+    // `--scrub-fail`: exit non-zero when anything was redacted (CI / pre-send gate).
+    // Checked before entering watch mode, which is a long-running loop.
+    if args.scrub_fail && redacted > 0 && !args.watch {
+        std::process::exit(3);
+    }
 
     if args.watch {
         use notify::{EventKind, RecursiveMode, Watcher};

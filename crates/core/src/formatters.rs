@@ -790,6 +790,17 @@ pub fn stream_and_output(
             None
         };
 
+        // Apply the flavor wrapper once around the entire stream, matching the
+        // buffered `format_and_output` path. (Total token count is unknown while
+        // streaming, so the GPT header's estimate is written as 0.)
+        if let Some(writer) = &mut stream_writer {
+            write!(
+                writer,
+                "{}",
+                crate::flavors::format_header(flavor, display_name, 0)
+            )?;
+        }
+
         for doc in rx {
             file_count += 1;
             let file_tokens = doc.token_count.unwrap_or_else(|| {
@@ -851,13 +862,15 @@ pub fn stream_and_output(
 ",
                     );
                 }
-                // Wrap block in flavor formatting? Wait, flavor format wraps the ENTIRE string.
-                // We'll just write the raw block if we are streaming to stdout without chunking.
-                // Or we can apply flavor to the block.
                 if let Some(writer) = &mut stream_writer {
                     write!(writer, "{}", block)?;
                 }
             }
+        }
+
+        // Close the flavor wrapper opened before the loop.
+        if let Some(writer) = &mut stream_writer {
+            write!(writer, "{}", crate::flavors::format_footer(flavor))?;
         }
 
         // Flush remaining chunk

@@ -7,13 +7,6 @@ pub struct OfficeGobbler;
 impl Gobble for OfficeGobbler {
     fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
         if !path.exists() {
-            // TDD MOCK FALLBACK for missing files
-            if path.to_string_lossy().contains("dummy.") {
-                return Ok(
-                    "Row 1: Name: Goblin; Title: Manager;\nRow 2: Name: Ghoul; Title: Assistant;"
-                        .to_string(),
-                );
-            }
             anyhow::bail!("Mischievous I/O Error: file not found at {:?}", path);
         }
 
@@ -40,8 +33,10 @@ impl Gobble for OfficeGobbler {
             }
             Ok(extracted.trim().to_string())
         } else {
-            // Fallback for .xlsx
-            Ok("EXCEL PARSING NOT YET IMPLEMENTED".to_string())
+            // Spreadsheets are routed to SheetGobbler; OfficeGobbler only handles Word.
+            anyhow::bail!(
+                "OfficeGobbler only handles .docx; spreadsheets are routed to the sheet parser"
+            )
         }
     }
 }
@@ -135,14 +130,10 @@ mod tests {
     }
 
     #[test]
-    fn test_office_sequence_of_records() {
+    fn test_office_missing_file_errors() {
         let gobbler = OfficeGobbler;
-        let p = Path::new("dummy.xlsx");
+        let p = Path::new("does_not_exist.docx");
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(p, &args).unwrap();
-
-        // Assert mandatory "Sequence of Records" structure (PRD 3.2)
-        assert!(result.contains("Row 1: Name: Goblin; Title: Manager;"));
-        assert!(result.contains("Row 2: Name: Ghoul; Title: Assistant;"));
+        assert!(gobbler.gobble(p, &args).is_err());
     }
 }

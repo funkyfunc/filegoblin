@@ -37,27 +37,32 @@
 
 ---
 
-## ⚡ Current Capabilities (v1.7.0)
+## ⚡ Current Capabilities (v1.11.0)
 
-- [x] Core Parsers (PDF, Office, Web, Code, Excel, PowerPoint, Images, WASM Plugins)
-- [x] URL Ingestion & Recursive Crawling (`--horde`)
+Some capabilities are gated behind opt-in Cargo features (built off by default to
+keep the binary lean). Feature-gated items are marked below.
+
+- [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, Jupyter, Code) — always on
+- [x] EPUB / Web / URL ingestion & recursive crawling (`--horde`) — requires `--features web`
+- [x] Image OCR — requires `--features ocr` (macOS Vision / pure-Rust `ocrs`)
+- [x] WASM Plugin Extensibility (`--plugin`) — requires `--features wasm`
+- [x] Semantic BM25 Search with Relevance Scores (`--search`) — requires `--features rag`
+- [x] Interactive Terminal Dashboard (`-i`) with ratatui — requires `--features tui` (in the CLI crate)
 - [x] Glob Filtering (`--include`, `--exclude`) & Depth Control (`--depth`)
 - [x] 4 LLM Flavors (`human`, `anthropic`, `gpt`, `gemini`)
 - [x] Token Estimation (`--tokens`), Token-Only Mode (`--tokens-only`)
-- [x] Token Compression & Stripping (`--compress safe|contextual|aggressive`)
+- [x] Token Compression (`--compress safe|contextual`)
 - [x] Auto-Pruning to Token Budgets (`--max-tokens`)
-- [x] Semantic BM25 Search with Relevance Scores (`--search`)
 - [x] Manifest Table of Contents (`--manifest`)
 - [x] Git-Aware Diffing (`--git-diff`) with Unified Diff Output (`--diff-format`)
-- [x] Code Skeletonization (`--extract symbols`) via tree-sitter
-- [x] PII Redaction (`--scrub`)
+- [x] Rust Symbol Extraction (`--extract symbols`) via tree-sitter
+- [x] Local PII / Secret Redaction (`--scrub`) — deterministic + entropy heuristics
 - [x] Output Splitting (`--split`), Chunking (`--chunk`), JSON (`--json`)
 - [x] Clipboard Ingestion (`--clipboard`), Clipboard Output (`--copy`), OS Open (`--open`), File Write (`--write`)
-- [x] Heuristic Project Summaries (`--summary`) & LLM Core API Cost Estimation (`--cost`)
+- [x] Heuristic Project Summaries (`--summary`) & LLM API Cost Estimation (`--cost`)
 - [x] Live Auto-Regeneration Watch Mode (`--watch`)
-- [x] Interactive Terminal Dashboard (`-i`) with ratatui
+- [x] Out-of-core streaming for the default dump path (flat RAM footprint)
 - [x] Pipeline-Safe Streams (`-q` for clean stdout)
-- [x] WASM Plugin Extensibility (`--plugin`)
 
 ---
 
@@ -66,17 +71,17 @@
 - **Hybrid OCR:** Instantaneous macOS Vision Framework integration (`objc2`) with pure-Rust `rten` inference as fallback.
 - **WASM Extensibility:** `wasmtime` for pure-rust statically-linked component execution.
 - **LLM-Native:** Specific structural anchors (XML/YAML) to prevent "Attention Drift."
-- **Privacy First:** Local-only PII/Secret scrubbing using Distil-PII-1B.
-- **Structural Minification:** Tree-sitter powered `--extract symbols` mode for source code.
+- **Privacy First:** 100% local PII/secret scrubbing — deterministic patterns (SSN, email, cloud/token prefixes) plus a Shannon-entropy tier that redacts high-entropy secrets. No model weights, no data egress.
+- **Structural Minification:** Tree-sitter powered `--extract symbols` mode for Rust source.
 
-| Source | Path Example | Parsers Used | Output Format |
+| Source | Path Example | Parser Used | Output Format |
 |---|---|---|---|
 | **PDF** | `~/receipt.pdf` | `PdfGobbler` | Sequence of Records |
 | **Word** | `~/notes.docx` | `OfficeGobbler` | Sequence of Records |
-| **Excel** | `~/data.xlsx` | `OfficeGobbler` | Sequence of Records |
-| **Source Code** | `~/project/src` | `CodeGobbler` | Skeleton Minification |
-| **Images** | `~/screenshot.png` | *Not Supported* | N/A |
-| **Webpages** | `https://news.ycombinator.com` | `WebGobbler` | Heuristic Extraction |
+| **Excel/CSV** | `~/data.xlsx` | `SheetGobbler` | Sequence of Records |
+| **Source Code** | `~/project/src` | `CodeGobbler` | Full content (or `--extract symbols`) |
+| **Images** | `~/screenshot.png` | `OcrGobbler` (`--features ocr`) | OCR Text |
+| **Webpages** | `https://news.ycombinator.com` | `WebGobbler` (`--features web`) | Heuristic Extraction |
 
 - **Semantic Search:** BM25 relevance scoring via `tantivy` with zero model weights.
 - **Manifest TOC:** Auto-generated table of contents with per-file token counts.
@@ -124,8 +129,23 @@ filegoblin https://bettercli.org/ --horde --split
 
 **Privacy Shield (Redact PII & Secrets locally):**
 ```bash
+# Typed redaction (default): values become [EMAIL], [AWS_KEY], [CREDIT_CARD], …
 filegoblin ./src/api_keys.ts --scrub > safe_context.md
+
+# Pipe a log through it as a pre-flight gate before any cloud LLM
+cat prod.log | filegoblin - --scrub --scrub-style plain
+
+# CI / pre-commit guard: non-zero exit if anything sensitive is found
+git ls-files -z | xargs -0 cat | filegoblin - --scrub --scrub-fail -q || echo "secrets detected!"
+
+# Exempt a known-public value, or add your own pattern via ./.filegoblin-scrub.json
+filegoblin ./config --horde --scrub --scrub-allow "support@example.com"
 ```
+Detection is 100% local with **zero model weights**: validated rules (Luhn for cards, range
+checks for SSN, mod-97 for IBAN) plus cloud/token prefixes (AWS, GitHub, Stripe, Slack, Google,
+OpenAI, JWT, private-key blocks, connection strings) and a Shannon-entropy catch-all for unknown
+secrets. A value-free audit tally is printed to stderr (`🛡️ Privacy Shield redacted 4 item(s): …`).
+An optional `.filegoblin-scrub.json` supplies an `allowlist` and custom `patterns`.
 
 **Scripting Pipeline (JSON & Quiet):**
 ```bash
@@ -134,8 +154,8 @@ filegoblin ./src/ --horde -q --json | jq '.[].path'
 
 **Token Compression (Reduce LLM context sizes):**
 ```bash
-# Strip comments from code, remove stop words, collapse whitespace
-filegoblin ./src/main.rs --compress aggressive > context.md
+# Strip code comments, minify JSON/HTML, collapse whitespace
+filegoblin ./src/main.rs --compress contextual > context.md
 ```
 
 **Multi-Part Splitting (Chunk output by tokens):**

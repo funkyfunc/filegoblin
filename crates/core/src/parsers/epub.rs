@@ -37,11 +37,11 @@ impl Gobble for EpubGobbler {
 
         for (name, content) in files {
             // Using WebGobbler to strip tags and convert HTML to MD natively
-            if let Ok(markdown) = web_gobbler.gobble_str(&content, args) {
-                if !markdown.trim().is_empty() {
-                    output.push_str(&format!("\n\n## {}\n\n", name));
-                    output.push_str(&markdown);
-                }
+            if let Ok(markdown) = web_gobbler.gobble_str(&content, args)
+                && !markdown.trim().is_empty()
+            {
+                output.push_str(&format!("\n\n## {}\n\n", name));
+                output.push_str(&markdown);
             }
         }
 

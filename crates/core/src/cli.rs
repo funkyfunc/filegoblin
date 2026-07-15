@@ -6,8 +6,16 @@ pub enum CompressionLevel {
     Safe,
     /// Semantic lexical pruning. Uses language-aware lexing to strip code comments while preserving docstrings. Minifies JSON/HTML.
     Contextual,
-    /// Lossy linguistic distillation. Strips stopwords from English prose and optimizes text to maximize token density.
-    Aggressive,
+}
+
+/// How the Privacy Shield replaces a detected secret / PII value.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RedactStyle {
+    /// Replace with a typed label revealing only the kind, e.g. `[EMAIL]`, `[AWS_KEY]`.
+    #[default]
+    Typed,
+    /// Replace every match with an opaque `[REDACTED]`.
+    Plain,
 }
 
 /// The mischievous librarian - A high-performance, robust file ingester.
@@ -76,10 +84,6 @@ pub struct Cli {
     #[arg(long, help_heading = "Crawling & Ingestion")]
     pub depth: Option<usize>,
 
-    /// Fetch a specific language transcript from YouTube or auto-translate (e.g. --lang es)
-    #[arg(long, help_heading = "Crawling & Ingestion")]
-    pub lang: Option<String>,
-
     // --- CURATION & INTELLIGENCE ---
     /// Local Zero-Dependency Semantic Search (evaluates and returns top matches)
     #[arg(long, help_heading = "Curation & Intelligence")]
@@ -118,9 +122,25 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities")]
     pub cost: bool,
 
-    /// Scrub PII and Secrets from the output locally using hybrid Regex/SLM Engine
+    /// Scrub PII and secrets from the output locally (rules + validation + entropy; zero data egress)
     #[arg(long, help_heading = "Developer Utilities")]
     pub scrub: bool,
+
+    /// How `--scrub` replaces matches: `typed` labels (e.g. [EMAIL]) or a plain [REDACTED]
+    #[arg(long, value_enum, default_value_t = RedactStyle::Typed, help_heading = "Developer Utilities")]
+    pub scrub_style: RedactStyle,
+
+    /// Exit with a non-zero status if `--scrub` redacts anything (useful as a CI / pre-send gate)
+    #[arg(long, help_heading = "Developer Utilities", requires = "scrub")]
+    pub scrub_fail: bool,
+
+    /// Path to a JSON scrub config (allowlist + custom patterns). Defaults to ./.filegoblin-scrub.json if present
+    #[arg(long, help_heading = "Developer Utilities", requires = "scrub")]
+    pub scrub_config: Option<String>,
+
+    /// Exempt an exact value from `--scrub` redaction (repeatable). Merged with any config allowlist
+    #[arg(long, help_heading = "Developer Utilities", requires = "scrub")]
+    pub scrub_allow: Vec<String>,
 
     /// Headless "Direct-to-Clipboard" support
     #[arg(long, help_heading = "Developer Utilities")]
@@ -149,4 +169,10 @@ pub struct Cli {
     /// Suppress all auxiliary output (mascots, progress logs, etc) to ensure clean pipeline usage
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub quiet: bool,
+
+    /// Internal guard: set when recursing into an already-extracted archive so we
+    /// refuse to extract archives nested inside archives (bomb/quine protection).
+    /// Not a user-facing flag.
+    #[arg(skip)]
+    pub no_nested_archives: bool,
 }

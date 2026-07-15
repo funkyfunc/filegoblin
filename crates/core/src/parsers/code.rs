@@ -5,172 +5,164 @@ use std::path::Path;
 pub struct CodeGobbler;
 
 impl Gobble for CodeGobbler {
+    /// Emits source files verbatim by default. Structural symbol extraction
+    /// (`--extract symbols`) is opt-in and currently only understands Rust; for any
+    /// other language it returns the full source rather than silently mangling it
+    /// with the wrong grammar.
     fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
-        let source_code = std::fs::read_to_string(path).unwrap_or_else(|_| {
-            "pub fn gobble(&self, path: &Path) -> Result<String> {\n    let dummy = 1;\n}"
-                .to_string()
-        });
+        let source_code =
+            std::fs::read_to_string(path).context("Failed to read source file as UTF-8")?;
 
-        if flags.full {
+        if flags.extract.as_deref() == Some("symbols") {
+            let is_rust = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| e.eq_ignore_ascii_case("rs"))
+                .unwrap_or(false);
+            if is_rust {
+                return extract_rust_symbols(&source_code);
+            }
+            // No grammar for this language yet: return full content honestly.
             return Ok(source_code);
         }
 
-        // --extract symbols: emit only structural definitions (function sigs, structs, enums, impl headers)
-        if flags.extract.as_deref() == Some("symbols") {
-            let mut parser = tree_sitter::Parser::new();
-            parser
-                .set_language(&tree_sitter_rust::LANGUAGE.into())
-                .context("Error loading Rust grammar")?;
+        Ok(source_code)
+    }
+}
 
-            let tree = parser
-                .parse(&source_code, None)
-                .context("Failed to parse code with tree-sitter")?;
+/// Extracts only structural definitions (fn signatures, struct/enum/trait/impl
+/// headers) from Rust source using tree-sitter.
+fn extract_rust_symbols(source_code: &str) -> Result<String> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .context("Error loading Rust grammar")?;
 
-            let mut symbols = Vec::new();
-            let mut stack: Vec<tree_sitter::Node> = vec![tree.root_node()];
-            while let Some(node) = stack.pop() {
-                match node.kind() {
-                    "function_item" | "function_signature_item" => {
-                        // Extract everything up to (but not including) the block body
-                        let sig_end = (0..node.child_count())
-                            .filter_map(|i| node.child(i as u32))
-                            .find(|c| c.kind() == "block")
-                            .map(|block| block.start_byte())
-                            .unwrap_or(node.end_byte());
-                        let sig = &source_code[node.start_byte()..sig_end];
-                        symbols.push(sig.trim().to_string());
-                    }
-                    "struct_item" => {
-                        // Extract just the struct name line (up to the field list)
-                        let sig_end = (0..node.child_count())
-                            .filter_map(|i| node.child(i as u32))
-                            .find(|c| c.kind() == "field_declaration_list")
-                            .map(|list| list.start_byte())
-                            .unwrap_or(node.end_byte());
-                        let sig = &source_code[node.start_byte()..sig_end];
-                        symbols.push(format!("{} {{ ... }}", sig.trim()));
-                    }
-                    "enum_item" => {
-                        let sig_end = (0..node.child_count())
-                            .filter_map(|i| node.child(i as u32))
-                            .find(|c| c.kind() == "enum_variant_list")
-                            .map(|list| list.start_byte())
-                            .unwrap_or(node.end_byte());
-                        let sig = &source_code[node.start_byte()..sig_end];
-                        symbols.push(format!("{} {{ ... }}", sig.trim()));
-                    }
-                    "impl_item" => {
-                        // Extract "impl Foo" or "impl Trait for Foo" header
-                        let sig_end = (0..node.child_count())
-                            .filter_map(|i| node.child(i as u32))
-                            .find(|c| c.kind() == "declaration_list")
-                            .map(|list| list.start_byte())
-                            .unwrap_or(node.end_byte());
-                        let sig = &source_code[node.start_byte()..sig_end];
-                        symbols.push(format!("{} {{ ... }}", sig.trim()));
-                        // Also recurse into impl to find methods
-                        for i in 0..node.child_count() {
-                            if let Some(child) = node.child(i as u32)
-                                && child.kind() == "declaration_list"
+    let tree = parser
+        .parse(source_code, None)
+        .context("Failed to parse code with tree-sitter")?;
+
+    let mut symbols = Vec::new();
+    let mut stack: Vec<tree_sitter::Node> = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "function_item" | "function_signature_item" => {
+                let sig_end = (0..node.child_count())
+                    .filter_map(|i| node.child(i as u32))
+                    .find(|c| c.kind() == "block")
+                    .map(|block| block.start_byte())
+                    .unwrap_or(node.end_byte());
+                let sig = &source_code[node.start_byte()..sig_end];
+                symbols.push(sig.trim().to_string());
+            }
+            "struct_item" => {
+                let sig_end = (0..node.child_count())
+                    .filter_map(|i| node.child(i as u32))
+                    .find(|c| c.kind() == "field_declaration_list")
+                    .map(|list| list.start_byte())
+                    .unwrap_or(node.end_byte());
+                let sig = &source_code[node.start_byte()..sig_end];
+                symbols.push(format!("{} {{ ... }}", sig.trim()));
+            }
+            "enum_item" => {
+                let sig_end = (0..node.child_count())
+                    .filter_map(|i| node.child(i as u32))
+                    .find(|c| c.kind() == "enum_variant_list")
+                    .map(|list| list.start_byte())
+                    .unwrap_or(node.end_byte());
+                let sig = &source_code[node.start_byte()..sig_end];
+                symbols.push(format!("{} {{ ... }}", sig.trim()));
+            }
+            "impl_item" => {
+                let sig_end = (0..node.child_count())
+                    .filter_map(|i| node.child(i as u32))
+                    .find(|c| c.kind() == "declaration_list")
+                    .map(|list| list.start_byte())
+                    .unwrap_or(node.end_byte());
+                let sig = &source_code[node.start_byte()..sig_end];
+                symbols.push(format!("{} {{ ... }}", sig.trim()));
+                // Recurse into impl to surface method signatures.
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i as u32)
+                        && child.kind() == "declaration_list"
+                    {
+                        for j in 0..child.child_count() {
+                            if let Some(method) = child.child(j as u32)
+                                && method.kind() == "function_item"
                             {
-                                for j in 0..child.child_count() {
-                                    if let Some(method) = child.child(j as u32)
-                                        && method.kind() == "function_item"
-                                    {
-                                        let method_sig_end = (0..method.child_count())
-                                            .filter_map(|k| method.child(k as u32))
-                                            .find(|c| c.kind() == "block")
-                                            .map(|block| block.start_byte())
-                                            .unwrap_or(method.end_byte());
-                                        let method_sig =
-                                            &source_code[method.start_byte()..method_sig_end];
-                                        symbols.push(format!("  {}", method_sig.trim()));
-                                    }
-                                }
+                                let method_sig_end = (0..method.child_count())
+                                    .filter_map(|k| method.child(k as u32))
+                                    .find(|c| c.kind() == "block")
+                                    .map(|block| block.start_byte())
+                                    .unwrap_or(method.end_byte());
+                                let method_sig = &source_code[method.start_byte()..method_sig_end];
+                                symbols.push(format!("  {}", method_sig.trim()));
                             }
                         }
-                        continue; // Don't push children to avoid double-processing methods
-                    }
-                    "trait_item" => {
-                        let sig_end = (0..node.child_count())
-                            .filter_map(|i| node.child(i as u32))
-                            .find(|c| c.kind() == "declaration_list")
-                            .map(|list| list.start_byte())
-                            .unwrap_or(node.end_byte());
-                        let sig = &source_code[node.start_byte()..sig_end];
-                        symbols.push(format!("{} {{ ... }}", sig.trim()));
-                    }
-                    _ => {
-                        for i in 0..node.child_count() {
-                            stack.push(node.child(i as u32).unwrap());
-                        }
                     }
                 }
+                continue; // Avoid double-processing methods.
             }
-
-            return Ok(symbols.join("\n"));
-        }
-
-        // Tree-sitter logic (default: elide bodies)
-        let mut parser = tree_sitter::Parser::new();
-        // Since tree-sitter-rust 0.23+, LANGUAGE is available as a function
-        parser
-            .set_language(&tree_sitter_rust::LANGUAGE.into())
-            .context("Error loading Rust grammar")?;
-
-        let tree = parser
-            .parse(&source_code, None)
-            .context("Failed to parse code with tree-sitter")?;
-
-        let mut block_spans = Vec::new();
-
-        // Let's do a simple recursive traversal
-        // Since TreeCursor is annoying for rust closures, we'll use a stack
-        let mut stack: Vec<tree_sitter::Node> = vec![tree.root_node()];
-        while let Some(node) = stack.pop() {
-            if node.kind() == "function_item" || node.kind() == "impl_item" {
-                // Find the child that is a "block"
-                for i in 0..node.child_count() {
-                    let child = node.child(i as u32).unwrap();
-                    if child.kind() == "block" || child.kind() == "declaration_list" {
-                        block_spans.push((child.start_byte(), child.end_byte()));
-                    }
-                }
-            } else {
+            "trait_item" => {
+                let sig_end = (0..node.child_count())
+                    .filter_map(|i| node.child(i as u32))
+                    .find(|c| c.kind() == "declaration_list")
+                    .map(|list| list.start_byte())
+                    .unwrap_or(node.end_byte());
+                let sig = &source_code[node.start_byte()..sig_end];
+                symbols.push(format!("{} {{ ... }}", sig.trim()));
+            }
+            _ => {
                 for i in 0..node.child_count() {
                     stack.push(node.child(i as u32).unwrap());
                 }
             }
         }
-
-        // Sort descending to not invalidate indices when replacing
-        block_spans.sort_by_key(|b| std::cmp::Reverse(b.0));
-
-        let mut minified = source_code.into_bytes();
-        for (start, end) in block_spans {
-            // Replace minified[start..end] with replacement
-            let replacement = b"{ /* body elided */ }";
-            minified.splice(start..end, replacement.iter().cloned());
-        }
-
-        Ok(String::from_utf8(minified).unwrap_or_else(|_| "UTF-8 Error".to_string()))
     }
+
+    Ok(symbols.join("\n"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::io::Write;
 
     #[test]
-    fn test_code_skeleton_minification() {
-        let gobbler = CodeGobbler;
-        let p = Path::new("dummy.rs");
-        let default_args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(p, &default_args).unwrap();
+    fn test_full_content_is_default() {
+        let mut f = tempfile::Builder::new().suffix(".rs").tempfile().unwrap();
+        write!(f, "pub fn foo() {{\n    let x = 1;\n}}").unwrap();
 
-        // Assert Structural Minification (PRD 3.3)
-        assert!(result.contains("/* body elided */"));
-        assert!(result.contains("pub fn gobble"));
+        let gobbler = CodeGobbler;
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        let result = gobbler.gobble(f.path(), &args).unwrap();
+
+        // Default emits the file verbatim, including the body.
+        assert!(result.contains("let x = 1;"));
+    }
+
+    #[test]
+    fn test_extract_symbols_rust() {
+        let mut f = tempfile::Builder::new().suffix(".rs").tempfile().unwrap();
+        write!(f, "pub fn foo() {{\n    let x = 1;\n}}").unwrap();
+
+        let gobbler = CodeGobbler;
+        let args = crate::cli::Cli::parse_from(["filegoblin", "--extract", "symbols", "dummy"]);
+        let result = gobbler.gobble(f.path(), &args).unwrap();
+
+        assert!(result.contains("pub fn foo()"));
+        assert!(!result.contains("let x = 1;"));
+    }
+
+    #[test]
+    fn test_missing_file_errors() {
+        let gobbler = CodeGobbler;
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        assert!(
+            gobbler
+                .gobble(Path::new("nope_does_not_exist.rs"), &args)
+                .is_err()
+        );
     }
 }

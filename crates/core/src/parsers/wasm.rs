@@ -2,13 +2,39 @@ use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use wasmtime::component::{Component, Linker};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 
 wasmtime::component::bindgen!({
     path: "wit/gobbler.wit",
     world: "gobbler",
 });
+
+/// CPU budget: a generous fuel allowance so well-behaved plugins finish but a
+/// runaway (infinite loop) plugin is trapped instead of hanging the process.
+const PLUGIN_FUEL: u64 = 10_000_000_000;
+/// Memory ceiling a plugin may allocate (256 MiB).
+const PLUGIN_MAX_MEMORY: usize = 256 * 1024 * 1024;
+
+/// Per-store host state: carries the resource limiter.
+struct HostState {
+    limits: StoreLimits,
+}
+
+/// A single shared engine. Building an `Engine` is expensive and it is safe to
+/// reuse across plugin invocations, so we cache it rather than rebuilding per file.
+fn engine() -> Result<&'static Engine> {
+    static ENGINE: OnceLock<Engine> = OnceLock::new();
+    if let Some(e) = ENGINE.get() {
+        return Ok(e);
+    }
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.consume_fuel(true);
+    let engine = Engine::new(&config).context("Failed to initialize WASM engine")?;
+    Ok(ENGINE.get_or_init(|| engine))
+}
 
 pub struct WasmGobbler {
     pub wasm_path: PathBuf,
@@ -24,17 +50,24 @@ impl Gobble for WasmGobbler {
             .unwrap_or_default()
             .to_string();
 
-        let mut config = Config::new();
-        config.wasm_component_model(true);
-
-        let engine = Engine::new(&config).context("Failed to initialize WASM engine")?;
-        let component = Component::from_file(&engine, &self.wasm_path).context(format!(
+        let engine = engine()?;
+        let component = Component::from_file(engine, &self.wasm_path).context(format!(
             "Failed to load WASM component from {:?}",
             self.wasm_path
         ))?;
 
-        let linker = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
+        // The linker is intentionally empty: no WASI, so plugins get no filesystem,
+        // network, clock, or stdio access. They only see the `gobble` interface.
+        let linker = Linker::new(engine);
+
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(PLUGIN_MAX_MEMORY)
+            .build();
+        let mut store = Store::new(engine, HostState { limits });
+        store.limiter(|state| &mut state.limits);
+        store
+            .set_fuel(PLUGIN_FUEL)
+            .context("Failed to set WASM fuel budget")?;
 
         let bindings = Gobbler::instantiate(&mut store, &component, &linker)
             .context("Failed to instantiate WASM plugin")?;
@@ -51,16 +84,19 @@ impl Gobble for WasmGobbler {
 }
 
 impl WasmGobbler {
-    /// Attempts to locate a plugin named `{ext}.wasm` in `~/.filegoblin/plugins/` or `./plugins/`
-    pub fn sniff(ext: &str) -> Option<PathBuf> {
+    /// Locates a plugin `{ext}.wasm`. `allow_cwd` controls whether the
+    /// current-directory `./plugins/` folder is searched: it is only enabled for
+    /// the explicit `--plugin` path, never for implicit extension-based dispatch,
+    /// so running filegoblin inside a hostile directory cannot silently execute
+    /// its bundled WASM.
+    pub fn sniff(ext: &str, allow_cwd: bool) -> Option<PathBuf> {
         let file_name = format!("{}.wasm", ext);
 
-        let local_path = std::env::current_dir()
-            .ok()?
-            .join("plugins")
-            .join(&file_name);
-        if local_path.exists() {
-            return Some(local_path);
+        if allow_cwd && let Ok(cwd) = std::env::current_dir() {
+            let local_path = cwd.join("plugins").join(&file_name);
+            if local_path.exists() {
+                return Some(local_path);
+            }
         }
 
         let home_path = home::home_dir()?

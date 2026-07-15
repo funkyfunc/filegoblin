@@ -25,14 +25,3 @@ fn test_level2_json_minification() {
     let output = pipeline.process(input);
     assert_eq!(output, "{\"key\":\"value\"}");
 }
-
-#[test]
-fn test_level3_stopword_pruning() {
-    let input = "The quick brown fox jumps over the lazy dog in the morning.";
-    let pipeline = CompressionPipeline::new(&CompressionLevel::Aggressive, None);
-    let output = pipeline.process(input);
-
-    // Check that stopwords like "the" and "in" are removed
-    assert!(output.contains("quick"));
-    assert!(!output.to_lowercase().contains(" the "));
-}

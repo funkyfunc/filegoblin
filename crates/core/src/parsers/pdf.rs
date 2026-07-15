@@ -7,10 +7,6 @@ pub struct PdfGobbler;
 impl Gobble for PdfGobbler {
     fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
         if !path.exists() {
-            // TDD MOCK FALLBACK for missing files
-            if path.to_string_lossy().contains("dummy.pdf") {
-                return Ok("Row 1: Date: 2026-01-01; Revenue: $10M; Growth: +5%;\nRow 2: Date: 2026-02-01; Revenue: $12M; Growth: +20%;".to_string());
-            }
             anyhow::bail!("Mischievous I/O Error: file not found at {:?}", path);
         }
 

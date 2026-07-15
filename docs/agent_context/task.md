@@ -1,13 +1,12 @@
-# Execution Tasks: Out-of-Core Streaming & PageRank
+# Execution Tasks: Phase-6 Audit Cleanup
 
-- `[/]` **Phase 1: Dependency Graph PageRank**
-  - `[x]` Add `petgraph` dependency to `crates/core/Cargo.toml`.
-  - `[x]` Create `crates/core/src/curation/pagerank.rs` to parse AST imports and build the graph.
-  - `[ ]` Refactor `crates/core/src/curation.rs` to use PageRank scoring for `enforce_budget`.
-- `[ ]` **Phase 2: Out-of-Core Stream Processing**
-  - `[ ]` Refactor `crates/core/src/routing.rs` and `lib.rs` to use a 2-pass crawl.
-  - `[ ]` Update `crates/core/src/pipeline/stages.rs` to process files lazily or via channel.
-  - `[ ]` Refactor `crates/core/src/formatters.rs` to stream incoming documents to disk/stdout.
-- `[x]` **Verification**
-  - `[x]` Fix all compilation errors.
-  - `[x]` Run `cargo horde-check` to ensure tests and linting pass.
+- `[x]` **A: Make all features compile** (web, tui)
+- `[x]` **C: Remove dead code & deps** (12 deps, credentials.rs, level3, --lang, scratch/, prod mocks)
+- `[x]` **D1: Delete PageRank + petgraph** (route --max-tokens through enforce_budget)
+- `[x]` **D3/D4/D5: Simplify** (CodeGobbler full-content default; drop aggressive compression; real globset)
+- `[x]` **Privacy Shield: delete mock, honest tiers** (fix char-boundary panic; secret prefixes; entropy redaction)
+- `[x]` **B: Security fixes** (SSRF/size/timeout, archive bombs, WASM limits, git ref guard)
+- `[x]` **G: Restructure** (walk.rs + git.rs + parse_files; unify formatters; fix flavor regression)
+- `[x]` **E: Stale strings/docs** (mascot/UA versions, cost table, README/PRD/ROADMAP/HANDOFF, ADR)
+- `[x]` **F: Verification** (workspace tests 30/0; clippy clean; feature compiles default/web/wasm/rag/tui)
+  - `[ ]` `cargo horde-check` full run + `ocr` build on a suitable machine (mkl not available here)

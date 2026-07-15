@@ -11,6 +11,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 
+/// Maximum number of pages a single crawl will fetch.
+const MAX_PAGES: usize = 500;
+
 /// A unified struct managing web crawler state and orchestration.
 pub struct GoblinCrawler {
     /// Tracks URLs we have already visited or queued to avoid infinite loops.
@@ -26,6 +29,9 @@ pub struct GoblinCrawler {
     /// Parsed Robots.txt for the domain
     robots: Option<Robots>,
 
+    /// Hardened HTTP client (timeouts + SSRF-guarded redirects + UA).
+    client: reqwest::Client,
+
     pub extract_full: bool,
 }
 
@@ -39,23 +45,25 @@ impl GoblinCrawler {
         let quota = Quota::per_second(NonZeroU32::new(5).unwrap());
         let rate_limiter = Arc::new(RateLimiter::keyed(quota));
 
-        let robots = Self::fetch_robots(seed_url).await;
+        let client = crate::net::async_client().context("Failed to build HTTP client")?;
+        let robots = Self::fetch_robots(&client, seed_url).await;
 
         Ok(Self {
             visited: Arc::new(DashSet::new()),
             seed_domain,
             rate_limiter,
             robots,
+            client,
             extract_full,
         })
     }
 
-    async fn fetch_robots(url: &Url) -> Option<Robots> {
+    async fn fetch_robots(client: &reqwest::Client, url: &Url) -> Option<Robots> {
         let mut robots_url = url.clone();
         robots_url.set_path("/robots.txt");
         robots_url.set_query(None);
 
-        if let Ok(resp) = reqwest::get(robots_url).await
+        if let Ok(resp) = client.get(robots_url).send().await
             && let Ok(bytes) = resp.bytes().await
         {
             return Some(robotxt::Robots::from_bytes(&bytes, "filegoblin"));
@@ -95,7 +103,15 @@ impl GoblinCrawler {
 
             tokio::select! {
                 Some(current_url) = rx.recv() => {
-                    println!("{}", format!("🕸️  Crawling: {}", current_url).truecolor(100, 150, 255));
+                    if !args.quiet {
+                        eprintln!("{}", format!("🕸️  Crawling: {}", current_url).truecolor(100, 150, 255));
+                    }
+
+                    // Stop expanding the frontier once we hit the page budget.
+                    if self.visited.len() > MAX_PAGES {
+                        in_flight.fetch_sub(1, Ordering::SeqCst);
+                        continue;
+                    }
 
                     if let Some(ref rtxt) = self.robots
                         && !rtxt.is_relative_allowed(current_url.path()) {
@@ -111,19 +127,26 @@ impl GoblinCrawler {
                     let rate_limiter = self.rate_limiter.clone();
                     let in_flight_clone = in_flight.clone();
                     let flags_clone = shared_args.clone();
+                    let client = self.client.clone();
 
                     join_set.spawn(async move {
                         rate_limiter.until_key_ready(&target_domain_clone).await;
                         let permit = active_tasks.acquire_owned().await.unwrap();
 
                         let display_url = current_url.to_string();
-                        let output_chunk = match reqwest::get(current_url.clone()).await {
+                        let output_chunk = match client.get(current_url.clone()).send().await {
                             Ok(resp) => {
                                 let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE)
                                     .and_then(|v| v.to_str().ok())
-                                    .unwrap_or("");
+                                    .unwrap_or("")
+                                    .to_string();
+                                let too_large = resp.content_length()
+                                    .map(|l| l > crate::net::MAX_RESPONSE_BYTES)
+                                    .unwrap_or(false);
 
-                                if content_type.starts_with("text/html") || content_type.starts_with("text/plain") {
+                                if too_large {
+                                    "".to_string()
+                                } else if content_type.starts_with("text/html") || content_type.starts_with("text/plain") {
                                     if let Ok(html) = resp.text().await {
                                         // Run the standard WebGobbler engine on this page
                                         let gobbler = WebGobbler { extract_full };

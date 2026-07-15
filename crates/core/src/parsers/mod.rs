@@ -2,7 +2,6 @@ pub mod archive;
 pub mod code;
 #[cfg(feature = "web")]
 pub mod crawler;
-pub mod credentials;
 #[cfg(feature = "web")]
 pub mod epub;
 #[cfg(feature = "web")]

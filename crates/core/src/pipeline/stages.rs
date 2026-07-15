@@ -3,7 +3,9 @@ use crate::cli::Cli;
 use crate::curation;
 use crate::pipeline::GobbleDocument;
 use crate::privacy_shield;
-use anyhow::{Context, Result};
+#[cfg(feature = "rag")]
+use anyhow::Context;
+use anyhow::Result;
 use colored::Colorize;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use pulldown_cmark_to_cmark::cmark;
@@ -73,14 +75,10 @@ pub fn run_curation_stage(
 
 pub fn run_privacy_stage(
     pruned_docs: Vec<GobbleDocument>,
-    args: &Cli,
+    _args: &Cli,
+    shield: Option<&privacy_shield::PrivacyShield>,
 ) -> Result<Vec<GobbleDocument>> {
-    let final_docs = if args.scrub {
-        if !args.quiet {
-            eprintln!("{}", "🛡️ Scrubbed the secrets...".truecolor(255, 191, 0));
-        }
-        let shield =
-            privacy_shield::PrivacyShield::init().context("Failed to initialize Privacy Shield")?;
+    let final_docs = if let Some(shield) = shield {
         use rayon::prelude::*;
         pruned_docs
             .into_par_iter()

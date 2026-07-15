@@ -10,23 +10,22 @@ This document tracks the strategic trajectory and planned enhancements for `file
 **Status: COMPLETED**
 **Implementation:** Implemented via `oxidize-pdf`'s native Rust text/graphics extraction (`crates/core/src/parsers/pdf.rs`). By analyzing the bounding boxes and text coordinates within the PDF vector stream, we heuristically reconstruct tables and output them as a perfect "Sequence of Records", completely bypassing heavy ML vision models.
 
-### 2. Zero-Latency Regex/Entropy PII Redaction
-**Status: COMPLETED**
-**Implementation:** Implemented in `crates/core/src/privacy_shield.rs`. A highly parallelized engine utilizing `rayon` alongside a `tokio::sync::Semaphore`. It applies deterministic matching (Aho-Corasick) followed by heuristic Shannon entropy scans to redact API keys and PII with near-zero latency overhead.
+### 2. Local Regex/Entropy PII Redaction
+**Status: COMPLETED (honest, non-neural)**
+**Implementation:** `crates/core/src/privacy_shield.rs`. A two-tier engine: deterministic Aho-Corasick keywords + regexes (SSN, email, credit card, and cloud/token prefixes such as AWS/GitHub/OpenAI/JWT), followed by a Shannon-entropy tier that redacts unbroken high-entropy tokens (keys, hashes). No model weights, no data egress. NOTE: an earlier "neural"/SLM tier was a hardcoded mock and has been removed; this engine makes no ML claims.
+
+### 3. Out-of-Core Streaming (default dump path)
+**Status: PARTIAL.** The default output path (`stream_and_output`) streams documents one at a time to stdout/file with a flat RAM footprint. Whole-output operations (`--search`, `--max-tokens`, `--copy`, `--open`, `--cost`, `--tokens-only`, `--summary`, `--manifest`) intentionally buffer the full corpus because they need it in memory.
 
 ---
 
 ## 🚀 Upcoming Enhancements (To-Do)
 
-Based on competitive analysis against Python/Node.js alternatives (Repomix, Aider, Docling), the following major architectural enhancements are targeted to solve the industry's most painful context-generation bottlenecks.
+### 1. Full Out-of-Core Streaming for Budgeting
+**Status:** `--max-tokens` currently buffers the whole corpus to rank documents (`crate::curation::enforce_budget`). A streaming/approximate budgeter could restore a flat footprint for budgeted runs.
 
-### 1. True "Out-of-Core" Stream Processing
-**The Problem:** Competitors (like V8/Node-based tools) crash with Out-Of-Memory (OOM) errors on enterprise monorepos because they load entire parsed ASTs into RAM simultaneously. Our current orchestrator (`crates/core/src/routing.rs`) also accumulates all outputs into memory before formatting.
-**The Solution:** Refactor the core ingestion engine to utilize strict out-of-core streaming (lazy iterators and asynchronous pipelines). filegoblin must stream file paths, parse via `rayon`, compress, and flush output to disk sequentially, guaranteeing a flat, minimal RAM footprint even on repositories with 100,000+ files.
-
-### 2. Dependency Graph "PageRank" for Heuristic Pruning
-**The Problem:** When massive repositories exceed LLM token limits, naive truncation randomly drops critical architectural context.
-**The Solution:** Adapt a Rayon-parallelized PageRank algorithm over our Tree-sitter ASTs. By building a structural dependency graph (tracking which files import/reference which symbols) and running PageRank natively in Rust, we can mathematically determine the most "important" files. When the `--max-tokens` limit is hit, filegoblin intelligently prunes the least-referenced files first, preserving the core architecture.
+### 2. (Removed) Dependency-Graph PageRank Pruning
+**Status: REMOVED.** A PageRank pruner (`curation/pagerank.rs`, `petgraph`) was built but its "File A contains File B's stem name ⇒ dependency" heuristic produced garbage edges (e.g. `error.rs` matched every file mentioning "error") and it never wired into `enforce_budget`. It was deleted in favor of the single extension/size-ranked `enforce_budget`. Any future importance-based pruning should use real AST import resolution, not substring matching.
 
 ---
 
