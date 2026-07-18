@@ -3,6 +3,7 @@ pub mod compressor;
 pub mod cost;
 pub mod curation;
 pub mod flavors;
+pub mod format;
 pub mod git;
 pub mod net;
 pub mod parsers;
@@ -96,10 +97,7 @@ pub fn gobble_app(
             crate::pipeline::stages::run_privacy_stage(pruned_docs, args, shield.as_deref())?;
         let (compressed_docs, pre_compression_tokens) =
             crate::pipeline::stages::run_compression_stage(final_docs, args)?;
-        let produced = compressed_docs
-            .iter()
-            .filter(|d| d.path != "_tree.md" && !d.content.trim().is_empty())
-            .count();
+        let produced = compressed_docs.iter().filter(|d| d.is_content()).count();
         formatters::format_and_output(
             compressed_docs,
             pre_compression_tokens,
@@ -184,8 +182,12 @@ fn print_scrub_report(counts: &std::collections::BTreeMap<String, usize>) {
     );
 }
 
-pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String, String)>> {
-    let mut files = Vec::new();
+pub fn gobble_local(
+    target: &str,
+    args: &crate::cli::Cli,
+) -> Result<Vec<crate::pipeline::GobbleDocument>> {
+    use crate::pipeline::GobbleDocument;
+    let mut files: Vec<GobbleDocument> = Vec::new();
     let root = std::path::Path::new(target);
 
     // ARCHIVE INTERCEPTION
@@ -202,16 +204,37 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
     }
 
     if !root.is_dir() || !args.horde {
-        match route_and_gobble(target, args) {
-            Ok(content) => files.push((target.to_string(), content)),
-            Err(e) => eprintln!("{} Error summarizing {}: {}", "⚠️".yellow(), target, e),
+        let (format, result) = route_and_gobble(target, args);
+        let bytes = std::fs::metadata(target).ok().map(|m| m.len());
+        match result {
+            Ok(content) => {
+                files.push(GobbleDocument::extracted(
+                    target.to_string(),
+                    content,
+                    format.label(),
+                    bytes,
+                ));
+            }
+            Err(e) => {
+                eprintln!("{} Error summarizing {}: {}", "⚠️".yellow(), target, e);
+                files.push(GobbleDocument::failed(
+                    target.to_string(),
+                    format.label(),
+                    e.to_string(),
+                ));
+            }
         }
         return Ok(files);
     }
 
     // 1. Walk the tree (respects .gitignore) → ASCII map + file list.
     let (tree_out, mut files_to_process) = crate::walk::walk_tree(target, args.depth);
-    files.push(("_tree.md".to_string(), tree_out));
+    files.push(GobbleDocument::extracted(
+        "_tree.md".to_string(),
+        tree_out,
+        "tree",
+        None,
+    ));
 
     // Note: --max-tokens budgeting is enforced globally in the pipeline
     // (crate::curation::enforce_budget), which needs the full corpus in memory to
@@ -270,13 +293,15 @@ pub fn gobble_local(target: &str, args: &crate::cli::Cli) -> Result<Vec<(String,
     Ok(files)
 }
 
-/// Parses each file (in parallel) into a `(relative_path, content)` pair, honoring
-/// `--diff-format`. Errors are logged and the file is skipped.
+/// Parses each file (in parallel) into a `GobbleDocument`, honoring `--diff-format`.
+/// A parse failure is logged AND recorded as a document with `error` set, so it can
+/// surface as an in-band `{path, error}` record in `--json` instead of vanishing.
 fn parse_files(
     paths: &[std::path::PathBuf],
     root: &Path,
     args: &crate::cli::Cli,
-) -> Vec<(String, String)> {
+) -> Vec<crate::pipeline::GobbleDocument> {
+    use crate::pipeline::GobbleDocument;
     use rayon::prelude::*;
     let strip_base = if root.is_file() {
         root.parent().unwrap_or(root)
@@ -292,26 +317,37 @@ fn parse_files(
                 .ok()?
                 .to_string_lossy()
                 .into_owned();
+            let bytes = std::fs::metadata(file_path).ok().map(|m| m.len());
 
-            let content = if args.diff_format && args.git_diff.is_some() {
-                crate::git::file_diff(root, args.git_diff.as_deref().unwrap(), file_path)
-            } else {
-                match route_and_gobble(&file_path.to_string_lossy(), args) {
-                    Ok(c) => Some(c),
-                    Err(e) => {
-                        eprintln!("{} Error summarizing {}: {}", "⚠️".yellow(), rel_str, e);
-                        None
-                    }
+            // --diff-format short-circuits parsing with git's unified diff.
+            if args.diff_format && args.git_diff.is_some() {
+                let diff =
+                    crate::git::file_diff(root, args.git_diff.as_deref().unwrap(), file_path);
+                return diff.map(|c| GobbleDocument::extracted(rel_str, c, "diff", bytes));
+            }
+
+            let (format, result) = route_and_gobble(&file_path.to_string_lossy(), args);
+            Some(match result {
+                Ok(content) => GobbleDocument::extracted(rel_str, content, format.label(), bytes),
+                Err(e) => {
+                    eprintln!("{} Error summarizing {}: {}", "⚠️".yellow(), rel_str, e);
+                    GobbleDocument::failed(rel_str, format.label(), e.to_string())
                 }
-            };
-
-            content.map(|c| (rel_str, c))
+            })
         })
         .collect()
 }
 
+/// Detects a file's [`Format`] and dispatches to the matching parser. Returns the
+/// detected format alongside the parse result so callers can attach it to the
+/// document (even on failure). Detection is extension-first with a magic-byte
+/// fallback, so renamed / extension-less files still route correctly.
 #[allow(unused_variables)]
-fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
+fn route_and_gobble(
+    path_str: &str,
+    args: &crate::cli::Cli,
+) -> (crate::format::Format, Result<String>) {
+    use crate::format::Format;
     let path = Path::new(path_str);
     let extension = path
         .extension()
@@ -319,106 +355,83 @@ fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
 
-    // EXPLICIT OVERRIDE: If the user passed `--plugin <NAME>`, force execution through that WASM component.
+    let header = crate::format::read_header(path, 512);
+    let format = crate::format::detect(path, &header);
+
+    // EXPLICIT OVERRIDE: `--plugin <NAME>` forces execution through that WASM component.
     if let Some(plugin_name) = args.plugin.as_deref() {
-        #[cfg(feature = "wasm")]
-        {
-            // Explicit --plugin is an opt-in, so we allow the local ./plugins dir here.
-            if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(plugin_name, true) {
-                match (parsers::wasm::WasmGobbler {
-                    wasm_path: plugin_path,
-                })
-                .gobble(path, args)
-                {
-                    Ok(markdown) => return Ok(markdown),
-                    Err(e) => anyhow::bail!("Explicit WASM Plugin '{}' failed: {}", plugin_name, e),
-                }
-            } else {
-                anyhow::bail!(
-                    "Requested explicit --plugin '{}' could not be found in ~/.filegoblin/plugins/ or ./plugins/",
-                    plugin_name
-                );
-            }
-        }
-        #[cfg(not(feature = "wasm"))]
-        {
-            anyhow::bail!(
-                "Explicit WASM Plugins require the 'wasm' feature. Recompile with --features wasm."
-            );
-        }
+        return (format, run_explicit_plugin(plugin_name, path, args));
     }
 
-    match extension.as_str() {
-        "epub" => {
-            #[cfg(feature = "web")]
+    let result = match format {
+        Format::Pdf => parsers::pdf::PdfGobbler.gobble(path, args),
+        Format::Docx => parsers::office::OfficeGobbler.gobble(path, args),
+        Format::Spreadsheet => parsers::sheet::SheetGobbler.gobble(path, args),
+        Format::Pptx => parsers::powerpoint::PptxGobbler.gobble(path, args),
+        Format::Jupyter => parsers::jupyter::JupyterGobbler.gobble(path, args),
+        Format::Email => parsers::email::EmailGobbler.gobble(path, args),
+        Format::Rtf => parsers::rtf::RtfGobbler.gobble(path, args),
+        Format::Code => parsers::code::CodeGobbler.gobble(path, args),
+        Format::Epub => parsers::epub::EpubGobbler.gobble(path, args),
+        Format::Html => parsers::html::HtmlGobbler {
+            extract_full: args.full,
+        }
+        .gobble(path, args),
+        Format::Image => {
+            #[cfg(feature = "ocr")]
             {
-                parsers::epub::EpubGobbler.gobble(path, args)
+                parsers::ocr::OcrGobbler.gobble(path, args)
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "ocr"))]
             {
-                anyhow::bail!(
-                    "Parsing EPUB files requires the 'web' feature. Recompile with --features web."
-                );
+                Err(anyhow::anyhow!(
+                    "OCR extraction requires the 'ocr' feature. Recompile with --features ocr."
+                ))
             }
         }
-        "ipynb" => parsers::jupyter::JupyterGobbler.gobble(path, args),
-        "pdf" => parsers::pdf::PdfGobbler.gobble(path, args),
-        "docx" => parsers::office::OfficeGobbler.gobble(path, args),
-        "xlsx" | "xls" | "ods" | "csv" => parsers::sheet::SheetGobbler.gobble(path, args),
-        "pptx" => parsers::powerpoint::PptxGobbler.gobble(path, args),
-        "eml" | "mbox" => parsers::email::EmailGobbler.gobble(path, args),
-        "rtf" => parsers::rtf::RtfGobbler.gobble(path, args),
-        "html" | "htm" => {
-            #[cfg(feature = "web")]
-            {
-                parsers::web::WebGobbler {
-                    extract_full: args.full,
-                }
-                .gobble(path, args)
-            }
-            #[cfg(not(feature = "web"))]
-            {
-                anyhow::bail!(
-                    "Parsing HTML files requires the 'web' feature. Recompile with --features web, or use --fallback."
-                );
-            }
-        }
-        "rs" | "js" | "py" | "ts" | "go" | "c" | "cpp" => {
-            parsers::code::CodeGobbler.gobble(path, args)
-        }
-        _ => {
-            // Priority 1: Check if a user installed a dynamic WASM plugin for this
-            // extension. Implicit dispatch only trusts ~/.filegoblin/plugins (never
-            // the current directory) so a hostile CWD cannot auto-run its plugins.
-            #[allow(clippy::collapsible_if)]
+        // Markdown, plain text, unknown, and (inline) archives fall through to a
+        // WASM plugin (if one is installed for the extension) or a plaintext read.
+        Format::Markdown | Format::Text | Format::Archive => {
             #[cfg(feature = "wasm")]
-            if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(&extension, false) {
-                if let Ok(markdown) = (parsers::wasm::WasmGobbler {
+            if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(&extension, false)
+                && let Ok(markdown) = (parsers::wasm::WasmGobbler {
                     wasm_path: plugin_path,
                 })
                 .gobble(path, args)
-                {
-                    return Ok(markdown);
-                }
+            {
+                return (format, Ok(markdown));
             }
-
-            // Priority 2: Fall back to core heuristics
-            // If it's an image, pass to ocr. If text, just read.
-            if ["png", "jpg", "jpeg", "webp"].contains(&extension.as_str()) {
-                #[cfg(feature = "ocr")]
-                {
-                    parsers::ocr::OcrGobbler.gobble(path, args)
-                }
-                #[cfg(not(feature = "ocr"))]
-                {
-                    anyhow::bail!(
-                        "OCR extraction requires the 'ocr' feature. Recompile with --features ocr."
-                    );
-                }
-            } else {
-                std::fs::read_to_string(path).context("Failed to read file as plaintext")
-            }
+            std::fs::read_to_string(path).context("Failed to read file as plaintext")
         }
+    };
+
+    (format, result)
+}
+
+/// Runs an explicitly requested WASM plugin (`--plugin`). Allowed to use the local
+/// `./plugins` dir since it is an opt-in.
+#[allow(unused_variables)]
+fn run_explicit_plugin(plugin_name: &str, path: &Path, args: &crate::cli::Cli) -> Result<String> {
+    #[cfg(feature = "wasm")]
+    {
+        if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(plugin_name, true) {
+            (parsers::wasm::WasmGobbler {
+                wasm_path: plugin_path,
+            })
+            .gobble(path, args)
+            .map_err(|e| anyhow::anyhow!("Explicit WASM Plugin '{}' failed: {}", plugin_name, e))
+        } else {
+            anyhow::bail!(
+                "Requested explicit --plugin '{}' could not be found in ~/.filegoblin/plugins/ or ./plugins/",
+                plugin_name
+            )
+        }
+    }
+    #[cfg(not(feature = "wasm"))]
+    {
+        anyhow::bail!(
+            "Explicit WASM Plugins require the 'wasm' feature. Recompile with --features wasm."
+        )
     }
 }
 
@@ -504,7 +517,7 @@ mod tests {
         assert!(html_content.contains("Goblin network testing!"));
 
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let parsed_content = crate::parsers::web::WebGobbler {
+        let parsed_content = crate::parsers::html::HtmlGobbler {
             extract_full: false,
         }
         .gobble_str(&html_content, &args)
@@ -518,8 +531,9 @@ mod tests {
         let test_file = "dummy.xyz";
         std::fs::write(test_file, "Plaintext fallback text").unwrap();
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let res = route_and_gobble(test_file, &args).unwrap();
-        assert_eq!(res, "Plaintext fallback text");
+        let (format, res) = route_and_gobble(test_file, &args);
+        assert_eq!(res.unwrap(), "Plaintext fallback text");
+        assert_eq!(format, crate::format::Format::Text);
         std::fs::remove_file(test_file).ok();
     }
 }

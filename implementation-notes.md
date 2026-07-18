@@ -206,3 +206,34 @@ New always-on pure-Rust parsers:
 Verification: `cargo test --workspace` 46 core tests pass (added 5: eml, mbox, html-strip, rtf,
 rtf-missing); clippy `-D warnings` + fmt clean on default + web/wasm/rag/tui; smoke-tested `.eml`
 (header block + body), `.mbox` (multi-message), `.rtf`, and `.eml --json` (format:"email").
+
+---
+
+# Phase 8 — Architecture refactor (items 1–3)
+
+Reworked three seams that blocked the "universal, agent-trustworthy converter" goal.
+
+## Item 2 — `format.rs` (new) + magic-byte routing
+- `Format` enum + `label()`; `detect(path, header)` = extension-first, then `from_magic`
+  (`%PDF`/`{\rtf`/`PK`/gzip/PNG/JPEG/WebP/RFC822/HTML), else `Text`. `read_header(path, 512)`.
+- `route_and_gobble` now returns `(Format, Result<String>)` and dispatches on `Format` (typed +
+  testable, not a raw-string match). Explicit `--plugin` extracted to `run_explicit_plugin`.
+- Extension-less / renamed files route correctly (verified: a PDF renamed to `blob` → format "pdf").
+
+## Item 1 — one document type through the parser boundary
+- `GobbleDocument` gains `format`, `bytes`, `error` + `extracted()`/`failed()`/`is_content()`.
+- `gobble_local`/`parse_files`/`ArchiveGobbler::extract_archive` return `Vec<GobbleDocument>`;
+  `routing.rs` sends documents straight through (removed 6 `GobbleDocument::new(p,c)` rebuilds).
+- Parse failures are logged AND carried as error documents. `--json` emits an in-band
+  `{path, format, error}` record (serde `skip_serializing_if`); non-JSON output drops error docs;
+  `produced` counts `is_content()`. Verified: garbage `.pdf` → error record + exit 4.
+
+## Item 3 — HTML split from the `web` feature
+- `html2md` non-optional; `web.rs` → always-on `parsers/html.rs` (`WebGobbler` → `HtmlGobbler`).
+  `epub.rs` and the HTML/EPUB route arms un-gated. `web` feature is now purely network.
+  Verified: local `.html` parses on a **default** build (no web feature); `.epub` test runs on default.
+
+Verification: `cargo test --workspace` 52 core tests (added format detection ×4, epub ×2 now on
+default); clippy `-D warnings` + fmt clean on default + web/wasm/rag/tui; smoke tests above.
+Note: `route_and_gobble`'s cfg-gated arms return `Err(anyhow!)` (not `bail!`) since the fn returns a
+tuple; BSD `sed` lacks `\b` so one crawler rename was fixed by hand.

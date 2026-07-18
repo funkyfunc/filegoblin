@@ -19,9 +19,11 @@ pub fn route_targets(
             .get_text()
             .context("Failed to read text from clipboard")?;
         if !text.is_empty() {
-            let _ = tx.send(crate::pipeline::GobbleDocument::new(
+            let _ = tx.send(crate::pipeline::GobbleDocument::extracted(
                 "clipboard".to_string(),
                 text,
+                "text",
+                None,
             ));
         }
     }
@@ -53,9 +55,11 @@ fn route_stdin(tx: &std::sync::mpsc::SyncSender<crate::pipeline::GobbleDocument>
         eprintln!("{} Error reading stdin: {}", "⚠️".yellow(), e);
     }
     if !buffer.is_empty() {
-        let _ = tx.send(crate::pipeline::GobbleDocument::new(
+        let _ = tx.send(crate::pipeline::GobbleDocument::extracted(
             "stdin".to_string(),
             buffer,
+            "text",
+            None,
         ));
     }
 }
@@ -107,9 +111,9 @@ fn route_url_target(
             let mut repo_args = args.clone();
             repo_args.horde = true; // Force horde mode for a repository clone
             match crate::gobble_local(&temp_dir.path().to_string_lossy(), &repo_args) {
-                Ok(local_pairs) => {
-                    for (p, c) in local_pairs {
-                        let _ = tx.send(crate::pipeline::GobbleDocument::new(p, c));
+                Ok(docs) => {
+                    for doc in docs {
+                        let _ = tx.send(doc);
                     }
                 }
                 Err(e) => {
@@ -129,15 +133,17 @@ fn route_url_target(
             match crate::fetch_url(url, args.quiet) {
                 Ok(html_content) => {
                     use crate::parsers::gobble::Gobble;
-                    match (crate::parsers::web::WebGobbler {
+                    match (crate::parsers::html::HtmlGobbler {
                         extract_full: args.full,
                     })
                     .gobble_str(&html_content, args)
                     {
                         Ok(text) => {
-                            let _ = tx.send(crate::pipeline::GobbleDocument::new(
+                            let _ = tx.send(crate::pipeline::GobbleDocument::extracted(
                                 target.to_string(),
                                 text,
+                                "html",
+                                None,
                             ));
                         }
                         Err(e) => eprintln!(
@@ -172,9 +178,9 @@ fn route_local_target(
         eprintln!("📁 Sniffing for files at local path: {}", target);
     }
     match crate::gobble_local(target, args) {
-        Ok(pairs) => {
-            for (p, c) in pairs {
-                let _ = tx.send(crate::pipeline::GobbleDocument::new(p, c));
+        Ok(docs) => {
+            for doc in docs {
+                let _ = tx.send(doc);
             }
         }
         Err(e) => eprintln!("{} Failed to sniff path {}: {}", "⚠️".yellow(), target, e),

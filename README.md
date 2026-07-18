@@ -42,8 +42,9 @@
 Some capabilities are gated behind opt-in Cargo features (built off by default to
 keep the binary lean). Feature-gated items are marked below.
 
-- [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, Jupyter, Code, Email, RTF) — always on
-- [x] EPUB / Web / URL ingestion & recursive crawling (`--horde`) — requires `--features web`
+- [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
+- [x] Magic-byte format detection — extension-first, falling back to content signatures so renamed / extension-less files still route correctly
+- [x] URL fetching & recursive crawling (`--horde`) + GitHub cloning — requires `--features web`
 - [x] Image OCR — requires `--features ocr` (macOS Vision / pure-Rust `ocrs`)
 - [x] WASM Plugin Extensibility (`--plugin`) — requires `--features wasm`
 - [x] Semantic BM25 Search with Relevance Scores (`--search`) — requires `--features rag`
@@ -161,11 +162,13 @@ filegoblin report.pdf --json | jq '.[0] | {format, tokens}'
 
 filegoblin ./src/ --horde -q --json | jq '.[].path'
 ```
-`--json` emits a **deterministic, alphabetically-sorted** array; each record is
+`--json` emits a **deterministic, alphabetically-sorted** array. A successful record is
 `{ "path", "format", "tokens", "content" }` (`format` is a coarse type like `pdf`,
-`spreadsheet`, `code`, `image`, `text`; `tokens` is an LLM token estimate). Exit codes:
-`0` success, `4` when nothing could be extracted (so a caller can tell an empty result
-from a total failure), `3` when `--scrub --scrub-fail` redacted something.
+`spreadsheet`, `code`, `image`, `text`; `tokens` is an LLM token estimate). A file that
+**fails to parse** appears in-band as `{ "path", "format", "error" }` rather than silently
+vanishing — so an agent can trust that every input is accounted for. Exit codes: `0` success,
+`4` when nothing could be extracted (empty result vs. total failure), `3` when
+`--scrub --scrub-fail` redacted something.
 
 **Token Compression (Reduce LLM context sizes):**
 ```bash

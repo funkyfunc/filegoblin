@@ -94,3 +94,12 @@
 - **`.msg` (Outlook) was intentionally dropped**: the `msg_parser` crate pulls a `tsify`/`gloo-utils` (wasm-bindgen/TypeScript-interop) dependency chain that bloats the binary against the lean identity. `.eml`/`.mbox` cover the overwhelming majority of real email; `.msg` can return later as a WASM plugin or behind a feature.
 - `--json` `format` labels extended: `email`, `rtf`.
 **Status:** Accepted.
+
+## 2026-07-18: Architecture — one document type, magic-byte routing, HTML split from web
+**Context:** Three seams blocked the "universal, agent-trustworthy converter" goal: (1) the parser layer spoke `(String,String)` pairs while everything downstream spoke `GobbleDocument`, so per-file metadata and parse errors were discarded (a failed parse vanished — "empty output looks like success"); (2) dispatch was a 13-arm extension `match` with no magic-byte detection, so renamed/extension-less files fell to raw plaintext; (3) HTML→markdown was trapped behind `--features web`, so parsing a local `.html`/`.epub` needed the whole network stack.
+**Decision:**
+- **`format.rs`** (new): a `Format` enum + `detect(path, header)` — extension-first, magic-byte fallback (`%PDF`, `{\rtf`, `PK`, gzip, PNG/JPEG/WebP, RFC822, HTML) — with `label()` for the JSON contract. `route_and_gobble` now returns `(Format, Result<String>)` and dispatches on `Format`. Renamed/extension-less files route correctly.
+- **`GobbleDocument`** gains `format`, `bytes`, `error`; `gobble_local`/`parse_files`/`extract_archive` return `Vec<GobbleDocument>` (no more pair boundary or 6 reconstruction sites in routing). A failed parse is recorded as an error document (logged AND carried), surfaced in `--json` as an in-band `{path, format, error}` record; non-JSON output drops it. Exit code 4 already signals "nothing extracted".
+- **HTML split from web:** `html2md` is now non-optional; `WebGobbler` moved to an always-on `parsers/html.rs` as `HtmlGobbler`; `epub.rs` and the HTML/EPUB route arms are always-on. The `web` feature is now purely network (reqwest/scraper/governor/robotxt/tokio + crawler/fetch/github). A default build parses local `.html` and `.epub`.
+- Tracked for later (Phase 2): unify the buffered/streaming formatter paths; cache token counts; pass `ParseOptions` instead of `&Cli`; drop tokio (sync crawler).
+**Status:** Accepted.

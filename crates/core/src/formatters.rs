@@ -3,33 +3,15 @@ use anyhow::Result;
 use colored::Colorize;
 use url::Url;
 
-/// Maps a document path to a coarse format label for the `--json` machine contract.
-fn detect_format(path: &str) -> String {
-    if path == "_tree.md" {
-        return "tree".to_string();
+/// The format label for a document in the `--json` contract: the format detected
+/// at extraction time, or a magic/extension re-detection as a fallback.
+fn format_label(doc: &GobbleDocument) -> String {
+    if let Some(f) = &doc.format {
+        return f.clone();
     }
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    match ext.as_str() {
-        "pdf" => "pdf",
-        "docx" => "docx",
-        "xlsx" | "xls" | "ods" | "csv" => "spreadsheet",
-        "pptx" => "pptx",
-        "epub" => "epub",
-        "ipynb" => "jupyter",
-        "eml" | "mbox" => "email",
-        "rtf" => "rtf",
-        "html" | "htm" => "html",
-        "png" | "jpg" | "jpeg" | "webp" => "image",
-        "rs" | "js" | "ts" | "py" | "go" | "c" | "cpp" => "code",
-        "zip" | "gz" | "tgz" => "archive",
-        "md" | "markdown" => "markdown",
-        _ => "text",
-    }
-    .to_string()
+    crate::format::detect(std::path::Path::new(&doc.path), doc.content.as_bytes())
+        .label()
+        .to_string()
 }
 
 pub fn format_and_output(
@@ -39,6 +21,12 @@ pub fn format_and_output(
     display_name: &str,
     args: &crate::cli::Cli,
 ) -> Result<()> {
+    // Failed extractions are carried through only so `--json` can report them
+    // in-band; every other output form drops them (no empty file blocks).
+    if !args.json {
+        compressed_docs.retain(|d| d.error.is_none());
+    }
+
     // All flavors benefit from deterministic alphabetical sorting for prefix caching and consistency.
     // However, if '_tree.md' is present, we must keep it at the very beginning of the payload.
     compressed_docs.sort_by(|a, b| {
@@ -208,21 +196,38 @@ pub fn format_and_output(
         struct FileNode {
             path: String,
             format: String,
-            tokens: usize,
-            content: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            tokens: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            content: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            error: Option<String>,
         }
 
         let mut out = Vec::new();
         for doc in compressed_docs {
-            let tokens = doc.token_count.unwrap_or_else(|| {
-                crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
-            });
-            out.push(FileNode {
-                format: detect_format(&doc.path),
-                tokens,
-                path: doc.path,
-                content: doc.content,
-            });
+            let format = format_label(&doc);
+            if let Some(err) = doc.error {
+                // In-band failure record: an agent sees the error, not a vanished file.
+                out.push(FileNode {
+                    path: doc.path,
+                    format,
+                    tokens: None,
+                    content: None,
+                    error: Some(err),
+                });
+            } else {
+                let tokens = doc.token_count.unwrap_or_else(|| {
+                    crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
+                });
+                out.push(FileNode {
+                    path: doc.path,
+                    format,
+                    tokens: Some(tokens),
+                    content: Some(doc.content),
+                    error: None,
+                });
+            }
         }
         let serialized = serde_json::to_string_pretty(&out)?;
 
@@ -656,6 +661,10 @@ pub fn stream_and_output(
     display_name: &str,
     args: &crate::cli::Cli,
 ) -> Result<()> {
+    // Drop failed extractions from streamed output (they carry no content); the
+    // `--json` machine contract, which reports them in-band, always buffers instead.
+    let rx = rx.filter(|d| d.error.is_none());
+
     if args.summary || args.manifest {
         if !args.quiet {
             eprintln!(

@@ -17,7 +17,7 @@ exclude = [
 
 [features]
 default = []
-web = ["dep:reqwest", "dep:scraper", "dep:governor", "dep:robotxt", "dep:html2md", "dep:tokio"]
+web = ["dep:reqwest", "dep:scraper", "dep:governor", "dep:robotxt", "dep:tokio"]
 ocr = ["dep:rten", "dep:rten-tensor", "dep:candle-core", "dep:ocrs", "dep:image", "dep:tokio"]
 wasm = ["dep:wasmtime"]
 rag = ["dep:tantivy"]
@@ -37,7 +37,7 @@ git2 = "0.20.4"
 globset = "0.4.18"
 governor = { version = "0.10.4", optional = true }
 home = "0.5.12"
-html2md = { version = "0.2.15", optional = true }
+html2md = "0.2.15"
 ignore = "0.4.25"
 image = { version = "0.25.9", optional = true }
 logos = "0.16.1"

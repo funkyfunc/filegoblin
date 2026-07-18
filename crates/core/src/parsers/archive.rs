@@ -14,12 +14,13 @@ const MAX_ENTRIES: usize = 100_000;
 pub struct ArchiveGobbler;
 
 impl ArchiveGobbler {
-    /// Extracts the archive and returns the file pairs, maintaining internal paths.
+    /// Extracts the archive and returns the extracted documents, remapping internal
+    /// paths to `{archive_name}/{internal_path}`.
     pub fn extract_archive(
         &self,
         path: &Path,
         args: &crate::cli::Cli,
-    ) -> Result<Vec<(String, String)>> {
+    ) -> Result<Vec<crate::pipeline::GobbleDocument>> {
         // Refuse archives nested inside other archives. `gobble_local` forces
         // `--horde` when recursing into an extracted temp dir, so without this
         // guard a zip-quine (or deeply nested archive) would recurse unbounded.
@@ -58,7 +59,7 @@ impl ArchiveGobbler {
         archive_args.no_nested_archives = true; // ...but do not extract inner archives.
 
         let temp_path_str = temp_dir.path().to_string_lossy().to_string();
-        let mut extracted_pairs = crate::gobble_local(&temp_path_str, &archive_args)?;
+        let mut extracted = crate::gobble_local(&temp_path_str, &archive_args)?;
 
         // Map ugly temp paths back to {archive_name}/{internal_path}
         let target_name = path
@@ -67,17 +68,17 @@ impl ArchiveGobbler {
             .to_string_lossy()
             .to_string();
 
-        for (p, _) in &mut extracted_pairs {
-            if p == "_tree.md" {
+        for doc in &mut extracted {
+            if doc.path == "_tree.md" {
                 continue;
             }
-            if let Some(stripped) = p.strip_prefix(&temp_path_str) {
+            if let Some(stripped) = doc.path.strip_prefix(&temp_path_str) {
                 let cleaned = stripped.trim_start_matches(['/', '\\']);
-                *p = format!("{}/{}", target_name, cleaned);
+                doc.path = format!("{}/{}", target_name, cleaned);
             }
         }
 
-        Ok(extracted_pairs)
+        Ok(extracted)
     }
 }
 
@@ -164,13 +165,16 @@ impl Gobble for ArchiveGobbler {
     /// Implements the standard Gobble trait by extracting the archive and
     /// flattening the files into a single formatted string.
     fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
-        let pairs = self.extract_archive(path, flags)?;
+        let docs = self.extract_archive(path, flags)?;
         let mut out = String::new();
-        for (p, c) in pairs {
-            if p == "_tree.md" {
-                out.push_str(&c);
+        for doc in docs {
+            if doc.path == "_tree.md" {
+                out.push_str(&doc.content);
             } else {
-                out.push_str(&format!("// --- FILE_START: {} ---\n{}\n\n", p, c));
+                out.push_str(&format!(
+                    "// --- FILE_START: {} ---\n{}\n\n",
+                    doc.path, doc.content
+                ));
             }
         }
         Ok(out)

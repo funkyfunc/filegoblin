@@ -3,10 +3,8 @@ use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::Path;
 
-#[cfg(feature = "web")]
 pub struct EpubGobbler;
 
-#[cfg(feature = "web")]
 impl Gobble for EpubGobbler {
     fn gobble(&self, path: &Path, args: &crate::cli::Cli) -> Result<String> {
         let file = std::fs::File::open(path).context("Failed to open epub file")?;
@@ -29,7 +27,7 @@ impl Gobble for EpubGobbler {
         // Sort by filename to keep chapter order relatively intact without parsing OPF spine
         files.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let web_gobbler = crate::parsers::web::WebGobbler {
+        let web_gobbler = crate::parsers::html::HtmlGobbler {
             extract_full: args.full,
         };
 
@@ -54,7 +52,6 @@ impl Gobble for EpubGobbler {
 }
 
 #[cfg(test)]
-#[cfg(feature = "web")]
 mod tests {
     use super::*;
     use clap::Parser;

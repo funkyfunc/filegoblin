@@ -1,5 +1,5 @@
 use crate::parsers::gobble::Gobble;
-use crate::parsers::web::WebGobbler;
+use crate::parsers::html::HtmlGobbler;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use dashmap::DashSet;
@@ -148,8 +148,8 @@ impl GoblinCrawler {
                                     "".to_string()
                                 } else if content_type.starts_with("text/html") || content_type.starts_with("text/plain") {
                                     if let Ok(html) = resp.text().await {
-                                        // Run the standard WebGobbler engine on this page
-                                        let gobbler = WebGobbler { extract_full };
+                                        // Run the HTML→markdown engine on this page
+                                        let gobbler = HtmlGobbler { extract_full };
 
                                         // Find links for BFS frontier expansion
                                         let mut new_links = Vec::new();

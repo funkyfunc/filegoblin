@@ -2,11 +2,11 @@ use crate::parsers::gobble::Gobble;
 use anyhow::Result;
 use std::path::Path;
 
-pub struct WebGobbler {
+pub struct HtmlGobbler {
     pub extract_full: bool,
 }
 
-impl WebGobbler {
+impl HtmlGobbler {
     fn strip_tags(&self, mut html: String, tags: &[&str]) -> String {
         for tag in tags {
             let open = format!("<{}", tag);
@@ -64,7 +64,7 @@ impl WebGobbler {
     }
 }
 
-impl Gobble for WebGobbler {
+impl Gobble for HtmlGobbler {
     fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
         let content = std::fs::read_to_string(path)?;
         self.gobble_str(&content, flags)
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_web_heuristic_extraction() {
-        let gobbler = WebGobbler {
+        let gobbler = HtmlGobbler {
             extract_full: false,
         };
         let html = r#"
