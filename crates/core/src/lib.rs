@@ -71,25 +71,7 @@ pub fn gobble_app(
         None
     };
 
-    // Some operations need the full corpus in memory before we can format:
-    //  - --search builds a RAG index; --max-tokens ranks documents against each
-    //    other to enforce a global budget;
-    //  - --copy / --open / --cost / --tokens-only / --summary / --manifest all
-    //    operate on the complete output (whole-payload clipboard, totals, TOC);
-    //  - --json is a machine contract: buffering lets us emit a deterministic,
-    //    alphabetically-sorted array with per-file metadata.
-    // Everything else streams out-of-core.
-    let needs_buffer = args.json
-        || args.search.is_some()
-        || args.max_tokens.is_some()
-        || args.copy
-        || args.open
-        || args.cost
-        || args.tokens_only
-        || args.summary
-        || args.manifest;
-
-    let produced = if needs_buffer {
+    let produced = if requires_buffering(args) {
         let raw_documents: Vec<crate::pipeline::GobbleDocument> = rx.into_iter().collect();
         let pruned_docs =
             crate::pipeline::stages::run_curation_stage(raw_documents, args, targets.len())?;
@@ -136,6 +118,25 @@ pub fn gobble_app(
         redactions,
         produced,
     })
+}
+
+/// Whether an output mode needs the full corpus in memory (so it can't stream).
+///
+/// `--search` builds a RAG index and `--max-tokens` ranks documents against each other;
+/// `--json` emits a deterministic, sorted array with per-file metadata; and
+/// `--copy`/`--open`/`--cost`/`--tokens-only`/`--summary`/`--manifest` all operate on the
+/// complete output (whole-payload clipboard, grand totals, table of contents). Everything
+/// else streams out-of-core.
+fn requires_buffering(args: &crate::cli::Cli) -> bool {
+    args.json
+        || args.search.is_some()
+        || args.max_tokens.is_some()
+        || args.copy
+        || args.open
+        || args.cost
+        || args.tokens_only
+        || args.summary
+        || args.manifest
 }
 
 /// Constructs a Privacy Shield from the CLI flags: redaction style, an optional

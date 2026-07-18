@@ -255,3 +255,13 @@ tuple; BSD `sed` lacks `\b` so one crawler rename was fixed by hand.
 - Removed `ArchiveGobbler`'s dead `Gobble` impl (archives dispatch via `extract_archive` directly,
   which keeps `&Cli` since it recurses through the whole pipeline). `route_and_gobble` builds one
   `ParseOptions` and passes it to every parser + the explicit-plugin path.
+
+## Item 4 — de-duplicate the formatter paths
+- Extracted shared helpers from `format_and_output`/`stream_and_output`: `parse_chunk_threshold`,
+  `sanitize_split_path`, `sanitize_root_dir_name`, and `print_belch` (the "Full Belch" summary table,
+  which was duplicated ~120 lines across the chunked + unchunked branches). formatters.rs: 938 → 875.
+- Replaced the 8-clause `needs_buffer` inline condition with a documented `requires_buffering(args)`.
+- Chose helper-extraction over a full merge of the two functions: the streaming path genuinely can't
+  do corpus-wide operations (sort/manifest/summary), so merging would add risk for little gain.
+- Verified every output mode by smoke test (belch via `--cost`, `--split` safe paths, `--json`,
+  `--chunk`); streaming path summary is unchanged.

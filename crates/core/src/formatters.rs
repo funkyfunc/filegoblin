@@ -14,6 +14,133 @@ fn format_label(doc: &GobbleDocument) -> String {
         .to_string()
 }
 
+/// Parses a `--chunk` value (`100k`, `2m`, `5000`) into a token threshold.
+fn parse_chunk_threshold(chunk: Option<&str>) -> Option<usize> {
+    let c = chunk?.trim().to_lowercase();
+    if let Some(n) = c.strip_suffix('k') {
+        n.parse::<f64>().ok().map(|n| (n * 1_000.0) as usize)
+    } else if let Some(n) = c.strip_suffix('m') {
+        n.parse::<f64>().ok().map(|n| (n * 1_000_000.0) as usize)
+    } else {
+        c.parse::<usize>().ok()
+    }
+}
+
+/// A relative-path / URL sanitizer for `--split`, mapping a document path to a safe
+/// on-disk `.md` file name.
+fn sanitize_split_path(path: &str) -> String {
+    let safe = if let Ok(u) = Url::parse(path) {
+        let mut p = u.path().trim_start_matches('/').to_string();
+        if p.is_empty() {
+            p = "index".to_string();
+        }
+        if p.ends_with('/') {
+            p.push_str("index");
+        }
+        p.replace("..", "").replace(':', "_")
+    } else {
+        path.replace("..", "")
+    };
+    if safe.ends_with(".md") {
+        safe
+    } else {
+        format!("{}.md", safe)
+    }
+}
+
+/// The root directory name for `--split`, derived from the display name.
+fn sanitize_root_dir_name(display_name: &str) -> String {
+    display_name
+        .replace("https://", "")
+        .replace("http://", "")
+        .replace(['/', ' '], "_")
+        .replace('&', "and")
+}
+
+/// Prints the "Full Belch" summary table to stderr (no-op when quiet). `parts` is
+/// `Some(n)` only for chunked output.
+fn print_belch(
+    quiet: bool,
+    file_count: usize,
+    total_chars: usize,
+    tokens: usize,
+    tokens_saved: usize,
+    parts: Option<usize>,
+    show_cost: bool,
+) {
+    if quiet {
+        return;
+    }
+    let bar = "│".truecolor(139, 69, 19);
+    eprintln!(
+        "\n{}",
+        "╭──────────────────────────────────────╮".truecolor(139, 69, 19)
+    );
+    eprintln!(
+        "{} {}",
+        bar,
+        "        THE FULL BELCH (SUMMARY)       "
+            .truecolor(167, 255, 0)
+            .bold()
+    );
+    eprintln!(
+        "{}",
+        "├──────────────────────────────────────┤".truecolor(139, 69, 19)
+    );
+    eprintln!(
+        "{} {:<37} {}",
+        bar,
+        format!("📁 Files Gobbled: {}", file_count),
+        bar
+    );
+    eprintln!(
+        "{} {:<37} {}",
+        bar,
+        format!("📏 Total Characters: {}", total_chars),
+        bar
+    );
+    eprintln!(
+        "{} {:<37} {}",
+        bar,
+        format!("🪙 Estimated Tokens: {}", tokens),
+        bar
+    );
+    if tokens_saved > 0 {
+        eprintln!(
+            "{} {:<37} {}",
+            bar,
+            format!("📉 Tokens Saved:   {} 📉", tokens_saved).truecolor(0, 255, 150),
+            bar
+        );
+    }
+    if let Some(parts) = parts {
+        eprintln!(
+            "{} {:<37} {}",
+            bar,
+            format!("🍰 Parts Baked: {}", parts),
+            bar
+        );
+    }
+    if show_cost {
+        eprintln!(
+            "{}",
+            "├──────────────────────────────────────┤".truecolor(139, 69, 19)
+        );
+        for (model, cost) in crate::cost::estimate_costs(tokens) {
+            eprintln!(
+                "{} 👀 {:<34} {}",
+                bar,
+                format!("{}: ${:.4}", model, cost).truecolor(200, 200, 200),
+                bar
+            );
+        }
+    }
+    eprintln!(
+        "{}",
+        "╰──────────────────────────────────────╯".truecolor(139, 69, 19)
+    );
+}
+
 pub fn format_and_output(
     mut compressed_docs: Vec<GobbleDocument>,
     pre_compression_tokens: usize,
@@ -101,12 +228,7 @@ pub fn format_and_output(
     }
 
     if args.split {
-        let root_dir_name = display_name
-            .replace("https://", "")
-            .replace("http://", "")
-            .replace("/", "_")
-            .replace(" ", "_")
-            .replace("&", "and");
+        let root_dir_name = sanitize_root_dir_name(display_name);
         let root_dir = args
             .write
             .clone()
@@ -126,24 +248,7 @@ pub fn format_and_output(
 
         for doc in compressed_docs.iter() {
             // Safe pathing logic for urls and relative filepaths
-            let safe_path = if let Ok(u) = Url::parse(&doc.path) {
-                let mut p = u.path().trim_start_matches('/').to_string();
-                if p.is_empty() {
-                    p = "index".to_string();
-                }
-                if p.ends_with('/') {
-                    p.push_str("index");
-                }
-                p.replace("..", "").replace(":", "_")
-            } else {
-                doc.path.replace("..", "")
-            };
-
-            let file_name = if safe_path.ends_with(".md") {
-                safe_path
-            } else {
-                format!("{}.md", safe_path)
-            };
+            let file_name = sanitize_split_path(&doc.path);
             let file_path = std::path::Path::new(&root_dir).join(file_name);
 
             if let Some(parent) = file_path.parent() {
@@ -254,22 +359,7 @@ pub fn format_and_output(
         }
     } else {
         // Parse token threshold if chunk is enabled
-        let token_threshold: Option<usize> = args.chunk.as_deref().and_then(|c| {
-            let c = c.trim().to_lowercase();
-            if c.ends_with('k') {
-                c.trim_end_matches('k')
-                    .parse::<f64>()
-                    .ok()
-                    .map(|n| (n * 1_000.0) as usize)
-            } else if c.ends_with('m') {
-                c.trim_end_matches('m')
-                    .parse::<f64>()
-                    .ok()
-                    .map(|n| (n * 1_000_000.0) as usize)
-            } else {
-                c.parse::<usize>().ok()
-            }
-        });
+        let token_threshold = parse_chunk_threshold(args.chunk.as_deref());
 
         if let Some(threshold) = token_threshold {
             if !args.quiet {
@@ -377,76 +467,15 @@ pub fn format_and_output(
                 };
 
             // The Full Belch (Summary Table)
-            if !args.quiet {
-                eprintln!(
-                    "\n{}",
-                    "╭──────────────────────────────────────╮".truecolor(139, 69, 19)
-                );
-                eprintln!(
-                    "{} {}",
-                    "│".truecolor(139, 69, 19),
-                    "        THE FULL BELCH (SUMMARY)       "
-                        .truecolor(167, 255, 0)
-                        .bold()
-                );
-                eprintln!(
-                    "{}",
-                    "├──────────────────────────────────────┤".truecolor(139, 69, 19)
-                );
-                eprintln!(
-                    "{} {:<37} {}",
-                    "│".truecolor(139, 69, 19),
-                    format!("📁 Files Gobbled: {}", file_count),
-                    "│".truecolor(139, 69, 19)
-                );
-                eprintln!(
-                    "{} {:<37} {}",
-                    "│".truecolor(139, 69, 19),
-                    format!("📏 Total Characters: {}", total_chars),
-                    "│".truecolor(139, 69, 19)
-                );
-                eprintln!(
-                    "{} {:<37} {}",
-                    "│".truecolor(139, 69, 19),
-                    format!("🪙 Estimated Tokens: {}", post_compression_tokens),
-                    "│".truecolor(139, 69, 19)
-                );
-                if tokens_saved > 0 {
-                    eprintln!(
-                        "{} {:<37} {}",
-                        "│".truecolor(139, 69, 19),
-                        format!("📉 Tokens Saved:   {} 📉", tokens_saved).truecolor(0, 255, 150),
-                        "│".truecolor(139, 69, 19)
-                    );
-                }
-                eprintln!(
-                    "{} {:<37} {}",
-                    "│".truecolor(139, 69, 19),
-                    format!("🍰 Parts Baked: {}", part_number),
-                    "│".truecolor(139, 69, 19)
-                );
-
-                if args.cost {
-                    eprintln!(
-                        "{}",
-                        "├──────────────────────────────────────┤".truecolor(139, 69, 19)
-                    );
-                    let costs = crate::cost::estimate_costs(post_compression_tokens);
-                    for (model, cost) in costs {
-                        eprintln!(
-                            "{} 👀 {:<34} {}",
-                            "│".truecolor(139, 69, 19),
-                            format!("{}: ${:.4}", model, cost).truecolor(200, 200, 200),
-                            "│".truecolor(139, 69, 19)
-                        );
-                    }
-                }
-
-                eprintln!(
-                    "{}",
-                    "╰──────────────────────────────────────╯".truecolor(139, 69, 19)
-                );
-            }
+            print_belch(
+                args.quiet,
+                file_count,
+                total_chars,
+                post_compression_tokens,
+                tokens_saved,
+                Some(part_number),
+                args.cost,
+            );
             return Ok(());
         }
 
@@ -540,68 +569,15 @@ pub fn format_and_output(
             };
 
         // The Full Belch (Summary Table)
-        if !args.quiet {
-            eprintln!(
-                "\n{}",
-                "╭──────────────────────────────────────╮".truecolor(139, 69, 19)
-            );
-            eprintln!(
-                "{} {}",
-                "│".truecolor(139, 69, 19),
-                "        THE FULL BELCH (SUMMARY)       "
-                    .truecolor(167, 255, 0)
-                    .bold()
-            );
-            eprintln!(
-                "{}",
-                "├──────────────────────────────────────┤".truecolor(139, 69, 19)
-            );
-            eprintln!(
-                "{} {:<37} {}",
-                "│".truecolor(139, 69, 19),
-                format!("📁 Files Gobbled: {}", file_count),
-                "│".truecolor(139, 69, 19)
-            );
-            eprintln!(
-                "{} {:<37} {}",
-                "│".truecolor(139, 69, 19),
-                format!("📏 Total Characters: {}", total_chars),
-                "│".truecolor(139, 69, 19)
-            );
-            eprintln!(
-                "{} {:<37} {}",
-                "│".truecolor(139, 69, 19),
-                format!("🪙 Estimated Tokens: {}", post_compression_tokens),
-                "│".truecolor(139, 69, 19)
-            );
-            if tokens_saved > 0 {
-                eprintln!(
-                    "{} {:<37} {}",
-                    "│".truecolor(139, 69, 19),
-                    format!("📉 Tokens Saved:   {} 📉", tokens_saved).truecolor(0, 255, 150),
-                    "│".truecolor(139, 69, 19)
-                );
-            }
-            if args.cost {
-                eprintln!(
-                    "{}",
-                    "├──────────────────────────────────────┤".truecolor(139, 69, 19)
-                );
-                let costs = crate::cost::estimate_costs(post_compression_tokens);
-                for (model, cost) in costs {
-                    eprintln!(
-                        "{} 👀 {:<34} {}",
-                        "│".truecolor(139, 69, 19),
-                        format!("{}: ${:.4}", model, cost).truecolor(200, 200, 200),
-                        "│".truecolor(139, 69, 19)
-                    );
-                }
-            }
-            eprintln!(
-                "{}",
-                "╰──────────────────────────────────────╯".truecolor(139, 69, 19)
-            );
-        }
+        print_belch(
+            args.quiet,
+            file_count,
+            total_chars,
+            post_compression_tokens,
+            tokens_saved,
+            None,
+            args.cost,
+        );
 
         if args.open {
             let file_to_open = if let Some(file_path) = args.write.as_deref() {
@@ -673,12 +649,7 @@ pub fn stream_and_output(
     }
 
     if args.split {
-        let root_dir_name = display_name
-            .replace("https://", "")
-            .replace("http://", "")
-            .replace("/", "_")
-            .replace(" ", "_")
-            .replace("&", "and");
+        let root_dir_name = sanitize_root_dir_name(display_name);
         let root_dir = args
             .write
             .clone()
@@ -699,24 +670,7 @@ pub fn stream_and_output(
 
         for doc in rx {
             file_count += 1;
-            let safe_path = if let Ok(u) = Url::parse(&doc.path) {
-                let mut p = u.path().trim_start_matches('/').to_string();
-                if p.is_empty() {
-                    p = "index".to_string();
-                }
-                if p.ends_with('/') {
-                    p.push_str("index");
-                }
-                p.replace("..", "").replace(":", "_")
-            } else {
-                doc.path.replace("..", "")
-            };
-
-            let file_name = if safe_path.ends_with(".md") {
-                safe_path
-            } else {
-                format!("{}.md", safe_path)
-            };
+            let file_name = sanitize_split_path(&doc.path);
             let file_path = std::path::Path::new(&root_dir).join(file_name);
 
             if let Some(parent) = file_path.parent() {
@@ -800,22 +754,7 @@ pub fn stream_and_output(
         let mut part_number = 1;
         let mut file_count = 0;
 
-        let token_threshold = args.chunk.as_deref().and_then(|c| {
-            let c = c.trim().to_lowercase();
-            if c.ends_with('k') {
-                c.trim_end_matches('k')
-                    .parse::<f64>()
-                    .ok()
-                    .map(|n| (n * 1_000.0) as usize)
-            } else if c.ends_with('m') {
-                c.trim_end_matches('m')
-                    .parse::<f64>()
-                    .ok()
-                    .map(|n| (n * 1_000_000.0) as usize)
-            } else {
-                c.parse::<usize>().ok()
-            }
-        });
+        let token_threshold = parse_chunk_threshold(args.chunk.as_deref());
 
         // Setup streaming output if no chunking
         let mut stream_writer: Option<Box<dyn Write>> = if token_threshold.is_none() {
