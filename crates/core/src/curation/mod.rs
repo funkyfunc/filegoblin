@@ -47,10 +47,7 @@ pub fn enforce_budget(
     _verbose: bool,
 ) -> (Vec<GobbleDocument>, usize, usize) {
     // 1. Calculate the initial footprint
-    let total_tokens: usize = documents
-        .iter()
-        .map(|doc| crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path))
-        .sum();
+    let total_tokens: usize = documents.iter().map(|doc| doc.tokens()).sum();
 
     if total_tokens <= budget {
         return (documents, total_tokens, total_tokens);
@@ -77,7 +74,7 @@ pub fn enforce_budget(
     // Keep adding the highest ranked items until budget breaks
     // (Notice we iterate backwards over our sorted list to grab High -> Medium -> Low)
     for mut doc in documents.into_iter().rev() {
-        let cost = crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path);
+        let cost = doc.tokens();
         if kept_budget + cost <= budget {
             kept.push(doc);
             kept_budget += cost;

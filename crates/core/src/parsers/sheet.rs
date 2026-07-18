@@ -1,4 +1,4 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
 use calamine::{Data, Reader, open_workbook_auto};
 use std::path::Path;
@@ -6,7 +6,7 @@ use std::path::Path;
 pub struct SheetGobbler;
 
 impl Gobble for SheetGobbler {
-    fn gobble(&self, path: &std::path::Path, _flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &std::path::Path, _opts: &ParseOptions) -> Result<String> {
         let extension = path
             .extension()
             .and_then(|e| e.to_str())

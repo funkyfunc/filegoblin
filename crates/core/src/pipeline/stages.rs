@@ -99,16 +99,7 @@ pub fn run_compression_stage(
     args: &Cli,
 ) -> Result<(Vec<GobbleDocument>, usize)> {
     // Calculate baseline tokens BEFORE compression for savings metric
-    let pre_compression_tokens: usize = final_docs
-        .iter()
-        .map(|doc| {
-            if let Some(tokens) = doc.token_count {
-                tokens
-            } else {
-                crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
-            }
-        })
-        .sum();
+    let pre_compression_tokens: usize = final_docs.iter().map(|doc| doc.tokens()).sum();
 
     let compressed_docs = if let Some(level) = args.compress.as_ref() {
         if !args.quiet {

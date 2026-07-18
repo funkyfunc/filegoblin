@@ -1,4 +1,4 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::Path;
@@ -6,7 +6,7 @@ use std::path::Path;
 pub struct EpubGobbler;
 
 impl Gobble for EpubGobbler {
-    fn gobble(&self, path: &Path, args: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &Path, opts: &ParseOptions) -> Result<String> {
         let file = std::fs::File::open(path).context("Failed to open epub file")?;
         let mut archive =
             zip::ZipArchive::new(file).context("Failed to read epub as zip archive")?;
@@ -27,15 +27,15 @@ impl Gobble for EpubGobbler {
         // Sort by filename to keep chapter order relatively intact without parsing OPF spine
         files.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let web_gobbler = crate::parsers::html::HtmlGobbler {
-            extract_full: args.full,
+        let html_gobbler = crate::parsers::html::HtmlGobbler {
+            extract_full: opts.full,
         };
 
         let mut output = String::new();
 
         for (name, content) in files {
-            // Using WebGobbler to strip tags and convert HTML to MD natively
-            if let Ok(markdown) = web_gobbler.gobble_str(&content, args)
+            // Reuse the HTML→markdown engine to strip tags and convert natively.
+            if let Ok(markdown) = html_gobbler.gobble_str(&content, opts)
                 && !markdown.trim().is_empty()
             {
                 output.push_str(&format!("\n\n## {}\n\n", name));
@@ -83,7 +83,7 @@ mod tests {
 
         let gobbler = EpubGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(file.path(), &args).unwrap();
+        let result = gobbler.gobble(file.path(), &(&args).into()).unwrap();
 
         assert!(result.contains("## chapter1.xhtml"));
         assert!(result.contains("Chapter 1"));

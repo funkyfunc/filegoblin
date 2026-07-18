@@ -1,11 +1,11 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
 use std::path::Path;
 
 pub struct OfficeGobbler;
 
 impl Gobble for OfficeGobbler {
-    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &Path, _opts: &ParseOptions) -> Result<String> {
         if !path.exists() {
             anyhow::bail!("Mischievous I/O Error: file not found at {:?}", path);
         }
@@ -134,6 +134,6 @@ mod tests {
         let gobbler = OfficeGobbler;
         let p = Path::new("does_not_exist.docx");
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        assert!(gobbler.gobble(p, &args).is_err());
+        assert!(gobbler.gobble(p, &(&args).into()).is_err());
     }
 }

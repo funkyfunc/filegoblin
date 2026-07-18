@@ -184,7 +184,8 @@ impl GoblinCrawler {
                                             }
                                         }
 
-                                        if let Ok(markdown) = gobbler.gobble_str(&html, &flags_clone) {
+                                        let opts = crate::parsers::gobble::ParseOptions::from(flags_clone.as_ref());
+                                        if let Ok(markdown) = gobbler.gobble_str(&html, &opts) {
                                             markdown
                                         } else { "".to_string() }
                                     } else { "".to_string() }

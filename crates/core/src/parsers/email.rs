@@ -1,4 +1,4 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
 use mail_parser::{Address, Message, MessageParser};
 use std::path::Path;
@@ -9,7 +9,7 @@ use std::path::Path;
 pub struct EmailGobbler;
 
 impl Gobble for EmailGobbler {
-    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &Path, _opts: &ParseOptions) -> Result<String> {
         let bytes = std::fs::read(path).context("Failed to read email file")?;
 
         let is_mbox = path
@@ -158,7 +158,7 @@ Are we still on for lunch?\r\n";
 
         let gobbler = EmailGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(f.path(), &args).unwrap();
+        let result = gobbler.gobble(f.path(), &(&args).into()).unwrap();
 
         assert!(result.contains("# Email: Lunch"));
         assert!(result.contains("**From:** Alice <alice@example.com>"));
@@ -178,7 +178,7 @@ Are we still on for lunch?\r\n";
 
         let gobbler = EmailGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(f.path(), &args).unwrap();
+        let result = gobbler.gobble(f.path(), &(&args).into()).unwrap();
 
         assert!(result.contains("# Email: Lunch"));
         assert!(result.contains("# Email: Dinner"));
@@ -193,7 +193,7 @@ Are we still on for lunch?\r\n";
 
         let gobbler = EmailGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(f.path(), &args).unwrap();
+        let result = gobbler.gobble(f.path(), &(&args).into()).unwrap();
         assert!(result.contains("Hello world"));
         assert!(!result.contains("<b>"));
     }

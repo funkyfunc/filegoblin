@@ -217,9 +217,7 @@ pub fn format_and_output(
                     error: Some(err),
                 });
             } else {
-                let tokens = doc.token_count.unwrap_or_else(|| {
-                    crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
-                });
+                let tokens = doc.tokens();
                 out.push(FileNode {
                     path: doc.path,
                     format,
@@ -290,9 +288,7 @@ pub fn format_and_output(
             let file_count = compressed_docs.len();
 
             for (i, doc) in compressed_docs.into_iter().enumerate() {
-                let file_tokens = doc.token_count.unwrap_or_else(|| {
-                    crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
-                });
+                let file_tokens = doc.tokens();
                 post_compression_tokens += file_tokens;
 
                 // If adding this file pushes us over the threshold AND we already have content in this chunk
@@ -463,9 +459,7 @@ pub fn format_and_output(
         let mut file_token_list: Vec<(String, usize)> = Vec::new();
 
         for doc in &compressed_docs {
-            let toks = doc.token_count.unwrap_or_else(|| {
-                crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
-            });
+            let toks = doc.tokens();
             file_token_list.push((doc.path.clone(), toks));
             post_compression_tokens += toks;
         }
@@ -674,10 +668,7 @@ pub fn stream_and_output(
             );
         }
         let compressed_docs: Vec<_> = rx.into_iter().collect();
-        let tokens = compressed_docs
-            .iter()
-            .map(|d| d.token_count.unwrap_or(0))
-            .sum();
+        let tokens = compressed_docs.iter().map(|d| d.tokens()).sum();
         return format_and_output(compressed_docs, tokens, flavor, display_name, args);
     }
 
@@ -850,9 +841,7 @@ pub fn stream_and_output(
 
         for doc in rx {
             file_count += 1;
-            let file_tokens = doc.token_count.unwrap_or_else(|| {
-                crate::compressor::heuristic::estimate_tokens(&doc.content, &doc.path)
-            });
+            let file_tokens = doc.tokens();
             total_tokens += file_tokens;
 
             // Chunking logic

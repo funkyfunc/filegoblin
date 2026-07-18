@@ -237,3 +237,21 @@ Verification: `cargo test --workspace` 52 core tests (added format detection ×4
 default); clippy `-D warnings` + fmt clean on default + web/wasm/rag/tui; smoke tests above.
 Note: `route_and_gobble`'s cfg-gated arms return `Err(anyhow!)` (not `bail!`) since the fn returns a
 tuple; BSD `sed` lacks `\b` so one crawler rename was fixed by hand.
+
+---
+
+# Phase 9 — Architecture Phase-2 cleanups (items 4–7 of the review)
+
+## Item 5 — centralize token estimation
+- Added `GobbleDocument::tokens()` (cached `token_count` else `estimate_tokens`). Replaced the ~10
+  scattered `estimate_tokens(&doc.content,&doc.path)` / `token_count.unwrap_or_else` sites. (Note:
+  `estimate_tokens` is O(1) — `content.len()/ratio` — so this is a clarity win, not a perf one.)
+  The `&flavored` / `&fallback` sites keep direct calls (different content).
+
+## Item 6 — ParseOptions instead of the &Cli god-object
+- New `ParseOptions { full, extract }` + `From<&Cli>` in `parsers/gobble.rs`. The `Gobble` trait now
+  takes `&ParseOptions` instead of `&Cli`, so parsers no longer see the whole CLI surface (makes them
+  library/MCP-reusable). Only `code` (extract) and `epub`/`html` (full) actually read it.
+- Removed `ArchiveGobbler`'s dead `Gobble` impl (archives dispatch via `extract_archive` directly,
+  which keeps `&Cli` since it recurses through the whole pipeline). `route_and_gobble` builds one
+  `ParseOptions` and passes it to every parser + the explicit-plugin path.

@@ -1,11 +1,11 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
 use std::path::Path;
 
 pub struct JupyterGobbler;
 
 impl Gobble for JupyterGobbler {
-    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &Path, _opts: &ParseOptions) -> Result<String> {
         let content = std::fs::read_to_string(path).context("Failed to read ipynb file")?;
         let json: serde_json::Value =
             serde_json::from_str(&content).context("Failed to parse ipynb JSON")?;
@@ -109,7 +109,7 @@ mod tests {
 
         let gobbler = JupyterGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(file.path(), &args).unwrap();
+        let result = gobbler.gobble(file.path(), &(&args).into()).unwrap();
 
         assert!(result.contains("# Title\nHello world!"));
         assert!(result.contains("```python\nprint('test')\n```"));

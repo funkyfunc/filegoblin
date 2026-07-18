@@ -1,11 +1,11 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use std::io::Read;
 use std::path::Path;
 
 pub struct PptxGobbler;
 
 impl Gobble for PptxGobbler {
-    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> anyhow::Result<String> {
+    fn gobble(&self, path: &Path, _opts: &ParseOptions) -> anyhow::Result<String> {
         let file = std::fs::File::open(path)?;
         let mut archive = zip::ZipArchive::new(file)?;
 

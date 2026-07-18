@@ -1,4 +1,4 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::Result;
 use std::path::Path;
 
@@ -65,12 +65,12 @@ impl HtmlGobbler {
 }
 
 impl Gobble for HtmlGobbler {
-    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &Path, opts: &ParseOptions) -> Result<String> {
         let content = std::fs::read_to_string(path)?;
-        self.gobble_str(&content, flags)
+        self.gobble_str(&content, opts)
     }
 
-    fn gobble_str(&self, content: &str, _flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble_str(&self, content: &str, _opts: &ParseOptions) -> Result<String> {
         let mut clean = content.to_string();
 
         // --- Auth wall / JS-gated page detection ---
@@ -174,7 +174,7 @@ mod tests {
         "#;
 
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble_str(html, &args).unwrap();
+        let result = gobbler.gobble_str(html, &(&args).into()).unwrap();
 
         // Assert we stripped navigation and kept main article
         assert!(result.contains("The core content"));

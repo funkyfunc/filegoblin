@@ -53,4 +53,13 @@ impl GobbleDocument {
     pub fn is_content(&self) -> bool {
         self.error.is_none() && !self.content.trim().is_empty() && self.path != "_tree.md"
     }
+
+    /// Estimated LLM token count for this document's current content: the cached
+    /// `token_count` when set, otherwise a fresh heuristic estimate. Centralizes the
+    /// estimate so callers don't re-implement the fallback everywhere.
+    pub fn tokens(&self) -> usize {
+        self.token_count.unwrap_or_else(|| {
+            crate::compressor::heuristic::estimate_tokens(&self.content, &self.path)
+        })
+    }
 }

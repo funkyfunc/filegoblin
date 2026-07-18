@@ -1,4 +1,4 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -9,11 +9,11 @@ impl Gobble for CodeGobbler {
     /// (`--extract symbols`) is opt-in and currently only understands Rust; for any
     /// other language it returns the full source rather than silently mangling it
     /// with the wrong grammar.
-    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &Path, opts: &ParseOptions) -> Result<String> {
         let source_code =
             std::fs::read_to_string(path).context("Failed to read source file as UTF-8")?;
 
-        if flags.extract.as_deref() == Some("symbols") {
+        if opts.extract.as_deref() == Some("symbols") {
             let is_rust = path
                 .extension()
                 .and_then(|s| s.to_str())
@@ -136,7 +136,7 @@ mod tests {
 
         let gobbler = CodeGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(f.path(), &args).unwrap();
+        let result = gobbler.gobble(f.path(), &(&args).into()).unwrap();
 
         // Default emits the file verbatim, including the body.
         assert!(result.contains("let x = 1;"));
@@ -149,7 +149,7 @@ mod tests {
 
         let gobbler = CodeGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "--extract", "symbols", "dummy"]);
-        let result = gobbler.gobble(f.path(), &args).unwrap();
+        let result = gobbler.gobble(f.path(), &(&args).into()).unwrap();
 
         assert!(result.contains("pub fn foo()"));
         assert!(!result.contains("let x = 1;"));
@@ -161,7 +161,7 @@ mod tests {
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         assert!(
             gobbler
-                .gobble(Path::new("nope_does_not_exist.rs"), &args)
+                .gobble(Path::new("nope_does_not_exist.rs"), &(&args).into())
                 .is_err()
         );
     }

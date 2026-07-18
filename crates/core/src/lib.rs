@@ -357,30 +357,31 @@ fn route_and_gobble(
 
     let header = crate::format::read_header(path, 512);
     let format = crate::format::detect(path, &header);
+    let opts = crate::parsers::gobble::ParseOptions::from(args);
 
     // EXPLICIT OVERRIDE: `--plugin <NAME>` forces execution through that WASM component.
     if let Some(plugin_name) = args.plugin.as_deref() {
-        return (format, run_explicit_plugin(plugin_name, path, args));
+        return (format, run_explicit_plugin(plugin_name, path, &opts));
     }
 
     let result = match format {
-        Format::Pdf => parsers::pdf::PdfGobbler.gobble(path, args),
-        Format::Docx => parsers::office::OfficeGobbler.gobble(path, args),
-        Format::Spreadsheet => parsers::sheet::SheetGobbler.gobble(path, args),
-        Format::Pptx => parsers::powerpoint::PptxGobbler.gobble(path, args),
-        Format::Jupyter => parsers::jupyter::JupyterGobbler.gobble(path, args),
-        Format::Email => parsers::email::EmailGobbler.gobble(path, args),
-        Format::Rtf => parsers::rtf::RtfGobbler.gobble(path, args),
-        Format::Code => parsers::code::CodeGobbler.gobble(path, args),
-        Format::Epub => parsers::epub::EpubGobbler.gobble(path, args),
+        Format::Pdf => parsers::pdf::PdfGobbler.gobble(path, &opts),
+        Format::Docx => parsers::office::OfficeGobbler.gobble(path, &opts),
+        Format::Spreadsheet => parsers::sheet::SheetGobbler.gobble(path, &opts),
+        Format::Pptx => parsers::powerpoint::PptxGobbler.gobble(path, &opts),
+        Format::Jupyter => parsers::jupyter::JupyterGobbler.gobble(path, &opts),
+        Format::Email => parsers::email::EmailGobbler.gobble(path, &opts),
+        Format::Rtf => parsers::rtf::RtfGobbler.gobble(path, &opts),
+        Format::Code => parsers::code::CodeGobbler.gobble(path, &opts),
+        Format::Epub => parsers::epub::EpubGobbler.gobble(path, &opts),
         Format::Html => parsers::html::HtmlGobbler {
-            extract_full: args.full,
+            extract_full: opts.full,
         }
-        .gobble(path, args),
+        .gobble(path, &opts),
         Format::Image => {
             #[cfg(feature = "ocr")]
             {
-                parsers::ocr::OcrGobbler.gobble(path, args)
+                parsers::ocr::OcrGobbler.gobble(path, &opts)
             }
             #[cfg(not(feature = "ocr"))]
             {
@@ -397,7 +398,7 @@ fn route_and_gobble(
                 && let Ok(markdown) = (parsers::wasm::WasmGobbler {
                     wasm_path: plugin_path,
                 })
-                .gobble(path, args)
+                .gobble(path, &opts)
             {
                 return (format, Ok(markdown));
             }
@@ -411,14 +412,18 @@ fn route_and_gobble(
 /// Runs an explicitly requested WASM plugin (`--plugin`). Allowed to use the local
 /// `./plugins` dir since it is an opt-in.
 #[allow(unused_variables)]
-fn run_explicit_plugin(plugin_name: &str, path: &Path, args: &crate::cli::Cli) -> Result<String> {
+fn run_explicit_plugin(
+    plugin_name: &str,
+    path: &Path,
+    opts: &crate::parsers::gobble::ParseOptions,
+) -> Result<String> {
     #[cfg(feature = "wasm")]
     {
         if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(plugin_name, true) {
             (parsers::wasm::WasmGobbler {
                 wasm_path: plugin_path,
             })
-            .gobble(path, args)
+            .gobble(path, opts)
             .map_err(|e| anyhow::anyhow!("Explicit WASM Plugin '{}' failed: {}", plugin_name, e))
         } else {
             anyhow::bail!(
@@ -520,7 +525,7 @@ mod tests {
         let parsed_content = crate::parsers::html::HtmlGobbler {
             extract_full: false,
         }
-        .gobble_str(&html_content, &args)
+        .gobble_str(&html_content, &(&args).into())
         .unwrap();
         assert!(parsed_content.contains("Goblin network testing!"));
     }

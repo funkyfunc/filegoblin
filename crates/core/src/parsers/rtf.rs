@@ -1,4 +1,4 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
 use rtf_parser::{Lexer, Parser};
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::path::Path;
 pub struct RtfGobbler;
 
 impl Gobble for RtfGobbler {
-    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &Path, _opts: &ParseOptions) -> Result<String> {
         // RTF is ASCII-based control words with escaped Unicode; read leniently.
         let bytes = std::fs::read(path).context("Failed to read RTF file")?;
         let raw = String::from_utf8_lossy(&bytes);
@@ -42,7 +42,7 @@ mod tests {
 
         let gobbler = RtfGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(f.path(), &args).unwrap();
+        let result = gobbler.gobble(f.path(), &(&args).into()).unwrap();
         assert!(result.contains("Hello Goblin"), "got: {result}");
     }
 
@@ -50,6 +50,10 @@ mod tests {
     fn test_rtf_missing_file_errors() {
         let gobbler = RtfGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        assert!(gobbler.gobble(Path::new("nope.rtf"), &args).is_err());
+        assert!(
+            gobbler
+                .gobble(Path::new("nope.rtf"), &(&args).into())
+                .is_err()
+        );
     }
 }

@@ -136,8 +136,10 @@ fn route_url_target(
                     match (crate::parsers::html::HtmlGobbler {
                         extract_full: args.full,
                     })
-                    .gobble_str(&html_content, args)
-                    {
+                    .gobble_str(
+                        &html_content,
+                        &crate::parsers::gobble::ParseOptions::from(args),
+                    ) {
                         Ok(text) => {
                             let _ = tx.send(crate::pipeline::GobbleDocument::extracted(
                                 target.to_string(),

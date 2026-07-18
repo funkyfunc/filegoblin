@@ -1,4 +1,3 @@
-use crate::parsers::gobble::Gobble;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::Path;
@@ -159,24 +158,4 @@ fn extract_tar_gz(path: &Path, dest: &Path) -> Result<()> {
             .context("Failed to unpack tar entry")?;
     }
     Ok(())
-}
-
-impl Gobble for ArchiveGobbler {
-    /// Implements the standard Gobble trait by extracting the archive and
-    /// flattening the files into a single formatted string.
-    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String> {
-        let docs = self.extract_archive(path, flags)?;
-        let mut out = String::new();
-        for doc in docs {
-            if doc.path == "_tree.md" {
-                out.push_str(&doc.content);
-            } else {
-                out.push_str(&format!(
-                    "// --- FILE_START: {} ---\n{}\n\n",
-                    doc.path, doc.content
-                ));
-            }
-        }
-        Ok(out)
-    }
 }

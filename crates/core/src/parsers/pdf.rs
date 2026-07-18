@@ -1,11 +1,11 @@
-use crate::parsers::gobble::Gobble;
+use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
 use std::path::Path;
 
 pub struct PdfGobbler;
 
 impl Gobble for PdfGobbler {
-    fn gobble(&self, path: &Path, _flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble(&self, path: &Path, _opts: &ParseOptions) -> Result<String> {
         if !path.exists() {
             anyhow::bail!("Mischievous I/O Error: file not found at {:?}", path);
         }
@@ -124,7 +124,7 @@ mod tests {
         let p = Path::new(&manifest_dir).join("../../test_assets/financial_report.pdf");
 
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(&p, &args).unwrap();
+        let result = gobbler.gobble(&p, &(&args).into()).unwrap();
 
         println!("Extracted PDF:\n{}", result);
 

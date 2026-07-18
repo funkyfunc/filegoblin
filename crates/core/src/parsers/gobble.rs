@@ -1,16 +1,36 @@
 use anyhow::Result;
 use std::path::Path;
 
+/// The subset of CLI options a parser may need. Parsers take this instead of the
+/// whole `Cli` struct so they stay decoupled from the command-line surface and
+/// remain reusable as a library / from other front-ends.
+#[derive(Debug, Clone, Default)]
+pub struct ParseOptions {
+    /// Extract the full document instead of any heuristic minification (`--full`).
+    pub full: bool,
+    /// Structural extraction mode, e.g. `Some("symbols")` (`--extract`).
+    pub extract: Option<String>,
+}
+
+impl From<&crate::cli::Cli> for ParseOptions {
+    fn from(cli: &crate::cli::Cli) -> Self {
+        Self {
+            full: cli.full,
+            extract: cli.extract.clone(),
+        }
+    }
+}
+
 /// The primary trait that all `filegoblin` document parsers must implement.
 ///
 /// This ensures a unified interface for ingesting diverse file formats into
-/// a target string representation (Markdown, XML, YAML) based on the chosen output flavor.
+/// a target string representation (Markdown, XML, YAML).
 pub trait Gobble {
     /// Consumes a file at the given path and returns the extracted, structured string.
-    fn gobble(&self, path: &Path, flags: &crate::cli::Cli) -> Result<String>;
+    fn gobble(&self, path: &Path, opts: &ParseOptions) -> Result<String>;
 
     /// Consumes an in-memory string directly and returns the structured string.
-    fn gobble_str(&self, _content: &str, _flags: &crate::cli::Cli) -> Result<String> {
+    fn gobble_str(&self, _content: &str, _opts: &ParseOptions) -> Result<String> {
         anyhow::bail!("gobble_str natively unsupported by this target")
     }
 }
