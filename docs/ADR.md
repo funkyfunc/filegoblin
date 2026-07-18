@@ -84,3 +84,13 @@
 - **`--scrub-style pseudonym`**: a third redaction style that replaces each value with a stable indexed placeholder (`[EMAIL_1]`, `[EMAIL_2]`, …). A `Mutex<PseudoInterner>` on the shared shield assigns one index per distinct (label, value) and reuses it everywhere, so consistency holds across every document in a run. Indices are assigned in reading order (replacements computed front-to-back, applied back-to-front).
 - **`--json` as a stable machine contract**: records are now `{path, format, tokens, content}` — `format` is a coarse type label, `tokens` an LLM estimate — so an agent can extract one file and budget it in a single call. `--json` now routes through the buffered pipeline so output is deterministically alphabetically sorted (verified: identical across runs). Exit codes: `0` success, `4` when `--json` extracted nothing (distinguishes empty result from total failure), `3` for `--scrub-fail`. `gobble_app` returns a `GobbleOutcome { redactions, produced }`; `main.rs` maps it to the exit code.
 **Status:** Accepted. Still deferred: an optional local NER tier and a `fg scrub`/MCP surface.
+
+## 2026-07-18: Native Email (.eml/.mbox) and RTF (.rtf) Parsers
+**Context:** Toward the "universal LLM translation tool" goal — point filegoblin at any messy real-world format and get clean text — two high-frequency gaps were email and RTF, both of which previously fell to the raw-plaintext fallback (RTF dumped control words; email dumped MIME headers/encoding). Rather than take a hard dependency on an external converter like pandoc (which would forfeit the zero-dependency single-binary identity, and which cannot even read PDFs), these were added as native pure-Rust parsers.
+**Decision:**
+- `EmailGobbler` (`parsers/email.rs`) via `mail-parser`: handles `.eml` and `.mbox` (splitting the mailbox on `From ` envelope lines and rendering each message). Emits a markdown header block (From/To/Cc/Date/Subject) plus the body, preferring `text/plain` and falling back to a minimal HTML strip.
+- `RtfGobbler` (`parsers/rtf.rs`) via `rtf-parser`: lexes/parses RTF and returns the plain body text.
+- Both are **always-on** parsers (not feature-gated), consistent with the other core formats.
+- **`.msg` (Outlook) was intentionally dropped**: the `msg_parser` crate pulls a `tsify`/`gloo-utils` (wasm-bindgen/TypeScript-interop) dependency chain that bloats the binary against the lean identity. `.eml`/`.mbox` cover the overwhelming majority of real email; `.msg` can return later as a WASM plugin or behind a feature.
+- `--json` `format` labels extended: `email`, `rtf`.
+**Status:** Accepted.

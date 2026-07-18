@@ -2,6 +2,7 @@ pub mod archive;
 pub mod code;
 #[cfg(feature = "web")]
 pub mod crawler;
+pub mod email;
 #[cfg(feature = "web")]
 pub mod epub;
 #[cfg(feature = "web")]
@@ -13,6 +14,7 @@ pub mod ocr;
 pub mod office;
 pub mod pdf;
 pub mod powerpoint;
+pub mod rtf;
 pub mod sheet;
 #[cfg(feature = "wasm")]
 pub mod wasm;

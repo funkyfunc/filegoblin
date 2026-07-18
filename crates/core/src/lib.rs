@@ -366,6 +366,8 @@ fn route_and_gobble(path_str: &str, args: &crate::cli::Cli) -> Result<String> {
         "docx" => parsers::office::OfficeGobbler.gobble(path, args),
         "xlsx" | "xls" | "ods" | "csv" => parsers::sheet::SheetGobbler.gobble(path, args),
         "pptx" => parsers::powerpoint::PptxGobbler.gobble(path, args),
+        "eml" | "mbox" => parsers::email::EmailGobbler.gobble(path, args),
+        "rtf" => parsers::rtf::RtfGobbler.gobble(path, args),
         "html" | "htm" => {
             #[cfg(feature = "web")]
             {

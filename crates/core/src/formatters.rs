@@ -20,6 +20,8 @@ fn detect_format(path: &str) -> String {
         "pptx" => "pptx",
         "epub" => "epub",
         "ipynb" => "jupyter",
+        "eml" | "mbox" => "email",
+        "rtf" => "rtf",
         "html" | "htm" => "html",
         "png" | "jpg" | "jpeg" | "webp" => "image",
         "rs" | "js" | "ts" | "py" | "go" | "c" | "cpp" => "code",

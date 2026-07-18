@@ -42,7 +42,7 @@
 Some capabilities are gated behind opt-in Cargo features (built off by default to
 keep the binary lean). Feature-gated items are marked below.
 
-- [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, Jupyter, Code) — always on
+- [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, Jupyter, Code, Email, RTF) — always on
 - [x] EPUB / Web / URL ingestion & recursive crawling (`--horde`) — requires `--features web`
 - [x] Image OCR — requires `--features ocr` (macOS Vision / pure-Rust `ocrs`)
 - [x] WASM Plugin Extensibility (`--plugin`) — requires `--features wasm`
@@ -80,6 +80,8 @@ keep the binary lean). Feature-gated items are marked below.
 | **Word** | `~/notes.docx` | `OfficeGobbler` | Sequence of Records |
 | **Excel/CSV** | `~/data.xlsx` | `SheetGobbler` | Sequence of Records |
 | **Source Code** | `~/project/src` | `CodeGobbler` | Full content (or `--extract symbols`) |
+| **Email** | `~/thread.eml`, `~/inbox.mbox` | `EmailGobbler` | Header block + body text |
+| **RTF** | `~/notes.rtf` | `RtfGobbler` | Plain text |
 | **Images** | `~/screenshot.png` | `OcrGobbler` (`--features ocr`) | OCR Text |
 | **Webpages** | `https://news.ycombinator.com` | `WebGobbler` (`--features web`) | Heuristic Extraction |
 

@@ -68,6 +68,8 @@ wasmtime = { version = "41.0.3", features = ["component-model"], optional = true
 zip = "8.1.0"
 tar = "0.4.46"
 flate2 = "1.1.9"
+mail-parser = "0.11"
+rtf-parser = "0.4"
 
 [build-dependencies]
 clap = { version = "4.5.60", features = ["derive"] }

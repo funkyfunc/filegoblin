@@ -187,3 +187,22 @@ Turns `--scrub` into a real, scriptable, zero-weight PII/secret scrubber. Same b
 - clippy `-D warnings` clean (default + web/wasm/rag/tui); fmt clean.
 - Smoke: pseudonym consistency (`[EMAIL_1]`/`[EMAIL_2]` reused), JSON `{format,tokens}`, empty
   stdin `--json` exits 4, horde `--json` deterministic across runs.
+
+---
+
+# Phase 7c — Native Email + RTF parsers (toward "universal")
+
+Deliberately no pandoc (would forfeit the single-binary identity and can't even read PDFs).
+New always-on pure-Rust parsers:
+- `parsers/email.rs` `EmailGobbler` (`mail-parser` 0.11): `.eml` + `.mbox` (split on `From `
+  envelope lines). Markdown header block (From/To/Cc/Date/Subject) + body (text/plain preferred,
+  else minimal HTML strip so we don't depend on the web feature).
+- `parsers/rtf.rs` `RtfGobbler` (`rtf-parser` 0.4): lex/parse → `get_text()`.
+- Routed in `route_and_gobble`: `eml|mbox` → email, `rtf` → rtf. Registered in `parsers/mod.rs`.
+- `detect_format` (JSON contract) extended: `email`, `rtf`.
+- **`.msg` dropped**: `msg_parser` drags in `tsify`/`gloo-utils` (wasm-bindgen chain) — too much
+  bloat for the identity. `.eml`/`.mbox` cover most real email; `.msg` → future WASM plugin/feature.
+
+Verification: `cargo test --workspace` 46 core tests pass (added 5: eml, mbox, html-strip, rtf,
+rtf-missing); clippy `-D warnings` + fmt clean on default + web/wasm/rag/tui; smoke-tested `.eml`
+(header block + body), `.mbox` (multi-message), `.rtf`, and `.eml --json` (format:"email").
