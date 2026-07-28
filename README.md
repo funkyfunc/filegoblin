@@ -19,7 +19,7 @@
 │   │   └── src/
 │   │       ├── lib.rs        (Core Pipeline Logic)
 │   │       ├── cli.rs        (Clap Flag Definitions)
-│   │       ├── flavors.rs    (LLM Output Flavors)
+│   │       ├── formatters.rs (Output Assembly & Splitting)
 │   │       ├── curation/     (BM25 Search & Auto-Pruning)
 │   │       ├── privacy_shield.rs (PII Redaction Engine)
 │   │       ├── compressor/   (Token Compression Pipeline)
@@ -48,14 +48,13 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] One tabular dialect everywhere ("Sequence of Records" with real header names) across PDF, docx, and CSV/XLSX
 - [x] Magic-byte format detection — extension-first, falling back to content signatures so renamed / extension-less files still route correctly
 - [x] URL fetching & recursive crawling (`--horde`) + GitHub cloning — **on by default** in the CLI binary (`web` feature; disable with `--no-default-features`)
-- [x] Fail-loud contract for agents: exit `4` whenever nothing could be extracted, hard errors on invalid `--flavor`/`--extract`, quiet exit on broken pipes, explicit paths take precedence over piped stdin
-- [x] Golden-file test suite: end-to-end snapshots of real fixture output per format and per flavor (`cargo insta review` to inspect changes)
+- [x] Fail-loud contract for agents: exit `4` whenever nothing could be extracted, hard errors on invalid flags, quiet exit on broken pipes, explicit paths take precedence over piped stdin
+- [x] Golden-file test suite: end-to-end snapshots of real fixture output per format (`cargo insta review` to inspect changes)
 - [x] Image OCR — requires `--features ocr` (macOS Vision / pure-Rust `ocrs`)
 - [x] WASM Plugin Extensibility (`--plugin`) — requires `--features wasm`
 - [x] Semantic BM25 Search with Relevance Scores (`--search`) — requires `--features rag`
 - [x] Interactive Terminal Dashboard (`-i`) with ratatui — requires `--features tui` (in the CLI crate)
 - [x] Glob Filtering (`--include`, `--exclude`) & Depth Control (`--depth`)
-- [x] 4 LLM Flavors (`human`, `anthropic`, `gpt`, `gemini`)
 - [x] Token Estimation (`--tokens`), Token-Only Mode (`--tokens-only`)
 - [x] Token Compression (`--compress safe|contextual`)
 - [x] Auto-Pruning to Token Budgets (`--max-tokens`)
@@ -65,8 +64,7 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] Local PII / Secret Redaction (`--scrub`) — deterministic + entropy heuristics
 - [x] Output Splitting (`--split`), Chunking (`--chunk`), JSON (`--json`)
 - [x] Clipboard Ingestion (`--clipboard`), Clipboard Output (`--copy`), OS Open (`--open`), File Write (`--write`)
-- [x] Heuristic Project Summaries (`--summary`) & LLM API Cost Estimation (`--cost`)
-- [x] Live Auto-Regeneration Watch Mode (`--watch`)
+- [x] Heuristic Project Summaries (`--summary`)
 - [x] Out-of-core streaming for the default dump path (flat RAM footprint)
 - [x] Pipeline-Safe Streams (`-q` for clean stdout)
 
@@ -201,11 +199,8 @@ filegoblin --clipboard > context.md
 
 **Development & Intelligence:**
 ```bash
-# Get a heuristic overview of the project and estimate LLM API ingest costs
-filegoblin ./src/ --summary --cost --tokens
-
-# Watch mode: continuously monitor files and dump fresh context to output file on save
-filegoblin ./src/ --write context.md --watch
+# Get a heuristic overview of the project with token counts
+filegoblin ./src/ --summary --tokens
 ```
 
 **Filtering & Exclusion:**

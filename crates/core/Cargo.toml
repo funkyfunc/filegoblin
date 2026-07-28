@@ -42,7 +42,6 @@ ignore = "0.4.25"
 image = { version = "0.25.9", optional = true }
 logos = "0.16.1"
 minify-html = "0.18.1"
-notify = "8.2.0"
 ocrs = { version = "0.12.1", optional = true }
 open = "5.3.3"
 oxidize-pdf = "1.7.1"

@@ -33,7 +33,6 @@ This document tracks the strategic trajectory and planned enhancements for `file
 *If refactoring or rewriting the engine, the following core features must be preserved:*
 
 - **Zero-Dependency Native Execution:** Pure Rust, statically linked binary.
-- **Model-Specific Flavors:** Support for `human`, `anthropic` (XML), `gpt`, and `gemini` (Breadcrumbs/ASCII map).
 - **Structural Minification:** Tree-sitter powered `--extract symbols` for codebase skeletonization.
 - **Semantic Pruning & Search:** BM25 relevance scoring (`--search`) via Tantivy.
 - **WASM Plugin Extensibility:** Sandboxed third-party parsers via `wasmtime`.

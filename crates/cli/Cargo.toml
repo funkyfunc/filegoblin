@@ -33,4 +33,3 @@ filegoblin-tui = { path = "../tui", optional = true }
 anyhow = "1.0.102"
 clap = { version = "4.5.60", features = ["derive", "env"] }
 colored = "3.1.1"
-notify = "8.2.0"

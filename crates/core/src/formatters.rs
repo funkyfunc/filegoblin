@@ -66,7 +66,6 @@ fn print_belch(
     tokens: usize,
     tokens_saved: usize,
     parts: Option<usize>,
-    show_cost: bool,
 ) {
     if quiet {
         return;
@@ -121,20 +120,6 @@ fn print_belch(
             bar
         );
     }
-    if show_cost {
-        eprintln!(
-            "{}",
-            "├──────────────────────────────────────┤".truecolor(139, 69, 19)
-        );
-        for (model, cost) in crate::cost::estimate_costs(tokens) {
-            eprintln!(
-                "{} 👀 {:<34} {}",
-                bar,
-                format!("{}: ${:.4}", model, cost).truecolor(200, 200, 200),
-                bar
-            );
-        }
-    }
     eprintln!(
         "{}",
         "╰──────────────────────────────────────╯".truecolor(139, 69, 19)
@@ -144,7 +129,6 @@ fn print_belch(
 pub fn format_and_output(
     mut compressed_docs: Vec<GobbleDocument>,
     pre_compression_tokens: usize,
-    flavor: &crate::flavors::Flavor,
     display_name: &str,
     args: &crate::cli::Cli,
 ) -> Result<()> {
@@ -154,7 +138,7 @@ pub fn format_and_output(
         compressed_docs.retain(|d| d.error.is_none());
     }
 
-    // All flavors benefit from deterministic alphabetical sorting for prefix caching and consistency.
+    // Deterministic alphabetical sorting for prefix caching and consistency.
     // However, if '_tree.md' is present, we must keep it at the very beginning of the payload.
     compressed_docs.sort_by(|a, b| {
         if a.path == "_tree.md" && b.path == "_tree.md" {
@@ -255,7 +239,7 @@ pub fn format_and_output(
                 std::fs::create_dir_all(parent)?;
             }
 
-            let flavored = crate::flavors::format_output(flavor, &doc.path, &doc.content);
+            let flavored = format!("{}\n", doc.content.trim());
             std::fs::write(&file_path, &flavored)?;
 
             if !args.quiet {
@@ -384,8 +368,7 @@ pub fn format_and_output(
                 // If adding this file pushes us over the threshold AND we already have content in this chunk
                 if current_tokens + file_tokens > threshold && !current_combined.is_empty() {
                     // Flush current chunk
-                    let output =
-                        crate::flavors::format_output(flavor, display_name, &current_combined);
+                    let output = format!("{}\n", current_combined.trim());
                     total_chars += output.len();
 
                     let part_file_name = args
@@ -423,8 +406,7 @@ pub fn format_and_output(
 
                 // If it's the last file, flush the remaining chunk
                 if i == file_count - 1 && !current_combined.is_empty() {
-                    let output =
-                        crate::flavors::format_output(flavor, display_name, &current_combined);
+                    let output = format!("{}\n", current_combined.trim());
                     total_chars += output.len();
 
                     let part_file_name = args
@@ -474,7 +456,6 @@ pub fn format_and_output(
                 post_compression_tokens,
                 tokens_saved,
                 Some(part_number),
-                args.cost,
             );
             return Ok(());
         }
@@ -530,7 +511,7 @@ pub fn format_and_output(
             }
         }
 
-        let output = crate::flavors::format_output(flavor, display_name, &combined);
+        let output = format!("{}\n", combined.trim());
         let total_chars = output.len();
 
         if args.tokens {
@@ -557,8 +538,9 @@ pub fn format_and_output(
                 );
             }
         } else {
-            // The actual markdown output
-            println!("\n---\n{}", output);
+            // The actual markdown output — nothing but the content itself, so the
+            // buffered and streaming paths emit identical bytes.
+            println!("{}", output);
         }
 
         let tokens_saved =
@@ -576,7 +558,6 @@ pub fn format_and_output(
             post_compression_tokens,
             tokens_saved,
             None,
-            args.cost,
         );
 
         if args.open {
@@ -630,7 +611,6 @@ pub fn format_and_output(
 /// "nothing extracted → non-zero exit" contract on the streaming path too.
 pub fn stream_and_output(
     rx: impl Iterator<Item = GobbleDocument>,
-    flavor: &crate::flavors::Flavor,
     display_name: &str,
     args: &crate::cli::Cli,
 ) -> Result<usize> {
@@ -653,7 +633,7 @@ pub fn stream_and_output(
         }
         let compressed_docs: Vec<_> = rx.into_iter().collect();
         let tokens = compressed_docs.iter().map(|d| d.tokens()).sum();
-        format_and_output(compressed_docs, tokens, flavor, display_name, args)?;
+        format_and_output(compressed_docs, tokens, display_name, args)?;
         return Ok(produced.get());
     }
 
@@ -686,7 +666,7 @@ pub fn stream_and_output(
                 std::fs::create_dir_all(parent)?;
             }
 
-            let flavored = crate::flavors::format_output(flavor, &doc.path, &doc.content);
+            let flavored = format!("{}\n", doc.content.trim());
             std::fs::write(&file_path, &flavored)?;
 
             total_chars += flavored.len();
@@ -776,17 +756,6 @@ pub fn stream_and_output(
             None
         };
 
-        // Apply the flavor wrapper once around the entire stream, matching the
-        // buffered `format_and_output` path. (Total token count is unknown while
-        // streaming, so the GPT header's estimate is written as 0.)
-        if let Some(writer) = &mut stream_writer {
-            write!(
-                writer,
-                "{}",
-                crate::flavors::format_header(flavor, display_name, 0)
-            )?;
-        }
-
         for doc in rx {
             file_count += 1;
             let file_tokens = doc.tokens();
@@ -795,8 +764,7 @@ pub fn stream_and_output(
             // Chunking logic
             if let Some(threshold) = token_threshold {
                 if total_tokens > threshold && !current_combined.is_empty() {
-                    let output =
-                        crate::flavors::format_output(flavor, display_name, &current_combined);
+                    let output = format!("{}\n", current_combined.trim());
                     _total_chars += output.len();
                     let part_file_name = args
                         .write
@@ -852,14 +820,9 @@ pub fn stream_and_output(
             }
         }
 
-        // Close the flavor wrapper opened before the loop.
-        if let Some(writer) = &mut stream_writer {
-            write!(writer, "{}", crate::flavors::format_footer(flavor))?;
-        }
-
         // Flush remaining chunk
         if token_threshold.is_some() && !current_combined.is_empty() {
-            let output = crate::flavors::format_output(flavor, display_name, &current_combined);
+            let output = format!("{}\n", current_combined.trim());
             let part_file_name = args
                 .write
                 .as_deref()

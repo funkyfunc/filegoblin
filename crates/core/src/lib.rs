@@ -1,8 +1,6 @@
 pub mod cli;
 pub mod compressor;
-pub mod cost;
 pub mod curation;
-pub mod flavors;
 pub mod format;
 pub mod git;
 pub mod net;
@@ -38,12 +36,8 @@ pub struct GobbleOutcome {
 }
 
 /// Runs the full ingest → format pipeline and reports what happened, so the caller
-/// can honour `--scrub-fail` and the `--json` "nothing extracted" exit code.
-pub fn gobble_app(
-    targets: &[String],
-    flavor: &flavors::Flavor,
-    args: &crate::cli::Cli,
-) -> Result<GobbleOutcome> {
+/// can honour `--scrub-fail` and the "nothing extracted" exit code.
+pub fn gobble_app(targets: &[String], args: &crate::cli::Cli) -> Result<GobbleOutcome> {
     if targets.is_empty() && !args.clipboard {
         anyhow::bail!("No targets to gobble: pass at least one path/URL or --clipboard");
     }
@@ -85,7 +79,6 @@ pub fn gobble_app(
         formatters::format_and_output(
             compressed_docs,
             pre_compression_tokens,
-            flavor,
             &display_name,
             args,
         )?;
@@ -103,7 +96,7 @@ pub fn gobble_app(
             }
             doc
         });
-        formatters::stream_and_output(stream, flavor, &display_name, args)?
+        formatters::stream_and_output(stream, &display_name, args)?
     };
 
     // The channel is fully drained by now, so the producer has finished; surface
@@ -131,7 +124,7 @@ pub fn gobble_app(
 ///
 /// `--search` builds a RAG index and `--max-tokens` ranks documents against each other;
 /// `--json` emits a deterministic, sorted array with per-file metadata; and
-/// `--copy`/`--open`/`--cost`/`--tokens-only`/`--summary`/`--manifest` all operate on the
+/// `--copy`/`--open`/`--tokens-only`/`--summary`/`--manifest` all operate on the
 /// complete output (whole-payload clipboard, grand totals, table of contents). Everything
 /// else streams out-of-core.
 fn requires_buffering(args: &crate::cli::Cli) -> bool {
@@ -140,7 +133,6 @@ fn requires_buffering(args: &crate::cli::Cli) -> bool {
         || args.max_tokens.is_some()
         || args.copy
         || args.open
-        || args.cost
         || args.tokens_only
         || args.summary
         || args.manifest

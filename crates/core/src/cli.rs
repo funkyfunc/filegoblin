@@ -22,20 +22,6 @@ pub enum RedactStyle {
     Pseudonym,
 }
 
-/// The LLM output flavor. Deriving `clap::ValueEnum` means `--flavor` is validated
-/// at parse time (a typo is a hard error with the valid values listed, never a
-/// silent fallback) and the variants show up in `--help` and shell completions.
-///
-/// Defined here (not in `flavors.rs`) because `build.rs` includes this file to
-/// generate the manpage and completions, so it must be self-contained.
-#[derive(ValueEnum, Clone, Debug, PartialEq)]
-pub enum Flavor {
-    Human,
-    Anthropic,
-    Gpt,
-    Gemini,
-}
-
 /// What `--extract` can pull out of a source file instead of its full content.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExtractMode {
@@ -55,16 +41,6 @@ pub struct Cli {
     pub paths: Vec<String>,
 
     // --- OUTPUT FORMATTING ---
-    /// The specific LLM output flavor to bind the data with
-    #[arg(
-        short,
-        long,
-        value_enum,
-        default_value_t = Flavor::Human,
-        help_heading = "Output Formatting"
-    )]
-    pub flavor: Flavor,
-
     /// Aggressively strip non-semantic characters from the final output to reduce LLM tokens
     #[arg(short = 'c', long, default_missing_value = "contextual", num_args = 0..=1, help_heading = "Output Formatting")]
     pub compress: Option<CompressionLevel>,
@@ -144,10 +120,6 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities")]
     pub tokens_only: bool,
 
-    /// Print an estimated API cost breakdown based on token count for major models
-    #[arg(long, help_heading = "Developer Utilities")]
-    pub cost: bool,
-
     /// Scrub PII and secrets from the output locally (rules + validation + entropy; zero data egress)
     #[arg(long, help_heading = "Developer Utilities")]
     pub scrub: bool,
@@ -183,10 +155,6 @@ pub struct Cli {
     /// Prepend a heuristic structural summary to the top of the output
     #[arg(long, help_heading = "Developer Utilities")]
     pub summary: bool,
-
-    /// Watch mode: monitor target paths for changes and auto-regenerate output
-    #[arg(short = 'W', long, help_heading = "Developer Utilities")]
-    pub watch: bool,
 
     /// Launch the interactive TUI "Hoard Selector" dashboard
     #[arg(short, long, help_heading = "Developer Utilities")]

@@ -58,48 +58,6 @@ fn golden_html_article() {
     insta::assert_snapshot!(gobble(&["test_assets/saved_article.html", "-q"]));
 }
 
-// --- One golden per flavor (same fixture) ------------------------------------
-
-#[test]
-fn golden_flavor_human() {
-    insta::assert_snapshot!(gobble(&[
-        "test_assets/quarterly_report.docx",
-        "-q",
-        "-f",
-        "human"
-    ]));
-}
-
-#[test]
-fn golden_flavor_anthropic() {
-    insta::assert_snapshot!(gobble(&[
-        "test_assets/quarterly_report.docx",
-        "-q",
-        "-f",
-        "anthropic"
-    ]));
-}
-
-#[test]
-fn golden_flavor_gpt() {
-    insta::assert_snapshot!(gobble(&[
-        "test_assets/quarterly_report.docx",
-        "-q",
-        "-f",
-        "gpt"
-    ]));
-}
-
-#[test]
-fn golden_flavor_gemini() {
-    insta::assert_snapshot!(gobble(&[
-        "test_assets/quarterly_report.docx",
-        "-q",
-        "-f",
-        "gemini"
-    ]));
-}
-
 // --- Horde mode over a controlled directory ----------------------------------
 
 #[test]
@@ -145,9 +103,9 @@ fn exit_4_for_missing_file() {
 }
 
 #[test]
-fn invalid_flavor_is_a_hard_error() {
+fn invalid_extract_mode_is_a_hard_error() {
     cmd()
-        .args(["Cargo.toml", "-f", "claude-4-opus"])
+        .args(["Cargo.toml", "--extract", "everything"])
         .assert()
         .code(2)
         .stderr(contains("possible values"));
@@ -168,13 +126,13 @@ fn explicit_path_ignores_open_stdin() {
     // An agent spawning `filegoblin <file>` with an idle stdin pipe must not
     // block on it or grow a phantom "-" target.
     let output = cmd()
-        .args(["test_assets/dummy.csv", "-q", "-f", "anthropic"])
+        .args(["test_assets/dummy.csv", "-q"])
         .write_stdin("SHOULD NOT APPEAR")
         .assert()
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(!stdout.contains("SHOULD NOT APPEAR"));
-    assert!(stdout.contains("<file path=\"test_assets/dummy.csv\">"));
+    assert!(stdout.contains("// --- FILE_START: test_assets/dummy.csv ---"));
 }
 
 #[test]
