@@ -384,6 +384,7 @@ fn route_and_gobble(
         Format::Epub => parsers::epub::EpubGobbler.gobble(path, &opts),
         Format::Html => parsers::html::HtmlGobbler {
             extract_full: opts.full,
+            ..Default::default()
         }
         .gobble(path, &opts),
         Format::Image => {
@@ -477,6 +478,12 @@ fn fetch_url(url: &Url, quiet: bool) -> Result<String> {
         );
     }
 
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     // Cap chunked/undeclared bodies by reading at most MAX_RESPONSE_BYTES + 1.
     let mut buf = Vec::new();
     resp.take(crate::net::MAX_RESPONSE_BYTES + 1)
@@ -489,7 +496,36 @@ fn fetch_url(url: &Url, quiet: bool) -> Result<String> {
         );
     }
 
-    String::from_utf8(buf).context("Mischievous decoding error: Failed to read URL body as UTF-8")
+    Ok(decode_html_bytes(&buf, content_type.as_deref()))
+}
+
+/// Decodes a fetched page's bytes: honours the `Content-Type` charset when
+/// declared, falls back to a `<meta charset>` sniff of the head, then UTF-8.
+/// Decoding is lossy rather than fatal — a latin-1 page must never make the
+/// whole fetch fail.
+#[cfg(feature = "web")]
+fn decode_html_bytes(buf: &[u8], content_type: Option<&str>) -> String {
+    let from_header = content_type.and_then(charset_of);
+    let charset = from_header.or_else(|| {
+        let head = String::from_utf8_lossy(&buf[..buf.len().min(2048)]).to_lowercase();
+        charset_of(&head)
+    });
+    let encoding = charset
+        .and_then(|c| encoding_rs::Encoding::for_label(c.as_bytes()))
+        .unwrap_or(encoding_rs::UTF_8);
+    encoding.decode(buf).0.into_owned()
+}
+
+/// Pulls the value out of the first `charset=...` in a header or HTML head.
+#[cfg(feature = "web")]
+fn charset_of(s: &str) -> Option<String> {
+    let idx = s.find("charset=")? + "charset=".len();
+    let value: String = s[idx..]
+        .trim_start_matches(['"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    (!value.is_empty()).then_some(value)
 }
 
 #[cfg(test)]
@@ -530,11 +566,9 @@ mod tests {
         assert!(html_content.contains("Goblin network testing!"));
 
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let parsed_content = crate::parsers::html::HtmlGobbler {
-            extract_full: false,
-        }
-        .gobble_str(&html_content, &(&args).into())
-        .unwrap();
+        let parsed_content = crate::parsers::html::HtmlGobbler::default()
+            .gobble_str(&html_content, &(&args).into())
+            .unwrap();
         assert!(parsed_content.contains("Goblin network testing!"));
     }
 

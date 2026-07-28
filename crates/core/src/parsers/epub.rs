@@ -27,8 +27,12 @@ impl Gobble for EpubGobbler {
         // Sort by filename to keep chapter order relatively intact without parsing OPF spine
         files.sort_by(|a, b| a.0.cmp(&b.0));
 
+        // Chapters get their own `## <name>` headings below, so per-chapter
+        // front-matter would only add noise.
         let html_gobbler = crate::parsers::html::HtmlGobbler {
             extract_full: opts.full,
+            skip_front_matter: true,
+            ..Default::default()
         };
 
         let mut output = String::new();

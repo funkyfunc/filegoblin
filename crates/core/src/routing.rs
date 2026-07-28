@@ -135,6 +135,8 @@ fn route_url_target(
                     use crate::parsers::gobble::Gobble;
                     match (crate::parsers::html::HtmlGobbler {
                         extract_full: args.full,
+                        source_url: Some(target.to_string()),
+                        ..Default::default()
                     })
                     .gobble_str(
                         &html_content,

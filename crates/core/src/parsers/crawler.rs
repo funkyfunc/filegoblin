@@ -149,7 +149,11 @@ impl GoblinCrawler {
                                 } else if content_type.starts_with("text/html") || content_type.starts_with("text/plain") {
                                     if let Ok(html) = resp.text().await {
                                         // Run the HTML→markdown engine on this page
-                                        let gobbler = HtmlGobbler { extract_full };
+                                        let gobbler = HtmlGobbler {
+                                            extract_full,
+                                            source_url: Some(display_url.clone()),
+                                            ..Default::default()
+                                        };
 
                                         // Find links for BFS frontier expansion
                                         let mut new_links = Vec::new();

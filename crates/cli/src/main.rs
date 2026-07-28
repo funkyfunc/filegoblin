@@ -55,6 +55,16 @@ fn print_mascot() {
 
 use filegoblin_core::cli::Cli;
 
+/// True when the failure is just our stdout reader hanging up (`filegoblin x | head`).
+/// Standard pipeline citizens exit quietly on that, they don't print an error.
+fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+    })
+}
+
 fn main() -> Result<()> {
     #[cfg_attr(not(feature = "tui"), allow(unused_mut))]
     let mut args = Cli::parse();
@@ -117,7 +127,11 @@ fn main() -> Result<()> {
         print_mascot();
     }
 
-    let outcome = gobble_app(&targets, &parsed_flavor, &args)?;
+    let outcome = match gobble_app(&targets, &parsed_flavor, &args) {
+        Ok(outcome) => outcome,
+        Err(e) if is_broken_pipe(&e) => std::process::exit(0),
+        Err(e) => return Err(e),
+    };
 
     // Exit-code contract, checked before watch mode (a long-running loop):
     //  - `--scrub-fail`: non-zero (3) when the Privacy Shield redacted anything.

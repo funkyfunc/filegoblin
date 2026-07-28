@@ -525,7 +525,8 @@ impl<'a> App<'a> {
                             }
                             if let Ok(html) = res.text() {
                                 let gobbler = filegoblin_core::parsers::html::HtmlGobbler {
-                                    extract_full: false,
+                                    source_url: Some(url_c.clone()),
+                                    ..Default::default()
                                 };
                                 let opts =
                                     filegoblin_core::parsers::gobble::ParseOptions::default();

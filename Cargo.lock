@@ -1805,6 +1805,7 @@ dependencies = [
  "csv",
  "dashmap 6.1.0",
  "docx-rs",
+ "encoding_rs",
  "flate2",
  "git2",
  "globset",
