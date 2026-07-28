@@ -1,0 +1,16 @@
+---
+source: crates/cli/tests/golden.rs
+expression: "gobble(&[\"test_assets/dummy.ipynb\", \"-q\"])"
+---
+// --- FILE_START: test_assets/dummy.ipynb ---
+# FileGoblin E2E Test
+Testing Jupyter integration.
+
+```python
+print("Hello from Jupyter!")
+```
+
+**Output:**
+```
+Hello from Jupyter!
+```

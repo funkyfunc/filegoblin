@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>How Goblins Sort Their Hoard — Goblin Weekly</title>
+  <meta property="og:title" content="How Goblins Sort Their Hoard">
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a> <a href="/archive">Archive</a> <a href="/about">About</a>
+    <a href="/subscribe">Subscribe</a> <a href="/login">Sign in</a>
+  </nav>
+  <main>
+    <header>
+      <h1>How Goblins Sort Their Hoard</h1>
+      <p class="byline">By the Archivist, 3rd Age</p>
+    </header>
+    <p>Every goblin knows that a hoard is only as good as its index. A pile of
+    unsorted treasure is just a pile; a <em>catalogued</em> pile is wealth.</p>
+    <h2>The three bins</h2>
+    <p>The classic system uses three bins, described in
+    <a href="/docs/hoard-theory">the hoard theory primer</a>:</p>
+    <ul>
+      <li><strong>Shiny</strong> — anything that reflects torchlight</li>
+      <li><strong>Edible</strong> — self-explanatory, checked twice</li>
+      <li><strong>Mysterious</strong> — scrolls, runes, and PDFs</li>
+    </ul>
+    <pre><code>fn sort(item: Loot) -> Bin {
+    match item.shine() {
+        s if s > 0.7 => Bin::Shiny,
+        _ => Bin::Mysterious,
+    }
+}</code></pre>
+    <p>Field reports confirm the system scales to hoards of
+    <a href="https://hoardstats.example.org/2026">over four thousand items</a>.</p>
+  </main>
+  <aside>
+    <h3>Related</h3>
+    <a href="/p/1">Ten cave lighting tips</a>
+    <a href="/p/2">Interview: a dragon on estate planning</a>
+    <a href="/p/3">Why mimics make poor filing cabinets</a>
+  </aside>
+  <footer>© Goblin Weekly · <a href="/rss">RSS</a> · <a href="/privacy">Privacy</a></footer>
+  <script>console.log("analytics beacon");</script>
+</body>
+</html>

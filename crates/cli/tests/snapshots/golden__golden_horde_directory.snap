@@ -1,0 +1,22 @@
+---
+source: crates/cli/tests/golden.rs
+expression: stdout
+---
+```tree
+.
+  ├── notes.md
+  ├── src/
+    ├── lib.rs
+```
+
+// --- FILE_START: notes.md ---
+# Notes
+
+Remember the hoard.
+
+
+// --- FILE_START: src/lib.rs ---
+/// Adds one.
+pub fn add_one(x: i32) -> i32 {
+    x + 1
+}

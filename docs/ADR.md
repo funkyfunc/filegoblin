@@ -103,3 +103,29 @@
 - **HTML split from web:** `html2md` is now non-optional; `WebGobbler` moved to an always-on `parsers/html.rs` as `HtmlGobbler`; `epub.rs` and the HTML/EPUB route arms are always-on. The `web` feature is now purely network (reqwest/scraper/governor/robotxt/tokio + crawler/fetch/github). A default build parses local `.html` and `.epub`.
 - Tracked for later (Phase 2): unify the buffered/streaming formatter paths; cache token counts; pass `ParseOptions` instead of `&Cli`; drop tokio (sync crawler).
 **Status:** Accepted.
+
+## 2026-07-27: Trust Layer — fail loudly, never silently succeed
+**Context:** Audit findings showed the flagship path could no-op invisibly: the producer thread's error was discarded (`let _ = route_targets(...)` — a default build given a URL printed nothing and exited 0), `cargo install` produced a binary without web support (the cli crate had no passthrough features), `--flavor`/`--extract` were unvalidated strings silently falling back, and stdin auto-detection both broke `cat x | filegoblin` (clap required a path first) and hung/polluted runs spawned with an idle stdin pipe (phantom `-` target).
+**Decision:**
+- `gobble_app` keeps the producer `JoinHandle` and propagates its error after the channel drains; the ingestion thread can no longer fail invisibly.
+- Exit code 4 ("nothing extracted") now applies to **every** output mode, not just `--json`. `stream_and_output` returns its produced-document count so the streaming path participates.
+- The cli crate gained passthrough features (`web`/`ocr`/`wasm`/`rag`) with **`web` on by default** — "convert websites to markdown" is half the pitch; a plain `cargo install` must do it.
+- `Flavor` and `ExtractMode` are clap `ValueEnum`s (defined in `cli.rs`, which `build.rs` includes, and re-exported via `flavors.rs`): typos are hard errors listing valid values, and variants appear in `--help`/completions.
+- Stdin precedence: explicit paths win; stdin is only read when **no** paths are given. Broken stdout pipes (`filegoblin x | head`) exit 0 quietly.
+- Fixed the tui crate's `web` feature compile (stale `parsers::web` path), restoring `--all-features` builds.
+**Status:** Accepted.
+
+## 2026-07-27: DOM-Based HTML Extraction (readability-lite)
+**Context:** `HtmlGobbler` was string surgery (`String::find`/`replace_range`): first-`<article>`-only (multi-article pages lost everything else), `<header>` stripped wholesale (destroying titles), every hyperlink URL deleted, an "accounts.google.com / sign in + google" substring bail that hard-failed ordinary articles, and O(n·k) scans. `scraper` (html5ever) was already a dependency, used three lines away in the crawler.
+**Decision:** Rebuild on the DOM (`scraper` promoted to always-on). Selection: every `<main>` → every `<article>` → best text/link-density block candidate, guarded (if the winner holds <60% of the page's text, fall back to `<body>` — content is never dropped). Noise: nav/aside/footer/form/script/style detached; link-farm blocks (≥85% link density) pruned even inside `<main>`. Links/images keep URLs, resolved absolute against the source URL. Output carries YAML front-matter (`title` from `<title>`/`og:title`, `source` URL). `html2md` wrapped in `catch_unwind` (one malformed page can't kill a horde run); its raw-`<img>` passthroughs and space-padded table rows tidied post-hoc. JS-gated detection is DOM-based (<10 words + scripts); the Google-substring bail is gone. `fetch_url` decodes non-UTF-8 via Content-Type/meta charset (`encoding_rs`) instead of hard-failing.
+**Status:** Accepted. Deferred: sibling-content merge around the chosen candidate; per-site extraction rules.
+
+## 2026-07-27: Conversion Quality — docx markdown, one table dialect, PDF cell splitting
+**Context:** docx flattened every paragraph to `raw_text()` (no headings/lists/emphasis/links). Sheets ignored the real header row and emitted `Col A:` letters while PDF/docx tables used header names — two dialects for the same concept. The PDF fixture output "Net ProfitGrowth: …; Col 4: …" — a header-merge bug the old test asserted as correct (oxidize-pdf's `preserve_layout` merges fragments whose gap its glyph-width estimate underestimates, so one fragment straddles a column boundary).
+**Decision:** docx maps Heading/Title styles to `#` levels, numbering to (nested) `-` lists, bold/italic runs to emphasis, and hyperlink rids to real URLs via the reader's rels. Sheets treat row 1 as headers (`Headers:` line + `Row N: Header: val;` records; empty header cells fall back to column letters; malformed CSV rows are skipped and counted, not fatal). PDF tables assign cell text from fragment geometry in our code: fragments straddling column boundaries are split at the boundary-proportional character, snapped to a space or case seam. Empty/encrypted/pageless PDFs now error instead of returning `Ok("")`.
+**Status:** Accepted.
+
+## 2026-07-27: Golden-File Testing (insta + assert_cmd)
+**Context:** The product is its markdown output, yet the output surface had zero tests: `formatters.rs` (875 lines, every output mode) untested, 3 of 4 committed fixtures unreferenced, flavor regressions (human≡gemini, breadcrumb leaks) invisible.
+**Decision:** `crates/cli/tests/golden.rs` runs the real binary end-to-end: one snapshot per format (pdf/docx/csv/pptx/ipynb/html) over real fixtures (new: `quarterly_report.docx` — hand-authored OOXML, `saved_article.html`), one per flavor, one horde run over a controlled directory, plus behavioral contract tests (exit 4 on nothing-extracted, hard error on bad flavor, bare-pipe stdin, paths-beat-stdin, JSON record shape, `--scrub` via stdin). `walk_tree` sorts by file name so runs are deterministic. Snapshot changes are reviewed with `cargo insta review`.
+**Status:** Accepted. Known-and-documented by snapshots (deliberately unfixed here): the anthropic flavor double-wraps (`FILE_START` breadcrumb inside `<file>`), `gemini` ≡ `human`.

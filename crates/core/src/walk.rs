@@ -12,6 +12,9 @@ pub fn walk_tree(target: &str, max_depth: Option<usize>) -> (String, Vec<PathBuf
     if let Some(d) = max_depth {
         walk_builder.max_depth(Some(d));
     }
+    // OS readdir order is arbitrary; sort so runs are deterministic (the --json
+    // contract promises reproducible output, and golden tests depend on it).
+    walk_builder.sort_by_file_name(|a, b| a.cmp(b));
 
     let mut tree_out = String::from("```tree\n.");
     let mut files = Vec::new();

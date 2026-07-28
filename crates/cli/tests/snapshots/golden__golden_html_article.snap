@@ -1,0 +1,35 @@
+---
+source: crates/cli/tests/golden.rs
+expression: "gobble(&[\"test_assets/saved_article.html\", \"-q\"])"
+---
+// --- FILE_START: test_assets/saved_article.html ---
+---
+title: "How Goblins Sort Their Hoard — Goblin Weekly"
+---
+
+How Goblins Sort Their Hoard
+==========
+
+By the Archivist, 3rd Age
+
+Every goblin knows that a hoard is only as good as its index. A pile of unsorted treasure is just a pile; a *catalogued* pile is wealth.
+
+The three bins
+----------
+
+The classic system uses three bins, described in [the hoard theory primer](/docs/hoard-theory):
+
+* **Shiny** — anything that reflects torchlight
+* **Edible** — self-explanatory, checked twice
+* **Mysterious** — scrolls, runes, and PDFs
+
+```
+fn sort(item: Loot) -> Bin {
+    match item.shine() {
+        s if s > 0.7 => Bin::Shiny,
+        _ => Bin::Mysterious,
+    }
+}
+```
+
+Field reports confirm the system scales to hoards of [over four thousand items](https://hoardstats.example.org/2026).

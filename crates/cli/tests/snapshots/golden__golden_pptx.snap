@@ -1,0 +1,11 @@
+---
+source: crates/cli/tests/golden.rs
+expression: "gobble(&[\"test_assets/dummy.pptx\", \"-q\"])"
+---
+// --- FILE_START: test_assets/dummy.pptx ---
+## Slide 1
+
+- Mischievous Librarian Presentation
+- By filegoblin v1.5.0
+
+---

@@ -15,12 +15,12 @@
 ├── crates/
 │   ├── core/         (filegoblin-core: The Engine & Parsers)
 │   │   ├── Cargo.toml
-│   │   ├── build.rs  (Man page, completions & asset fetcher)
+│   │   ├── build.rs  (Man page & shell completions)
 │   │   └── src/
 │   │       ├── lib.rs        (Core Pipeline Logic)
 │   │       ├── cli.rs        (Clap Flag Definitions)
 │   │       ├── flavors.rs    (LLM Output Flavors)
-│   │       ├── curation.rs   (BM25 Search & Auto-Pruning)
+│   │       ├── curation/     (BM25 Search & Auto-Pruning)
 │   │       ├── privacy_shield.rs (PII Redaction Engine)
 │   │       ├── compressor/   (Token Compression Pipeline)
 │   │       ├── parsers/      (File parsing engines)
@@ -43,8 +43,13 @@ Some capabilities are gated behind opt-in Cargo features (built off by default t
 keep the binary lean). Feature-gated items are marked below.
 
 - [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
+- [x] Word → real markdown: heading levels, nested lists, bold/italic, hyperlinks with URLs
+- [x] DOM-based HTML → markdown (readability-style content selection, link-farm pruning, preserved link URLs, title/source front-matter)
+- [x] One tabular dialect everywhere ("Sequence of Records" with real header names) across PDF, docx, and CSV/XLSX
 - [x] Magic-byte format detection — extension-first, falling back to content signatures so renamed / extension-less files still route correctly
-- [x] URL fetching & recursive crawling (`--horde`) + GitHub cloning — requires `--features web`
+- [x] URL fetching & recursive crawling (`--horde`) + GitHub cloning — **on by default** in the CLI binary (`web` feature; disable with `--no-default-features`)
+- [x] Fail-loud contract for agents: exit `4` whenever nothing could be extracted, hard errors on invalid `--flavor`/`--extract`, quiet exit on broken pipes, explicit paths take precedence over piped stdin
+- [x] Golden-file test suite: end-to-end snapshots of real fixture output per format and per flavor (`cargo insta review` to inspect changes)
 - [x] Image OCR — requires `--features ocr` (macOS Vision / pure-Rust `ocrs`)
 - [x] WASM Plugin Extensibility (`--plugin`) — requires `--features wasm`
 - [x] Semantic BM25 Search with Relevance Scores (`--search`) — requires `--features rag`
@@ -77,14 +82,14 @@ keep the binary lean). Feature-gated items are marked below.
 
 | Source | Path Example | Parser Used | Output Format |
 |---|---|---|---|
-| **PDF** | `~/receipt.pdf` | `PdfGobbler` | Sequence of Records |
-| **Word** | `~/notes.docx` | `OfficeGobbler` | Sequence of Records |
-| **Excel/CSV** | `~/data.xlsx` | `SheetGobbler` | Sequence of Records |
+| **PDF** | `~/receipt.pdf` | `PdfGobbler` | Text + Sequence-of-Records tables |
+| **Word** | `~/notes.docx` | `OfficeGobbler` | Markdown (headings, lists, emphasis, links) |
+| **Excel/CSV** | `~/data.xlsx` | `SheetGobbler` | Sequence of Records (header-named) |
 | **Source Code** | `~/project/src` | `CodeGobbler` | Full content (or `--extract symbols`) |
 | **Email** | `~/thread.eml`, `~/inbox.mbox` | `EmailGobbler` | Header block + body text |
 | **RTF** | `~/notes.rtf` | `RtfGobbler` | Plain text |
 | **Images** | `~/screenshot.png` | `OcrGobbler` (`--features ocr`) | OCR Text |
-| **Webpages** | `https://news.ycombinator.com` | `WebGobbler` (`--features web`) | Heuristic Extraction |
+| **Webpages** | `https://news.ycombinator.com` | `HtmlGobbler` (default build) | DOM extraction + front-matter |
 
 - **Semantic Search:** BM25 relevance scoring via `tantivy` with zero model weights.
 - **Manifest TOC:** Auto-generated table of contents with per-file token counts.
@@ -93,12 +98,11 @@ keep the binary lean). Feature-gated items are marked below.
 
 `filegoblin` maintains a strict zero-dependency profile for the end user. However, building the project requires assembling several logic assets. 
 
-This process is automated via `build.rs`. During `cargo build`, the project downloads the required `.rten` tensor arrays from the web (e.g., `text-detection.rten`) and places them cleanly in the `/assets` directory for pure-Rust OCR fallback inference on Linux/Windows. (Note: On macOS, the tool inherently uses Apple's Vision hardware, making inference weights largely optional for average use).
-
-If you prefer to manually fetch or override these assets, a `justfile` is provided:
+`build.rs` generates the manpage and shell completions into `target/generated/`. The `.rten` tensor weights for pure-Rust OCR fallback on Linux/Windows are **not** downloaded automatically — fetch them with the provided `justfile` when building with `--features ocr`:
 ```bash
 just get-brains
 ```
+(On macOS, OCR uses Apple's Vision framework natively; no weights needed.)
 
 ---
 

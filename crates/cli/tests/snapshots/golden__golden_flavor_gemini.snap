@@ -1,0 +1,19 @@
+---
+source: crates/cli/tests/golden.rs
+expression: "gobble(&[\"test_assets/quarterly_report.docx\", \"-q\", \"-f\", \"gemini\"])"
+---
+// --- FILE_START: test_assets/quarterly_report.docx ---
+# Quarterly Goblin Report
+
+# Executive Summary
+
+The horde consumed **4,512 documents** this quarter, a *substantial* increase. Details in the [full report](https://example.com/goblin-report).
+
+## Key Findings
+
+- PDF ingestion is up 40%
+- Web crawling remains popular
+  - Especially documentation sites
+
+Row 1: Format: PDF; Count: 2,100; 
+Row 2: Format: DOCX; Count: 1,300;

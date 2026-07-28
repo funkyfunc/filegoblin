@@ -1,0 +1,10 @@
+---
+source: crates/cli/tests/golden.rs
+expression: "gobble(&[\"test_assets/dummy.csv\", \"-q\"])"
+---
+// --- FILE_START: test_assets/dummy.csv ---
+## Dataset: dummy.csv
+
+Headers: Name; Age; Role
+Row 1: Name: Goblin; Age: 150; Role: File Hoarder
+Row 2: Name: Dino; Age: 30; Role: Developer
