@@ -31,9 +31,9 @@ pub mod routing;
 pub struct GobbleOutcome {
     /// Number of Privacy Shield redactions performed (0 when `--scrub` is off).
     pub redactions: usize,
-    /// Number of non-empty content documents produced (excludes the tree map).
-    /// Only meaningful on the buffered path, which includes every `--json` run;
-    /// the streaming path reports 0 and callers only consult this for `--json`.
+    /// Number of non-empty content documents produced (excludes the tree map),
+    /// counted on both the buffered and the streaming paths. The CLI exits
+    /// non-zero when this is 0 so a silent no-op can never look like success.
     pub produced: usize,
 }
 
@@ -44,22 +44,24 @@ pub fn gobble_app(
     flavor: &flavors::Flavor,
     args: &crate::cli::Cli,
 ) -> Result<GobbleOutcome> {
+    if targets.is_empty() && !args.clipboard {
+        anyhow::bail!("No targets to gobble: pass at least one path/URL or --clipboard");
+    }
+
     let (tx, rx) = std::sync::mpsc::sync_channel(100);
 
     let targets_clone = targets.to_vec();
     let args_clone = args.clone();
-    std::thread::spawn(move || {
-        let _ = routing::route_targets(&targets_clone, &args_clone, tx);
-    });
+    // Keep the handle: the producer's error (e.g. "recompile with --features web")
+    // must reach the user, never be silently discarded.
+    let producer =
+        std::thread::spawn(move || routing::route_targets(&targets_clone, &args_clone, tx));
 
-    let display_name = if targets.len() == 1 {
-        targets[0].clone()
-    } else if targets.len() == 2 {
-        format!("{} & {}", targets[0], targets[1])
-    } else if args.clipboard && targets.is_empty() {
-        "clipboard".to_string()
-    } else {
-        format!("{} and {} others", targets[0], targets.len() - 1)
+    let display_name = match targets {
+        [] => "clipboard".to_string(),
+        [one] => one.clone(),
+        [a, b] => format!("{} & {}", a, b),
+        [first, rest @ ..] => format!("{} and {} others", first, rest.len()),
     };
 
     // One shared Privacy Shield for the whole run, so redactions are configured
@@ -101,9 +103,14 @@ pub fn gobble_app(
             }
             doc
         });
-        formatters::stream_and_output(stream, flavor, &display_name, args)?;
-        0
+        formatters::stream_and_output(stream, flavor, &display_name, args)?
     };
+
+    // The channel is fully drained by now, so the producer has finished; surface
+    // any routing failure (unreachable URL, missing feature, clipboard error).
+    producer
+        .join()
+        .map_err(|_| anyhow::anyhow!("The ingestion thread panicked"))??;
 
     // Emit the audit report (never the values) and return the outcome.
     let redactions = if let Some(s) = &shield {

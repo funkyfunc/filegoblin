@@ -13,7 +13,7 @@ impl Gobble for CodeGobbler {
         let source_code =
             std::fs::read_to_string(path).context("Failed to read source file as UTF-8")?;
 
-        if opts.extract.as_deref() == Some("symbols") {
+        if opts.extract == Some(crate::cli::ExtractMode::Symbols) {
             let is_rust = path
                 .extension()
                 .and_then(|s| s.to_str())

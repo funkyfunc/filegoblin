@@ -1,12 +1,9 @@
 use anyhow::Result;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Flavor {
-    Human,
-    Anthropic,
-    Gpt,
-    Gemini,
-}
+// `Flavor` is defined in `cli.rs` (which must stay self-contained because
+// `build.rs` includes it to generate completions); it is re-exported here so
+// `flavors::Flavor` remains the canonical path for the rest of the crate.
+pub use crate::cli::Flavor;
 
 impl std::str::FromStr for Flavor {
     type Err = anyhow::Error;

@@ -8,15 +8,15 @@ use std::path::Path;
 pub struct ParseOptions {
     /// Extract the full document instead of any heuristic minification (`--full`).
     pub full: bool,
-    /// Structural extraction mode, e.g. `Some("symbols")` (`--extract`).
-    pub extract: Option<String>,
+    /// Structural extraction mode (`--extract`).
+    pub extract: Option<crate::cli::ExtractMode>,
 }
 
 impl From<&crate::cli::Cli> for ParseOptions {
     fn from(cli: &crate::cli::Cli) -> Self {
         Self {
             full: cli.full,
-            extract: cli.extract.clone(),
+            extract: cli.extract,
         }
     }
 }

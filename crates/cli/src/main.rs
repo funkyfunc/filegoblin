@@ -1,9 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use colored::*;
-use filegoblin_core::{flavors::Flavor, gobble_app};
+use filegoblin_core::gobble_app;
 use std::io::IsTerminal;
-use std::str::FromStr;
 
 fn print_mascot() {
     use std::{thread, time::Duration};
@@ -60,26 +59,25 @@ fn main() -> Result<()> {
     #[cfg_attr(not(feature = "tui"), allow(unused_mut))]
     let mut args = Cli::parse();
 
-    let parsed_flavor = Flavor::from_str(&args.flavor).unwrap_or(Flavor::Human);
+    let parsed_flavor = args.flavor.clone();
 
-    let mut targets = Vec::new();
-
-    // 1. Detect if we have a piped stdin stream
-    if !std::io::stdin().is_terminal() {
-        targets.push("-".to_string());
-    }
-
-    // 2. Add the positional path arguments if they exist
-    targets.extend(args.paths.clone());
-
-    // 3. Prevent running with no targets
+    // Explicit paths win. Only when NO paths are given do we fall back to a piped
+    // stdin ("cat x | filegoblin" works bare) — never in addition to paths, so
+    // `filegoblin file.md` spawned with an open-but-idle stdin pipe (the normal
+    // subprocess case for agents) neither blocks on stdin nor grows a phantom
+    // "-" target in the output metadata.
+    let mut targets = args.paths.clone();
     if targets.is_empty() && !args.interactive && !args.clipboard {
-        eprintln!(
-            "{} Error: No target path provided and no stdin stream detected.",
-            "❌".red()
-        );
-        eprintln!("Usage: fg <target>  --OR--  cat <file> | fg");
-        std::process::exit(1);
+        if !std::io::stdin().is_terminal() {
+            targets.push("-".to_string());
+        } else {
+            eprintln!(
+                "{} Error: No target path provided and no stdin stream detected.",
+                "❌".red()
+            );
+            eprintln!("Usage: filegoblin <target>  --OR--  cat <file> | filegoblin");
+            std::process::exit(2);
+        }
     }
 
     if args.interactive {
@@ -98,7 +96,7 @@ fn main() -> Result<()> {
                 if args.scrub_fail && outcome.redactions > 0 {
                     std::process::exit(3);
                 }
-                if args.json && outcome.produced == 0 {
+                if outcome.produced == 0 {
                     std::process::exit(4);
                 }
             }
@@ -110,7 +108,7 @@ fn main() -> Result<()> {
                 "{} Interactive mode requires the 'tui' feature.",
                 "❌".red()
             );
-            eprintln!("Rebuild with: cargo install --path crates/cli --all-features");
+            eprintln!("Rebuild with: cargo install --path crates/cli --features tui");
             std::process::exit(1);
         }
     }
@@ -123,13 +121,20 @@ fn main() -> Result<()> {
 
     // Exit-code contract, checked before watch mode (a long-running loop):
     //  - `--scrub-fail`: non-zero (3) when the Privacy Shield redacted anything.
-    //  - `--json`: non-zero (4) when nothing could be extracted, so an agent/script
-    //    distinguishes a genuine empty result from a total extraction failure.
+    //  - non-zero (4) when nothing could be extracted from any target, so an
+    //    agent/script never mistakes a silent no-op for success. Applies to every
+    //    output mode, not just `--json`.
     if !args.watch {
         if args.scrub_fail && outcome.redactions > 0 {
             std::process::exit(3);
         }
-        if args.json && outcome.produced == 0 {
+        if outcome.produced == 0 {
+            if !args.quiet {
+                eprintln!(
+                    "{} Nothing could be extracted from the given target(s).",
+                    "❌".red()
+                );
+            }
             std::process::exit(4);
         }
     }

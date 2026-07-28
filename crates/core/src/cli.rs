@@ -22,6 +22,27 @@ pub enum RedactStyle {
     Pseudonym,
 }
 
+/// The LLM output flavor. Deriving `clap::ValueEnum` means `--flavor` is validated
+/// at parse time (a typo is a hard error with the valid values listed, never a
+/// silent fallback) and the variants show up in `--help` and shell completions.
+///
+/// Defined here (not in `flavors.rs`) because `build.rs` includes this file to
+/// generate the manpage and completions, so it must be self-contained.
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
+pub enum Flavor {
+    Human,
+    Anthropic,
+    Gpt,
+    Gemini,
+}
+
+/// What `--extract` can pull out of a source file instead of its full content.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtractMode {
+    /// Only structural symbols: function signatures, struct/enum/trait definitions.
+    Symbols,
+}
+
 /// The mischievous librarian - A high-performance, robust file ingester.
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -29,8 +50,8 @@ pub enum RedactStyle {
     after_help = "EXAMPLES:\n  # Ingest a single file\n  filegoblin src/main.rs\n\n  # Recursively crawl a website and split into separate files\n  filegoblin https://bettercli.org --horde --split\n\n  # Parse a codebase silently and output JSON for a script\n  filegoblin ./my_project --horde -q --json\n"
 )]
 pub struct Cli {
-    /// The target files, directories, or URLs to ingest
-    #[arg(required_unless_present_any = ["interactive", "clipboard"])]
+    /// The target files, directories, or URLs to ingest. When omitted, filegoblin
+    /// reads from stdin if it is piped (so `cat x | filegoblin` works bare).
     pub paths: Vec<String>,
 
     // --- OUTPUT FORMATTING ---
@@ -38,10 +59,11 @@ pub struct Cli {
     #[arg(
         short,
         long,
-        default_value = "human",
+        value_enum,
+        default_value_t = Flavor::Human,
         help_heading = "Output Formatting"
     )]
-    pub flavor: String,
+    pub flavor: Flavor,
 
     /// Aggressively strip non-semantic characters from the final output to reduce LLM tokens
     #[arg(short = 'c', long, default_missing_value = "contextual", num_args = 0..=1, help_heading = "Output Formatting")]
@@ -98,8 +120,8 @@ pub struct Cli {
     pub max_tokens: Option<usize>,
 
     /// Extract only structural symbols (function signatures, struct/enum definitions) from code files
-    #[arg(long, help_heading = "Curation & Intelligence")]
-    pub extract: Option<String>,
+    #[arg(long, value_enum, help_heading = "Curation & Intelligence")]
+    pub extract: Option<ExtractMode>,
 
     /// Only ingest files changed according to git diff (optionally against a specific ref, default: HEAD)
     #[arg(long, default_missing_value = "HEAD", num_args = 0..=1, help_heading = "Curation & Intelligence")]

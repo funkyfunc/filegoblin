@@ -625,15 +625,23 @@ pub fn format_and_output(
     Ok(())
 }
 
+/// Streams documents straight to the output sink. Returns the number of
+/// non-empty content documents emitted, so the caller can honour the
+/// "nothing extracted → non-zero exit" contract on the streaming path too.
 pub fn stream_and_output(
     rx: impl Iterator<Item = GobbleDocument>,
     flavor: &crate::flavors::Flavor,
     display_name: &str,
     args: &crate::cli::Cli,
-) -> Result<()> {
+) -> Result<usize> {
     // Drop failed extractions from streamed output (they carry no content); the
     // `--json` machine contract, which reports them in-band, always buffers instead.
-    let rx = rx.filter(|d| d.error.is_none());
+    let produced = std::cell::Cell::new(0usize);
+    let rx = rx.filter(|d| d.error.is_none()).inspect(|d| {
+        if d.is_content() {
+            produced.set(produced.get() + 1);
+        }
+    });
 
     if args.summary || args.manifest {
         if !args.quiet {
@@ -645,7 +653,8 @@ pub fn stream_and_output(
         }
         let compressed_docs: Vec<_> = rx.into_iter().collect();
         let tokens = compressed_docs.iter().map(|d| d.tokens()).sum();
-        return format_and_output(compressed_docs, tokens, flavor, display_name, args);
+        format_and_output(compressed_docs, tokens, flavor, display_name, args)?;
+        return Ok(produced.get());
     }
 
     if args.split {
@@ -699,7 +708,7 @@ pub fn stream_and_output(
                 );
             }
         }
-        Ok(())
+        Ok(produced.get())
     } else if args.json {
         use std::io::Write;
 
@@ -744,7 +753,7 @@ pub fn stream_and_output(
                 "💾 Streamed JSON array successfully.".truecolor(0, 255, 100)
             );
         }
-        Ok(())
+        Ok(produced.get())
     } else {
         use std::io::Write;
 
@@ -870,6 +879,6 @@ pub fn stream_and_output(
             );
         }
 
-        Ok(())
+        Ok(produced.get())
     }
 }

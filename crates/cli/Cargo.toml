@@ -11,7 +11,13 @@ name = "filegoblin"
 path = "src/main.rs"
 
 [features]
-default = []
+# `web` is on by default: "convert websites to markdown" is half the product's
+# pitch, so a plain `cargo install` must be able to do it.
+default = ["web"]
+web = ["filegoblin-core/web"]
+ocr = ["filegoblin-core/ocr"]
+wasm = ["filegoblin-core/wasm"]
+rag = ["filegoblin-core/rag"]
 tui = ["dep:filegoblin-tui"]
 
 [dependencies]

@@ -524,15 +524,13 @@ impl<'a> App<'a> {
                                 return;
                             }
                             if let Ok(html) = res.text() {
-                                let gobbler = filegoblin_core::parsers::web::WebGobbler {
+                                let gobbler = filegoblin_core::parsers::html::HtmlGobbler {
                                     extract_full: false,
                                 };
-                                let fallback_args =
-                                    filegoblin_core::cli::Cli::parse_from(["filegoblin", "dummy"]);
+                                let opts =
+                                    filegoblin_core::parsers::gobble::ParseOptions::default();
                                 match filegoblin_core::parsers::gobble::Gobble::gobble_str(
-                                    &gobbler,
-                                    &html,
-                                    &fallback_args,
+                                    &gobbler, &html, &opts,
                                 ) {
                                     Ok(md) => {
                                         let _ = tx.send(TuiMessage::PreviewLoaded(node, md));
