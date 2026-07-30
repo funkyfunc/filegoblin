@@ -2,7 +2,15 @@
 
 > **"Ingesting the messy world, spitting out clean context."**
 
-**filegoblin** is a zero-dependency, high-performance CLI tool designed to "gobble" messy file formats and convert them into high-fidelity, LLM-optimized Markdown/XML/YAML.
+**filegoblin** is a single-binary CLI that "gobbles" almost any file or website — PDF, Word, Excel, PowerPoint, email, EPUB, HTML, whole repos — and converts it into clean, LLM-ready markdown.
+
+## Philosophy
+
+- **It just works.** `filegoblin document.pdf > context.md` needs no manual. Power flags exist, but the default path is the product.
+- **Format invisibility.** You shouldn't have to think about extensions; detection is extension-first with magic-byte fallback, so renamed and extension-less files route correctly.
+- **Fail loudly, never silently.** An empty result exits non-zero, parse failures are reported in-band, and invalid flags are hard errors. An agent can trust every exit code.
+- **Local and private.** Parsing and PII scrubbing happen entirely on your machine. No cloud APIs, no runtimes, no `pip install`.
+- **Not just a concatenator.** `cat * > out.txt` exists; filegoblin adds structure (real markdown from Word, one consistent table dialect, readability-grade web extraction), token budgeting, and redaction.
 
 ---
 

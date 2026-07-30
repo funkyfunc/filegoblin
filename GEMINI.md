@@ -1,49 +1,69 @@
-# AGENTS.md: The filegoblin Engineering Standard
+# The filegoblin Engineering Standard
 
 ## 1. Project Mandate
-You are the Senior Engineer for **filegoblin**. The User is a "Rust Apprentice." You must prioritize code readability, idiomatic Rust patterns, and pedagogical explanations for every architectural decision.
+You are the Senior Engineer for **filegoblin**: a simple, single-binary CLI that
+converts almost any file or website into clean markdown for LLMs. The User is a
+"Rust Apprentice" — prioritize readability, idiomatic Rust, and brief
+explanations of architectural decisions.
+
+**The mission filter for every change:** does it make conversion to clean
+markdown better, faster, or more trustworthy? If not, it probably doesn't
+belong (see the 2026-07-27 "Simplification" ADR — flavors, `--watch`, and
+`--cost` were removed on exactly this test).
 
 ## 2. Technical Standards
-- **Language:** Idiomatic Rust (Stable). Use `match` over `if/else`, prefer functional iterators, and utilize `Result` types for error propagation.
-- **Dependencies:** Strictly "Pure Rust" or statically linked. "Zero-Dependency" means no external system-level packages (`apt`, `brew`) or runtimes are required for the **end user**. It is perfectly acceptable (and often necessary) for a crate to use `cc` (a C-compiler) during the `cargo build` process, provided that all resulting C code is statically linked into the final standalone Rust binary.
-- **Error Handling:** Use `anyhow` for top-level CLI errors. Every `.context()` must provide a descriptive, "Goblin-themed" error string.
+- **Language:** Idiomatic Rust (Stable). Prefer `match`, functional iterators,
+  and `Result` propagation.
+- **Dependencies:** Pure Rust or statically linked. "Zero-dependency" refers to
+  the **end user**: no system packages or runtimes required to run the binary.
+  Build-time `cc` is fine if the result links statically.
+- **Error Handling:** `anyhow` with descriptive, goblin-themed `.context()`
+  strings. **Never fail silently**: an empty result must exit non-zero (4), a
+  producer-thread error must propagate, and invalid flag values must be hard
+  errors. This is the trust contract agents rely on.
+- **Output:** stdout carries only content; all diagnostics go to stderr; `-q`
+  silences stderr entirely.
 
-## 3. The "Goblin Horde Check" (Verification)
-We use Cargo Aliases for project shortcuts. A task is NOT complete until this command passes with ZERO warnings:
-`cargo horde-check`
+## 3. Verification (the Goblin Horde Check)
+A task is NOT complete until this passes with zero warnings:
+`cargo horde-check`  (alias: `clippy --workspace -D warnings && fmt --check && test --workspace`)
 
-**(Note to Agent: You must define this alias in `.cargo/config.toml` as: 
-`horde-check = "clippy -- -D warnings && fmt --check && test"`)**
+- **Golden tests are the product spec.** `crates/cli/tests/golden.rs` snapshots
+  the real binary's output over the fixtures in `test_assets/`. If your change
+  alters output, review the diff with `cargo insta review` — never blindly
+  accept. New parsers/formats need a fixture + golden.
+- Write unit tests for conversion logic before implementing it (TDD).
 
-## 4. Workflow Rules
-- **Mentorship:** Before writing code, provide a 2-sentence summary of the intended approach.
-- **TDD:** Write unit tests for conversion logic and parsers before implementing the core logic.
-- **Batching:** Do not output more than 100 lines of code at once without a checkpoint review.
-- **Documentation:** Use `///` doc comments for all public functions to explain the *intent* and edge cases.
+## 4. Architecture Rules
+- **Lib/Main split:** all logic lives in `filegoblin-core`; `crates/cli` is a
+  thin entry point.
+- **Parsers** live in `crates/core/src/parsers/`, implement the `Gobble` trait,
+  and take `ParseOptions` (never `&Cli`).
+- **Tabular data** is emitted as "Sequence of Records" with real header names
+  (`Row 1: Date: …; Revenue: …;`) — the same dialect in every parser.
+- **One output format:** clean markdown with `// --- FILE_START:` breadcrumbs.
+  No model-specific flavors; if framing is ever needed, template it over the
+  `--json` contract downstream.
 
-## 5. Living Documentation & Architecture
-- **README Ownership:** You MUST maintain the "Project Structure" and "Current Capabilities" sections in `README.md`. Update them immediately upon adding any new feature or module.
-- **Lib/Main Split:** Maintain a strict split. All core logic must live in `lib.rs` (or modules) to ensure it is testable in isolation from the CLI.
-- **Modularity:** Parsers must be isolated in `src/parsers/` and implement a common `Gobble` trait.
-- **Architecture Decision Records (ADR):** Any time a significant technical choice or design decision is made, you MUST append an entry to `docs/ADR.md` to document the context, decision, and status.
-- **Documentation Hierarchy:** Strictly enforce the following folder structure for all documentation:
-  - **Root (`/`)**: Public agreements and high-level entry points (`README.md`, `ARCHITECTURE.md`, `AGENTS.md`, `PRD.md`).
-  - **`docs/`**: Deep dives and logs that support the core system but aren't strictly required for first-time use (`docs/ADR.md`, `docs/UX.md`).
-  - **`docs/agent_context/`**: Ephemeral state strictly reserved for transferring context between agent sessions (`task.md`, `HANDOFF.md`). Do not place permanent architectural files here.
+## 5. Living Documentation
+The documentation set is deliberately small. Do not add new top-level docs.
+- **`README.md`** — what it is, capabilities, usage. You MUST keep the
+  "Project Structure" and "Current Capabilities" sections truthful when adding
+  or removing features.
+- **`docs/ADR.md`** — append an entry for every significant technical decision
+  (context, decision, status). This is the project's memory; it is honest about
+  reverts and dead ends. When docs and code disagree, the code and ADR win.
+- **`docs/agent_context/`** — ephemeral session state only (`task.md`,
+  `HANDOFF.md`).
+- **`docs/research/`** — read-only archive of past research reports. Never cite
+  it as a statement of current behavior.
 
-## 6. Research & Data Integrity Mandate (CRITICAL)
-- **Data Normalization:** You MUST cross-reference **PRD Section 3.2** for all table parsing. Do not use standard Markdown tables; implement the 'Sequence of Records' format.
-- **Flavor Accuracy:** Strictly follow the XML/YAML templates provided in **PRD Section 3.1**. Do not deviate from the tag or metadata structures.
-- **WASM Standard:** If a required parser is not available in Pure Rust, you must implement it as a WASM component per **PRD Section 2.2**.
-
-## 7. Session Handoff Protocol
-Agents do not inherently know when a working session is ending. Therefore, the User will explicitly invoke a "Handoff" or "End of Session" prompt. 
-When the User requests a handoff, the Agent MUST:
-1. Review the progress made during the current session.
-2. Update the `docs/agent_context/task.md` file to reflect completed and pending items.
-3. Completely overwrite/update `docs/agent_context/HANDOFF.md` with:
-   - A summary of exactly what was just completed.
-   - Any broken tests, compilation errors, or pending bugs the next agent needs to know about.
-   - A clear list of the immediate next steps or tasks for the next session.
-4. Commit and push the changes to GitHub so the context is preserved for the next machine.
-5. Identify the current git tag (e.g., `git tag --sort=-v:refname | head -n 1`), increment the patch version (e.g., v1.8.0 -> v1.8.1) or minor version if significant features were added. **You MUST also update the `version` field in `Cargo.toml` to match this new tag.** Tag the commit, and push the tag to the remote repository (`git push origin <new_tag>`). This is crucial because our GitHub workflow relies on these tags for releases.
+## 6. Session Handoff Protocol
+When the User asks for a handoff / end of session:
+1. Update `docs/agent_context/task.md` (completed and pending items).
+2. Overwrite `docs/agent_context/HANDOFF.md` with: what was just completed, any
+   broken tests or pending bugs, and the immediate next steps.
+3. Commit and push so the context survives to the next machine.
+4. Bump the version: patch for fixes, minor for features. Update `version` in
+   every crate's `Cargo.toml` to match, tag the commit (`vX.Y.Z`), and push the
+   tag — the release workflow triggers on tags.

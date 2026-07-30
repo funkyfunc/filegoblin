@@ -1,67 +1,45 @@
-# Handoff Report: Phase-6 Audit Cleanup
+# Handoff Report
 
-Branch: `audit/phase6-cleanup` (off `main` @ `caa54a8`). Not yet merged/tagged.
+Branch: `audit/phase6-cleanup` (7 sessions of work sitting on top of `v1.11.0`;
+unmerged, untagged).
 
-## Correction to the previous handoff
-The prior v1.11.0 handoff over-claimed. For the record, on audit:
-- **PageRank was never wired into `enforce_budget`.** `curation/pagerank.rs` existed but
-  `enforce_budget` used extension ranking; the PageRank code ran only as a separate,
-  divergent budget path inside the directory walk. It has now been **deleted**.
-- **Streaming was a half-migration.** `stream_and_output`'s default path wrote raw blocks
-  with **no flavor formatting at all** (flavors were silently dropped), and `gobble_local`
-  still buffered. Fixed this session.
-- Two feature builds (`web`, `tui`) **did not compile**; releases build `all-features`, so
-  release binaries were broken. Fixed.
+## Where things stand (2026-07-29)
 
-## What this session did (fix / remove / simplify / restructure — no new features)
+The trust-layer / quality / simplification pass is complete. In order:
 
-**Compile fixes**
-- `web`: fixed `raw_pairs` → `tx.send(...)` in `routing.rs`; added `use url::Url` in `lib.rs`.
-- `tui`: made `args` mutable in `cli/main.rs`.
-
-**Security**
-- Privacy shield: fixed a `--scrub` char-boundary panic on multibyte input (byte offsets now
-  snapped to char boundaries); **deleted the mocked "neural" Tier2 refiner + tokio semaphore**;
-  the entropy tier now actually redacts unbroken high-entropy tokens; added deterministic
-  detection for AWS/GitHub/OpenAI/JWT secret prefixes.
-- Web: new `src/net.rs` — hardened reqwest clients with timeouts, a **redirect SSRF guard**
-  (blocks loopback/private/link-local/metadata hosts on redirects), and a **10 MiB response cap**;
-  correct User-Agent (`filegoblin/<version>`). Used by `fetch_url` and the crawler.
-- Crawler: `println!` → `eprintln!` (was polluting stdout payload); added a 500-page cap.
-- Archives (`archive.rs`): uncompressed-size cap (2 GiB), entry cap, zip-slip guard, and a
-  **nested-archive guard** (`no_nested_archives`) to stop zip-quine recursion.
-- WASM (`wasm.rs`): fuel + memory (`StoreLimits`) limits, cached `Engine`; implicit
-  extension dispatch no longer auto-runs `./plugins/*.wasm` from the CWD (home dir only).
-- `git`: `--git-diff` refs starting with `-` are rejected (option-injection guard), via new `src/git.rs`.
-
-**Removed (dead)**
-- Deps: `fst`, `sliding_features`, `safetensors`, `nojson`, `memmap2`, `nonzero_ext`,
-  `urlencoding`, `base64`, `sha2`, `wasmtime-wasi`, `petgraph`, `compression-prompt`,
-  `stop-words`; `tokio` is now feature-gated (`web`/`ocr` only). Build-deps trimmed.
-- Modules/features: `curation/pagerank.rs`, `compressor/level3.rs`,
-  `compressor/statistical_filter.rs`, the `aggressive` compression level, the dead
-  `parsers/credentials.rs`, the unimplemented `--lang` flag, the `scratch/` Python scripts.
-- Production mock fallbacks in `pdf.rs` / `office.rs` / `code.rs` that fabricated content on
-  read errors — now return errors.
-
-**Simplified / restructured**
-- `CodeGobbler`: full file content by default; `--extract symbols` is opt-in and Rust-only
-  (other languages return full source instead of being mangled by the Rust grammar).
-- `--include`/`--exclude`: real globbing via `globset` (were substring matchers).
-- `lib.rs`: `gobble_local` decomposed into `walk.rs` (tree/filters/globs) + `git.rs` +
-  a `parse_files` helper.
-- Formatters: streaming default path now applies the flavor wrapper (fixes the regression);
-  whole-output flags route through the buffered pipeline.
-- Stale strings: mascot + User-Agent now derive from `CARGO_PKG_VERSION`; `cost.rs` model
-  table refreshed; README/PRD/ROADMAP reconciled with reality.
+1. **Trust layer** (`51f013f`): producer errors propagate; exit 4 whenever
+   nothing is extracted (all modes); `web` is a default feature of the cli
+   crate; `--extract` is a ValueEnum; stdin precedence fixed (explicit paths
+   win, bare pipe works, no phantom `-`); broken stdout pipes exit 0.
+2. **DOM-based HTML extractor** (`f3eef90`): readability-lite on `scraper`,
+   preserved link URLs, title/source front-matter, link-farm pruning, charset
+   handling, panic-hardened html2md.
+3. **Conversion quality** (`2b658ca`): docx → real markdown (headings, lists,
+   emphasis, resolved hyperlinks); sheets use the header row (one Sequence-of-
+   Records dialect everywhere); PDF cell text assigned from fragment geometry
+   with column-boundary splitting (fixes the merged-header bug); empty PDFs
+   error instead of Ok("").
+4. **Golden suite** (`773f753`): `crates/cli/tests/golden.rs` — snapshots per
+   format over real fixtures + behavioral contract tests; deterministic walk.
+5. **Simplification** (`6ed76cf`): flavors, `--watch`, `--cost` removed (one
+   markdown output format); TUI and clipboard kept.
+6. **Docs diet** (this session): docs reduced to README + ADR + this dir +
+   `docs/research/` archive; PRD/NORTH_STAR/ARCHITECTURE/implementation-notes/
+   UX/ROADMAP/instructions/.agents deleted; 15.7 MB of dead OCR/tesseract
+   assets removed from git; `just get-brains` now fetches the correct ocrs
+   models; GEMINI.md rewritten to match reality.
 
 ## State
-- `cargo test --workspace` (default): **30 passed, 0 failed.**
-- `cargo clippy --workspace`: clean.
-- Feature compiles verified: default, `web`, `wasm`, `rag`, `tui`. `ocr` not built here (mkl).
+- `cargo test --workspace`: 65 core unit + 14 e2e golden, all green.
+- `cargo clippy --workspace --all-features -- -D warnings`: clean.
+- Snapshots live in `crates/cli/tests/snapshots/` — review diffs with
+  `cargo insta review`.
 
 ## Immediate next steps
-1. Run `cargo horde-check` and the `ocr` build on a machine set up for it.
-2. Decide on merge + version bump/tag (this branch is unmerged).
-3. Phase-7 feature work (separate approval): honest local Privacy Shield as a product;
-   agent-native per-file extraction primitive. See `implementation-notes.md` and the audit report.
+1. Decide on merging this branch to `main` and tagging (minor bump — several
+   features and breaking flag removals since v1.11.0).
+2. Candidate gaps (owner reviewing): legacy `.doc`, `.odt`/`.odp`, PPTX speaker
+   notes/slide order from the manifest, email HTML bodies through the real
+   HTML extractor, scanned-PDF → OCR fallback story, CI feature matrix,
+   `--scrub` not protecting directly-named secret files, installers in
+   cargo-dist.
