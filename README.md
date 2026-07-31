@@ -168,6 +168,11 @@ OpenAI, JWT, private-key blocks, connection strings) and a Shannon-entropy catch
 secrets. A value-free audit tally is printed to stderr (`🛡️ Privacy Shield redacted 4 item(s): …`).
 An optional `.filegoblin-scrub.json` supplies an `allowlist` and custom `patterns`.
 
+> **What filegoblin does NOT do:** maintain a secrets blocklist. It converts exactly what you
+> point it at — including a `.env` file if you name one. Deciding what's sensitive is yours:
+> the directory walker respects `.gitignore` (where secrets usually already live), `--exclude`
+> filters by glob, and `--scrub` redacts what does get through.
+
 **Machine Contract (`--json`) — extract any file to clean text for agents/scripts:**
 ```bash
 # One weird binary format → clean text + metadata, in a single call

@@ -95,6 +95,12 @@ impl ArchiveGobbler {
 
 /// Extracts a zip archive with per-entry size accounting and a zip-slip guard.
 fn extract_zip(path: &Path, dest: &Path) -> Result<()> {
+    extract_zip_capped(path, dest, MAX_TOTAL_UNCOMPRESSED)
+}
+
+fn extract_zip_capped(path: &Path, dest: &Path, cap: u64) -> Result<()> {
+    use std::io::Read;
+
     let file = std::fs::File::open(path).context("Failed to open zip archive")?;
     let mut archive = zip::ZipArchive::new(file).context("Failed to read zip archive")?;
 
@@ -121,20 +127,26 @@ fn extract_zip(path: &Path, dest: &Path) -> Result<()> {
             continue;
         }
 
-        total_written = total_written.saturating_add(entry.size());
-        if total_written > MAX_TOTAL_UNCOMPRESSED {
-            anyhow::bail!(
-                "Archive exceeds the {} GiB uncompressed limit (bomb guard)",
-                MAX_TOTAL_UNCOMPRESSED / (1024 * 1024 * 1024)
-            );
-        }
-
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
         let mut out = std::fs::File::create(&out_path)
             .with_context(|| format!("Failed to create {}", out_path.display()))?;
-        std::io::copy(&mut entry, &mut out).context("Failed while writing zip entry")?;
+
+        // Bomb guard on bytes ACTUALLY decompressed — never on the entry's
+        // declared size, which is attacker-controlled metadata a bomb can
+        // simply lie about. `take(remaining + 1)` bounds the write; landing
+        // past the cap means the archive inflates beyond the budget.
+        let remaining = cap.saturating_sub(total_written);
+        let written = std::io::copy(&mut (&mut entry).take(remaining + 1), &mut out)
+            .context("Failed while writing zip entry")?;
+        total_written = total_written.saturating_add(written);
+        if total_written > cap {
+            anyhow::bail!(
+                "Archive inflates past the {} byte uncompressed limit (bomb guard)",
+                cap
+            );
+        }
     }
     Ok(())
 }
@@ -157,6 +169,9 @@ fn extract_tar_gz(path: &Path, dest: &Path) -> Result<()> {
                 MAX_ENTRIES
             );
         }
+        // Unlike zip, tar's header size IS the write bound: `unpack_in` copies
+        // exactly `entry.size()` bytes from the stream, so summing declared
+        // sizes here bounds the actual bytes written.
         total = total.saturating_add(entry.size());
         if total > MAX_TOTAL_UNCOMPRESSED {
             anyhow::bail!(
@@ -170,4 +185,47 @@ fn extract_tar_gz(path: &Path, dest: &Path) -> Result<()> {
             .context("Failed to unpack tar entry")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> tempfile::NamedTempFile {
+        let mut file = tempfile::Builder::new().suffix(".zip").tempfile().unwrap();
+        {
+            let mut zip = zip::ZipWriter::new(file.as_file_mut());
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, data) in entries {
+                zip.start_file(*name, options).unwrap();
+                zip.write_all(data).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        file
+    }
+
+    #[test]
+    fn zip_bomb_cap_counts_actual_bytes() {
+        // 64 KiB of zeros compresses to almost nothing; a 1 KiB cap must trip
+        // on ACTUAL inflation, regardless of what any header declares.
+        let payload = vec![0u8; 64 * 1024];
+        let zip = make_zip(&[("big.txt", &payload)]);
+        let dest = tempfile::tempdir().unwrap();
+
+        let err = extract_zip_capped(zip.path(), dest.path(), 1024).unwrap_err();
+        assert!(err.to_string().contains("bomb guard"), "got: {err}");
+    }
+
+    #[test]
+    fn honest_zip_extracts_within_cap() {
+        let zip = make_zip(&[("dir/note.md", b"# hello goblin\n")]);
+        let dest = tempfile::tempdir().unwrap();
+
+        extract_zip(zip.path(), dest.path()).unwrap();
+        let content = std::fs::read_to_string(dest.path().join("dir/note.md")).unwrap();
+        assert_eq!(content, "# hello goblin\n");
+    }
 }

@@ -1,5 +1,5 @@
-//! Directory-walk helpers for `--horde`: tree rendering, secret exclusion, and
-//! glob filtering. Extracted from `lib.rs` so each step is independently testable.
+//! Directory-walk helpers for `--horde`: tree rendering and glob filtering.
+//! Extracted from `lib.rs` so each step is independently testable.
 
 use colored::Colorize;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -35,32 +35,6 @@ pub fn walk_tree(target: &str, max_depth: Option<usize>) -> (String, Vec<PathBuf
     }
     tree_out.push_str("\n```\n\n");
     (tree_out, files)
-}
-
-/// Files that must never be ingested regardless of flags.
-pub fn is_radioactive(path: &Path) -> bool {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let path_str = path.to_string_lossy();
-    matches!(
-        name.as_ref(),
-        ".env"
-            | ".env.local"
-            | ".env.development"
-            | ".env.test"
-            | ".env.production"
-            | "id_rsa"
-            | "id_ed25519"
-            | "credentials.json"
-    ) || name.ends_with(".pem")
-        || path_str.contains(".aws/credentials")
-        || path_str.contains(".ssh/")
-}
-
-/// Drops radioactive files in place, returning how many were removed.
-pub fn filter_radioactive(files: &mut Vec<PathBuf>) -> usize {
-    let before = files.len();
-    files.retain(|p| !is_radioactive(p));
-    before - files.len()
 }
 
 /// Translates a user-friendly pattern into a real glob string:
@@ -155,12 +129,5 @@ mod tests {
         let set = build_globset(&["test".to_string()]);
         assert!(matches_globset(&set, Path::new("my_test_file.rs")));
         assert!(!matches_globset(&set, Path::new("main.rs")));
-    }
-
-    #[test]
-    fn radioactive_files_detected() {
-        assert!(is_radioactive(Path::new("project/.env")));
-        assert!(is_radioactive(Path::new("keys/server.pem")));
-        assert!(!is_radioactive(Path::new("src/main.rs")));
     }
 }

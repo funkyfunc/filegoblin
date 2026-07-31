@@ -219,30 +219,33 @@ impl PiiTrigger {
     }
 }
 
-/// Merges overlapping / near-adjacent `(start, end)` spans.
-pub struct IndexMerger;
-
-impl IndexMerger {
-    pub fn merge(windows: Vec<(usize, usize)>, look_back: usize) -> Vec<(usize, usize)> {
-        if windows.is_empty() {
-            return vec![];
-        }
-        let mut sorted = windows;
-        sorted.sort_by_key(|&(s, _)| s);
-        let mut merged = Vec::new();
-        let (mut cs, mut ce) = sorted[0];
-        for &(s, e) in sorted.iter().skip(1) {
-            if s <= ce + look_back {
-                ce = ce.max(e);
-            } else {
-                merged.push((cs, ce));
-                cs = s;
-                ce = e;
+/// Merges overlapping / near-adjacent entropy windows into token spans, but
+/// only when the bridged gap contains no whitespace — windows are individually
+/// whitespace-free, and a merge across whitespace would weld separate tokens
+/// (separate lines!) into one span.
+fn merge_within_token(
+    windows: Vec<(usize, usize)>,
+    input: &str,
+    look_back: usize,
+) -> Vec<(usize, usize)> {
+    let mut sorted = windows;
+    sorted.sort_by_key(|&(s, _)| s);
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    let bytes = input.as_bytes();
+    for (s, e) in sorted {
+        match merged.last_mut() {
+            Some((_, ce)) if s <= *ce + look_back => {
+                let gap = &bytes[(*ce).min(s)..s];
+                if gap.iter().any(|b| b.is_ascii_whitespace()) {
+                    merged.push((s, e));
+                } else {
+                    *ce = (*ce).max(e);
+                }
             }
+            _ => merged.push((s, e)),
         }
-        merged.push((cs, ce));
-        merged
     }
+    merged
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +440,11 @@ impl PrivacyShield {
         }
 
         // 2. Entropy catch-all, but only where no rule already fired.
-        let entropy_spans = IndexMerger::merge(self.trigger.scan(input), 8);
+        // Merge windows into token spans WITHOUT bridging whitespace: chaining
+        // across a newline welds independent secrets on adjacent lines into one
+        // giant span, which then dies wholesale on overlap with any rule match
+        // (an email on the next line silently unprotected the AWS key above it).
+        let entropy_spans = merge_within_token(self.trigger.scan(input), input, 8);
         for (s, e) in entropy_spans {
             let overlaps_rule = matches.iter().any(|m| s < m.end && m.start < e);
             if !overlaps_rule {
@@ -660,5 +667,21 @@ mod tests {
         let s = shield();
         let input = "秘密鍵日本語🔐éàçüößΩ≈ç√∫˜µ≤≥÷🎉🚀🔥한국어テスト中文字符";
         let _ = s.redact(input);
+    }
+
+    #[test]
+    fn adjacent_secrets_do_not_mask_each_other() {
+        // Regression: entropy windows used to merge ACROSS the newline into one
+        // giant span, which was then dropped wholesale for overlapping the
+        // EMAIL rule match on line 2 — leaving the AWS secret key on line 1
+        // completely untouched.
+        let s = shield();
+        let input = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\nADMIN_EMAIL=root@corp.example\n";
+        let out = s.redact(input);
+        assert!(
+            !out.contains("wJalrXUtnFEMI"),
+            "secret key must be redacted, got: {out}"
+        );
+        assert!(out.contains("[EMAIL]"), "email must still be redacted");
     }
 }

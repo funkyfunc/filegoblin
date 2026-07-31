@@ -237,16 +237,14 @@ pub fn gobble_local(
     // (crate::curation::enforce_budget), which needs the full corpus in memory to
     // rank documents against each other. It is not applied here during the walk.
 
-    // 2. Never ingest secrets, no matter what the flags say.
-    let skipped = crate::walk::filter_radioactive(&mut files_to_process);
-    if skipped > 0 && !args.quiet {
-        eprintln!(
-            "{}",
-            format!("🛡️ SKIPPED {} RADIOACTIVE FILE(S)", skipped).truecolor(255, 0, 0)
-        );
-    }
-
-    // 3. Apply --include / --exclude glob filters.
+    // 2. Apply --include / --exclude glob filters.
+    //
+    // filegoblin deliberately makes NO secrets-filtering promise: it converts
+    // exactly what you point it at. Deciding what's sensitive is the user's
+    // call — via --exclude globs, .gitignore (which the walker respects, and
+    // is where real secrets usually already live), and --scrub for redaction.
+    // A hardcoded blocklist that only applied on some code paths was a false
+    // promise; see the 2026-07-30 ADR entry.
     crate::walk::apply_glob_filters(
         &mut files_to_process,
         &args.include,
@@ -254,7 +252,7 @@ pub fn gobble_local(
         args.quiet,
     );
 
-    // 4. Apply --git-diff (restrict to changed files vs a ref).
+    // 3. Apply --git-diff (restrict to changed files vs a ref).
     if let Some(ref git_ref) = args.git_diff {
         match crate::git::changed_files(root, git_ref) {
             Ok(changed) => {
@@ -285,7 +283,7 @@ pub fn gobble_local(
         }
     }
 
-    // 5. Parse every surviving file in parallel.
+    // 4. Parse every surviving file in parallel.
     files.extend(parse_files(&files_to_process, root, args));
     Ok(files)
 }
