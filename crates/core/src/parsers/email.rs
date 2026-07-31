@@ -1,6 +1,6 @@
 use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
-use mail_parser::{Address, Message, MessageParser};
+use mail_parser::{Address, Message, MessageParser, MimeHeaders};
 use std::path::Path;
 
 /// Parses email into clean, LLM-friendly markdown: a header block (From/To/Cc/
@@ -52,15 +52,50 @@ fn format_message(message: &Message) -> String {
     }
     out.push_str(&format!("**Subject:** {}\n\n", subject));
 
-    // Prefer text/plain; fall back to stripping the HTML body.
-    let body = message
-        .body_text(0)
-        .map(|c| c.into_owned())
-        .or_else(|| message.body_html(0).map(|h| strip_html(&h)))
-        .unwrap_or_default();
+    // Prefer a genuine text/plain part; otherwise convert the HTML body to
+    // markdown through the DOM extractor. (mail-parser's `body_text` silently
+    // down-converts HTML-only messages itself — we want our converter, not its.)
+    let has_real_text_part = message
+        .text_part(0)
+        .is_some_and(|p| matches!(&p.body, mail_parser::PartType::Text(_)));
+    let body = if has_real_text_part {
+        message.body_text(0).map(|c| c.into_owned())
+    } else {
+        None
+    }
+    .or_else(|| message.body_html(0).map(|h| html_body_to_md(&h)))
+    .or_else(|| message.body_text(0).map(|c| c.into_owned()))
+    .unwrap_or_default();
     out.push_str(body.trim());
 
+    // List attachments by name so they're accounted for, even though their
+    // bytes aren't extracted.
+    let attachments: Vec<&str> = message
+        .attachments()
+        .filter_map(|a| a.attachment_name())
+        .collect();
+    if !attachments.is_empty() {
+        out.push_str(&format!(
+            "\n\n**Attachments:** {}\n",
+            attachments.join(", ")
+        ));
+    }
+
     out.trim_end().to_string()
+}
+
+/// Converts an HTML email body through the real DOM extractor (full mode: an
+/// email body IS the content, no readability scoring wanted), falling back to
+/// plain text extraction if that fails.
+fn html_body_to_md(html: &str) -> String {
+    let gobbler = crate::parsers::html::HtmlGobbler {
+        extract_full: true,
+        skip_front_matter: true,
+        ..Default::default()
+    };
+    gobbler
+        .gobble_str(html, &ParseOptions::default())
+        .unwrap_or_else(|_| strip_html(html))
 }
 
 /// Formats an address header (possibly a list) as `Name <email>` entries.
@@ -80,8 +115,7 @@ fn format_address(address: Option<&Address>) -> String {
         .join(", ")
 }
 
-/// Minimal HTML tag stripper for HTML-only email bodies (avoids a hard dependency
-/// on the feature-gated web parser).
+/// Last-resort tag stripper, used only if the DOM extractor errors on a body.
 fn strip_html(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut in_tag = false;
@@ -194,7 +228,24 @@ Are we still on for lunch?\r\n";
         let gobbler = EmailGobbler;
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         let result = gobbler.gobble(f.path(), &(&args).into()).unwrap();
-        assert!(result.contains("Hello world"));
+        // The HTML body goes through the real DOM extractor now, so inline
+        // formatting survives as markdown.
+        assert!(result.contains("Hello **world**"));
         assert!(!result.contains("<b>"));
+    }
+
+    #[test]
+    fn test_html_body_styles_do_not_leak() {
+        let eml = "From: a@x.com\r\nSubject: Styled\r\nContent-Type: text/html\r\n\r\n\
+            <html><head><style>.x { color: red; }</style></head>\
+            <body><p>Visible &amp; important</p></body></html>\r\n";
+        let mut f = tempfile::Builder::new().suffix(".eml").tempfile().unwrap();
+        f.write_all(eml.as_bytes()).unwrap();
+
+        let gobbler = EmailGobbler;
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        let result = gobbler.gobble(f.path(), &(&args).into()).unwrap();
+        assert!(result.contains("Visible & important"));
+        assert!(!result.contains("color: red"));
     }
 }

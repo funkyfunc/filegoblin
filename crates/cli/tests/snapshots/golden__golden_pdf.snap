@@ -3,7 +3,9 @@ source: crates/cli/tests/golden.rs
 expression: "gobble(&[\"test_assets/financial_report.pdf\", \"-q\"])"
 ---
 // --- FILE_START: test_assets/financial_report.pdf ---
-Row 1: Date: 2026-01-01; Revenue: $10,000,000; Expenses: $8,000,000; Net Profit: $2,000,000; Growth: +5%;
-Row 2: Date: 2026-02-01; Revenue: $12,500,000; Expenses: $9,000,000; Net Profit: $3,500,000; Growth: +20%;
-Row 3: Date: 2026-03-01; Revenue: $11,000,000; Expenses: $8,500,000; Net Profit: $2,500,000; Growth: -12%;
-Row 4: Date: 2026-04-01; Revenue: $14,000,000; Expenses: $9,500,000; Net Profit: $4,500,000; Growth: +27%;
+| Date | Revenue | Expenses | Net Profit | Growth |
+|---|---|---|---|---|
+| 2026-01-01 | $10,000,000 | $8,000,000 | $2,000,000 | +5% |
+| 2026-02-01 | $12,500,000 | $9,000,000 | $3,500,000 | +20% |
+| 2026-03-01 | $11,000,000 | $8,500,000 | $2,500,000 | -12% |
+| 2026-04-01 | $14,000,000 | $9,500,000 | $4,500,000 | +27% |

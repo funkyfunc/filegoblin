@@ -154,7 +154,7 @@ fn json_contract_shape() {
         rec["content"]
             .as_str()
             .unwrap()
-            .contains("Headers: Name; Age; Role")
+            .contains("| Name | Age | Role |")
     );
 }
 

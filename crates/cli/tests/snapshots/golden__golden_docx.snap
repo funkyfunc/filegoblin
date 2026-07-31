@@ -15,5 +15,7 @@ The horde consumed **4,512 documents** this quarter, a *substantial* increase. D
 - Web crawling remains popular
   - Especially documentation sites
 
-Row 1: Format: PDF; Count: 2,100; 
-Row 2: Format: DOCX; Count: 1,300;
+| Format | Count |
+|---|---|
+| PDF | 2,100 |
+| DOCX | 1,300 |

@@ -39,8 +39,8 @@ A task is NOT complete until this passes with zero warnings:
   thin entry point.
 - **Parsers** live in `crates/core/src/parsers/`, implement the `Gobble` trait,
   and take `ParseOptions` (never `&Cli`).
-- **Tabular data** is emitted as "Sequence of Records" with real header names
-  (`Row 1: Date: …; Revenue: …;`) — the same dialect in every parser.
+- **Tabular data** is emitted as standard markdown pipe tables (row 1 of the
+  source is the header row) — the same dialect in every parser.
 - **One output format:** clean markdown with `// --- FILE_START:` breadcrumbs.
   No model-specific flavors; if framing is ever needed, template it over the
   `--json` contract downstream.

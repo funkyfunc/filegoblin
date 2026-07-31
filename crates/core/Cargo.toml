@@ -18,7 +18,9 @@ exclude = [
 [features]
 default = []
 web = ["dep:reqwest", "dep:governor", "dep:robotxt", "dep:tokio", "dep:encoding_rs"]
-ocr = ["dep:rten", "dep:rten-tensor", "dep:candle-core", "dep:ocrs", "dep:image", "dep:tokio"]
+# macOS needs no feature: Apple Vision OCR is built in. This gates only the
+# pure-Rust fallback engine for Linux (ocrs/rten) and the Windows OCR API path.
+ocr = ["dep:rten", "dep:rten-tensor", "dep:ocrs", "dep:tokio"]
 wasm = ["dep:wasmtime"]
 rag = ["dep:tantivy"]
 
@@ -27,7 +29,6 @@ aho-corasick = { version = "1.1.4", features = ["perf-literal", "std"] }
 anyhow = "1.0.102"
 arboard = "3.6.1"
 calamine = "0.33.0"
-candle-core = { version = "0.9", features = ["mkl"], optional = true }
 clap = { version = "4.5.60", features = ["derive", "env"] }
 colored = "3.1.1"
 csv = "1.4.0"
@@ -39,12 +40,17 @@ governor = { version = "0.10.4", optional = true }
 home = "0.5.12"
 html2md = "0.2.15"
 ignore = "0.4.25"
-image = { version = "0.25.9", optional = true }
+# Non-optional: PDF scanned-page OCR encodes extracted page images (any OS),
+# and pdf_oxide already puts `image` in the tree anyway.
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "tiff"] }
 logos = "0.16.1"
 minify-html = "0.18.1"
 ocrs = { version = "0.12.1", optional = true }
 open = "5.3.3"
-oxidize-pdf = "1.7.1"
+# Chosen over oxidize-pdf for: native markdown conversion (headings/tables/
+# reading order), per-page scanned/text classification for the OCR fallback,
+# and no rusty-tesseract shell-out in its dependency tree. See ADR 2026-07-30.
+pdf_oxide = "0.3.73"
 pulldown-cmark = "0.13.1"
 pulldown-cmark-to-cmark = "22.0.0"
 quick-xml = "0.39.2"

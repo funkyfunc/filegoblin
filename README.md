@@ -50,15 +50,18 @@
 Some capabilities are gated behind opt-in Cargo features (built off by default to
 keep the binary lean). Feature-gated items are marked below.
 
-- [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
+- [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, OpenDocument, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
+- [x] PDF → markdown via `pdf_oxide`: headings, pipe tables, reading order, hyphenation — with per-page scanned-vs-text classification
+- [x] **Scanned PDFs and images OCR automatically on macOS** (Apple Vision, zero setup); Linux/Windows via `--features ocr`
 - [x] Word → real markdown: heading levels, nested lists, bold/italic, hyperlinks with URLs
-- [x] DOM-based HTML → markdown (readability-style content selection, link-farm pruning, preserved link URLs, title/source front-matter)
-- [x] One tabular dialect everywhere ("Sequence of Records" with real header names) across PDF, docx, and CSV/XLSX
-- [x] Magic-byte format detection — extension-first, falling back to content signatures so renamed / extension-less files still route correctly
-- [x] URL fetching & recursive crawling (`--horde`) + GitHub cloning — **on by default** in the CLI binary (`web` feature; disable with `--no-default-features`)
+- [x] DOM-based HTML → markdown (readability-style content selection, link-farm pruning, preserved link URLs, title/source front-matter, ATX headings)
+- [x] One tabular dialect everywhere: standard markdown pipe tables across PDF, docx, pptx, OpenDocument, and CSV/XLSX
+- [x] PowerPoint: manifest-true slide order + speaker notes
+- [x] Magic-byte format detection — extension-first, falling back to content signatures so renamed / extension-less files (including archives) still route correctly; legacy `.doc`/`.ppt` detected with an actionable error
+- [x] URL fetching routes by Content-Type: HTML → extractor, raw markdown/JSON/text → passthrough, binary documents (a PDF URL!) → the normal parser pipeline
+- [x] Recursive crawling (`--horde`) + GitHub repo cloning — **on by default** in the CLI binary (`web` feature; disable with `--no-default-features`)
 - [x] Fail-loud contract for agents: exit `4` whenever nothing could be extracted, hard errors on invalid flags, quiet exit on broken pipes, explicit paths take precedence over piped stdin
 - [x] Golden-file test suite: end-to-end snapshots of real fixture output per format (`cargo insta review` to inspect changes)
-- [x] Image OCR — requires `--features ocr` (macOS Vision / pure-Rust `ocrs`)
 - [x] WASM Plugin Extensibility (`--plugin`) — requires `--features wasm`
 - [x] Semantic BM25 Search with Relevance Scores (`--search`) — requires `--features rag`
 - [x] Interactive Terminal Dashboard (`-i`) with ratatui — requires `--features tui` (in the CLI crate)
@@ -79,22 +82,23 @@ keep the binary lean). Feature-gated items are marked below.
 ---
 
 ## ✨ Key Features
-- **Parsers:** `oxidize-pdf`, `docx-rs`, `tree-sitter`, `quick-xml`, `calamine`, `ocrs` (Statically Linked).
-- **Hybrid OCR:** Instantaneous macOS Vision Framework integration (`objc2`) with pure-Rust `rten` inference as fallback.
+- **Parsers:** `pdf_oxide`, `docx-rs`, `tree-sitter`, `quick-xml`, `calamine`, `scraper` (Statically Linked).
+- **OCR built in on macOS:** Apple Vision (`objc2`) with no weights or flags — scanned PDFs and images just work. Linux gets pure-Rust `ocrs`/`rten` inference behind `--features ocr`.
 - **WASM Extensibility:** `wasmtime` for pure-rust statically-linked component execution.
-- **LLM-Native:** Specific structural anchors (XML/YAML) to prevent "Attention Drift."
 - **Privacy First:** 100% local PII/secret scrubbing — deterministic patterns (SSN, email, cloud/token prefixes) plus a Shannon-entropy tier that redacts high-entropy secrets. No model weights, no data egress.
 - **Structural Minification:** Tree-sitter powered `--extract symbols` mode for Rust source.
 
 | Source | Path Example | Parser Used | Output Format |
 |---|---|---|---|
-| **PDF** | `~/receipt.pdf` | `PdfGobbler` | Text + Sequence-of-Records tables |
+| **PDF** | `~/receipt.pdf` | `PdfGobbler` | Markdown (headings, pipe tables, OCR for scans) |
 | **Word** | `~/notes.docx` | `OfficeGobbler` | Markdown (headings, lists, emphasis, links) |
-| **Excel/CSV** | `~/data.xlsx` | `SheetGobbler` | Sequence of Records (header-named) |
+| **Excel/CSV** | `~/data.xlsx` | `SheetGobbler` | Markdown pipe tables (header row named) |
+| **PowerPoint** | `~/deck.pptx` | `PptxGobbler` | Per-slide markdown + speaker notes |
+| **OpenDocument** | `~/doc.odt`, `~/deck.odp` | `OpenDocGobbler` | Markdown (headings, lists, tables) |
 | **Source Code** | `~/project/src` | `CodeGobbler` | Full content (or `--extract symbols`) |
-| **Email** | `~/thread.eml`, `~/inbox.mbox` | `EmailGobbler` | Header block + body text |
+| **Email** | `~/thread.eml`, `~/inbox.mbox` | `EmailGobbler` | Header block + markdown body + attachment list |
 | **RTF** | `~/notes.rtf` | `RtfGobbler` | Plain text |
-| **Images** | `~/screenshot.png` | `OcrGobbler` (`--features ocr`) | OCR Text |
+| **Images** | `~/screenshot.png` | `OcrGobbler` (built-in on macOS) | OCR Text |
 | **Webpages** | `https://news.ycombinator.com` | `HtmlGobbler` (default build) | DOM extraction + front-matter |
 
 - **Semantic Search:** BM25 relevance scoring via `tantivy` with zero model weights.

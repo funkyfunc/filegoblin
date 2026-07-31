@@ -190,14 +190,11 @@ pub fn gobble_local(
     let mut files: Vec<GobbleDocument> = Vec::new();
     let root = std::path::Path::new(target);
 
-    // ARCHIVE INTERCEPTION
+    // ARCHIVE INTERCEPTION — by detected format, not just extension, so an
+    // extension-less/renamed zip is extracted instead of read as "plaintext".
     if root.is_file() {
-        let ext = root
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        if ext == "zip" || ext == "gz" || ext == "tgz" {
+        let header = crate::format::read_header(root, 512);
+        if crate::format::detect(root, &header) == crate::format::Format::Archive {
             let archive_gobbler = crate::parsers::archive::ArchiveGobbler;
             return archive_gobbler.extract_archive(root, args);
         }
@@ -343,7 +340,7 @@ fn parse_files(
 /// document (even on failure). Detection is extension-first with a magic-byte
 /// fallback, so renamed / extension-less files still route correctly.
 #[allow(unused_variables)]
-fn route_and_gobble(
+pub(crate) fn route_and_gobble(
     path_str: &str,
     args: &crate::cli::Cli,
 ) -> (crate::format::Format, Result<String>) {
@@ -369,6 +366,11 @@ fn route_and_gobble(
         Format::Docx => parsers::office::OfficeGobbler.gobble(path, &opts),
         Format::Spreadsheet => parsers::sheet::SheetGobbler.gobble(path, &opts),
         Format::Pptx => parsers::powerpoint::PptxGobbler.gobble(path, &opts),
+        Format::OpenDocument => parsers::opendocument::OpenDocGobbler.gobble(path, &opts),
+        Format::LegacyOffice => Err(anyhow::anyhow!(
+            "This is a pre-2007 OLE Office file (.doc/.ppt/.msg). No pure-Rust parser \
+             exists for it — re-save it as .docx/.pptx (or .eml) and gobble that instead."
+        )),
         Format::Jupyter => parsers::jupyter::JupyterGobbler.gobble(path, &opts),
         Format::Email => parsers::email::EmailGobbler.gobble(path, &opts),
         Format::Rtf => parsers::rtf::RtfGobbler.gobble(path, &opts),
@@ -379,21 +381,18 @@ fn route_and_gobble(
             ..Default::default()
         }
         .gobble(path, &opts),
-        Format::Image => {
-            #[cfg(feature = "ocr")]
-            {
-                parsers::ocr::OcrGobbler.gobble(path, &opts)
-            }
-            #[cfg(not(feature = "ocr"))]
-            {
-                Err(anyhow::anyhow!(
-                    "OCR extraction requires the 'ocr' feature. Recompile with --features ocr."
-                ))
-            }
-        }
-        // Markdown, plain text, unknown, and (inline) archives fall through to a
-        // WASM plugin (if one is installed for the extension) or a plaintext read.
-        Format::Markdown | Format::Text | Format::Archive => {
+        // On macOS this always works (Apple Vision); elsewhere the gobbler
+        // itself explains the missing `ocr` feature.
+        Format::Image => parsers::ocr::OcrGobbler.gobble(path, &opts),
+        // Archives reaching this point were found *inside* a directory walk
+        // (a directly-targeted archive is intercepted and extracted upstream in
+        // `gobble_local`). Reading one as plaintext would emit binary garbage.
+        Format::Archive => Err(anyhow::anyhow!(
+            "Archive found inside a directory walk; point filegoblin at it directly to extract it"
+        )),
+        // Markdown, plain text, and unknowns fall through to a WASM plugin
+        // (if one is installed for the extension) or a plaintext read.
+        Format::Markdown | Format::Text => {
             #[cfg(feature = "wasm")]
             if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(&extension, false)
                 && let Ok(markdown) = (parsers::wasm::WasmGobbler {
@@ -441,8 +440,66 @@ fn run_explicit_plugin(
     }
 }
 
+/// A fetched HTTP body plus the media type the server declared for it, so the
+/// caller can route by content instead of assuming everything is HTML.
 #[cfg(feature = "web")]
-fn fetch_url(url: &Url, quiet: bool) -> Result<String> {
+pub(crate) struct FetchedBody {
+    pub bytes: Vec<u8>,
+    /// Lowercased media type without parameters (e.g. `text/html`), when declared.
+    pub media_type: Option<String>,
+    /// The raw Content-Type header (kept for charset decoding).
+    pub content_type: Option<String>,
+}
+
+#[cfg(feature = "web")]
+impl FetchedBody {
+    /// Decodes the body as text, honouring the declared / sniffed charset.
+    pub fn decode_text(&self) -> String {
+        decode_html_bytes(&self.bytes, self.content_type.as_deref())
+    }
+
+    /// True when the body should go through the HTML extractor: the server says
+    /// so, or the media type is vague/absent and the head of the body looks
+    /// like an HTML document (servers mislabel constantly).
+    pub fn looks_like_html(&self) -> bool {
+        match self.media_type.as_deref() {
+            Some(mt) if mt.contains("html") || mt.contains("xhtml") => true,
+            Some("text/plain") | None => {
+                let head = String::from_utf8_lossy(&self.bytes[..self.bytes.len().min(512)])
+                    .to_lowercase();
+                head.contains("<!doctype html") || head.contains("<html")
+            }
+            _ => false,
+        }
+    }
+
+    /// True for non-HTML types we can pass through as text verbatim (markdown,
+    /// plain text, JSON, XML, source code, …).
+    pub fn is_textual(&self) -> bool {
+        match self.media_type.as_deref() {
+            Some(mt) => {
+                mt.starts_with("text/")
+                    || mt.ends_with("+json")
+                    || mt.ends_with("+xml")
+                    || matches!(
+                        mt,
+                        "application/json"
+                            | "application/xml"
+                            | "application/javascript"
+                            | "application/x-yaml"
+                            | "application/yaml"
+                            | "application/toml"
+                            | "application/markdown"
+                    )
+            }
+            // No declared type: treat as text when it decodes without NULs.
+            None => !self.bytes.contains(&0),
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+fn fetch_url(url: &Url, quiet: bool) -> Result<FetchedBody> {
     use std::io::Read;
 
     // reqwest respects HTTP_PROXY / HTTPS_PROXY automatically.
@@ -488,7 +545,16 @@ fn fetch_url(url: &Url, quiet: bool) -> Result<String> {
         );
     }
 
-    Ok(decode_html_bytes(&buf, content_type.as_deref()))
+    let media_type = content_type
+        .as_deref()
+        .map(|ct| ct.split(';').next().unwrap_or("").trim().to_lowercase())
+        .filter(|mt| !mt.is_empty());
+
+    Ok(FetchedBody {
+        bytes: buf,
+        media_type,
+        content_type,
+    })
 }
 
 /// Decodes a fetched page's bytes: honours the `Content-Type` charset when
@@ -554,7 +620,9 @@ mod tests {
         });
 
         let parsed_url = Url::parse(&url_str).unwrap();
-        let html_content = fetch_url(&parsed_url, true).unwrap();
+        let body = fetch_url(&parsed_url, true).unwrap();
+        assert!(body.looks_like_html());
+        let html_content = body.decode_text();
         assert!(html_content.contains("Goblin network testing!"));
 
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);

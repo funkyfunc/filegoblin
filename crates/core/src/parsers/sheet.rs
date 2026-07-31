@@ -3,10 +3,9 @@ use anyhow::{Context, Result};
 use calamine::{Data, Reader, open_workbook_auto};
 use std::path::Path;
 
-/// CSV / spreadsheet parser emitting the same "Sequence of Records" dialect as
-/// the PDF and docx table paths: the first row is treated as the header row and
-/// its names label every value (`Row 1: Date: …; Revenue: …;`). A header cell
-/// that is empty falls back to its spreadsheet column letter.
+/// CSV / spreadsheet parser emitting standard markdown pipe tables — the same
+/// dialect every other parser (PDF, docx, pptx) produces. The first row is the
+/// header row; an empty header cell falls back to its spreadsheet column letter.
 pub struct SheetGobbler;
 
 impl Gobble for SheetGobbler {
@@ -40,7 +39,6 @@ impl SheetGobbler {
         ));
 
         let mut headers: Option<Vec<String>> = None;
-        let mut data_row = 0usize;
         let mut skipped = 0usize;
         for result in rdr.records() {
             // One malformed row must not abort the whole dataset.
@@ -51,21 +49,18 @@ impl SheetGobbler {
             let fields: Vec<String> = record.iter().map(|f| f.trim().to_string()).collect();
 
             let Some(headers) = &headers else {
-                headers = Some(header_names(&fields));
-                output.push_str(&format!(
-                    "Headers: {}\n",
-                    headers.as_ref().unwrap().join("; ")
-                ));
+                let names = header_names(&fields);
+                output.push_str(&table_header(&names));
+                headers = Some(names);
                 continue;
             };
 
-            data_row += 1;
-            if let Some(line) = record_line(data_row, headers, &fields) {
+            if let Some(line) = table_row(headers.len(), &fields) {
                 output.push_str(&line);
             }
         }
         if skipped > 0 {
-            output.push_str(&format!("({} malformed row(s) skipped)\n", skipped));
+            output.push_str(&format!("\n({} malformed row(s) skipped)\n", skipped));
         }
 
         Ok(output)
@@ -82,7 +77,6 @@ impl SheetGobbler {
                 output.push_str(&format!("## Sheet: {}\n\n", sheet_name));
 
                 let mut headers: Option<Vec<String>> = None;
-                let mut data_row = 0usize;
                 for row in range.rows() {
                     let fields: Vec<String> = row.iter().map(cell_to_string).collect();
 
@@ -90,16 +84,13 @@ impl SheetGobbler {
                         if fields.iter().all(|f| f.is_empty()) {
                             continue; // leading blank rows before the header
                         }
-                        headers = Some(header_names(&fields));
-                        output.push_str(&format!(
-                            "Headers: {}\n",
-                            headers.as_ref().unwrap().join("; ")
-                        ));
+                        let names = header_names(&fields);
+                        output.push_str(&table_header(&names));
+                        headers = Some(names);
                         continue;
                     };
 
-                    data_row += 1;
-                    if let Some(line) = record_line(data_row, headers, &fields) {
+                    if let Some(line) = table_row(headers.len(), &fields) {
                         output.push_str(&line);
                     }
                 }
@@ -144,23 +135,34 @@ fn header_names(first_row: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// One data row as `Row N: Header: val; …` (empty cells omitted). Returns
-/// `None` for entirely empty rows.
-fn record_line(row_idx: usize, headers: &[String], fields: &[String]) -> Option<String> {
-    let parts: Vec<String> = fields
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| !v.is_empty())
-        .map(|(i, v)| {
-            let fallback = format!("Col {}", column_index_to_letter(i));
-            let header = headers.get(i).filter(|h| !h.is_empty());
-            format!("{}: {}", header.unwrap_or(&fallback), v)
-        })
-        .collect();
-    if parts.is_empty() {
+/// The markdown table header + separator lines.
+fn table_header(headers: &[String]) -> String {
+    format!(
+        "| {} |\n|{}\n",
+        headers
+            .iter()
+            .map(|h| escape_cell(h))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        "---|".repeat(headers.len())
+    )
+}
+
+/// One data row as a markdown table row, padded/truncated to the header width.
+/// Returns `None` for entirely empty rows.
+fn table_row(width: usize, fields: &[String]) -> Option<String> {
+    if fields.iter().all(|f| f.is_empty()) {
         return None;
     }
-    Some(format!("Row {}: {}\n", row_idx, parts.join("; ")))
+    let cells: Vec<String> = (0..width.max(fields.len()))
+        .map(|i| escape_cell(fields.get(i).map(String::as_str).unwrap_or("")))
+        .collect();
+    Some(format!("| {} |\n", cells.join(" | ")))
+}
+
+/// Pipe and newline characters inside a cell would break the table shape.
+fn escape_cell(v: &str) -> String {
+    v.replace('|', "\\|").replace('\n', " ")
 }
 
 fn column_index_to_letter(mut col: usize) -> String {
@@ -194,9 +196,10 @@ mod tests {
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         let result = SheetGobbler.gobble(file.path(), &(&args).into()).unwrap();
 
-        assert!(result.contains("Headers: Date; Revenue; Growth"));
-        assert!(result.contains("Row 1: Date: 2026-01-01; Revenue: 100; Growth: +5%"));
-        assert!(result.contains("Row 2: Date: 2026-02-01; Revenue: 200; Growth: +10%"));
+        assert!(result.contains("| Date | Revenue | Growth |"));
+        assert!(result.contains("|---|---|---|"));
+        assert!(result.contains("| 2026-01-01 | 100 | +5% |"));
+        assert!(result.contains("| 2026-02-01 | 200 | +10% |"));
     }
 
     #[test]
@@ -209,7 +212,8 @@ mod tests {
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         let result = SheetGobbler.gobble(file.path(), &(&args).into()).unwrap();
 
-        assert!(result.contains("Row 1: Name: alice; Col B: x; Score: 10"));
+        assert!(result.contains("| Name | Col B | Score |"));
+        assert!(result.contains("| alice | x | 10 |"));
     }
 
     #[test]

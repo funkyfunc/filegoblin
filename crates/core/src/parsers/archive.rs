@@ -30,11 +30,23 @@ impl ArchiveGobbler {
             );
         }
 
-        let ext = path
+        // Dispatch by extension, falling back to magic bytes so renamed /
+        // extension-less archives (routed here by format detection) still extract.
+        let mut ext = path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
+        if !matches!(ext.as_str(), "zip" | "gz" | "tgz") {
+            let header = crate::format::read_header(path, 4);
+            ext = if header.starts_with(b"PK") {
+                "zip".to_string()
+            } else if header.starts_with(&[0x1f, 0x8b]) {
+                "gz".to_string()
+            } else {
+                ext
+            };
+        }
 
         if !args.quiet {
             eprintln!(

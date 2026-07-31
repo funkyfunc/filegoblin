@@ -13,6 +13,12 @@ pub enum Format {
     Docx,
     Spreadsheet,
     Pptx,
+    /// OpenDocument text/presentation (`.odt`/`.odp`). `.ods` routes to
+    /// `Spreadsheet` (calamine reads it natively).
+    OpenDocument,
+    /// Pre-2007 OLE compound files (`.doc`/`.ppt`). No pure-Rust parser exists;
+    /// detected so the user gets an actionable error instead of binary garbage.
+    LegacyOffice,
     Epub,
     Jupyter,
     Email,
@@ -33,6 +39,8 @@ impl Format {
             Format::Docx => "docx",
             Format::Spreadsheet => "spreadsheet",
             Format::Pptx => "pptx",
+            Format::OpenDocument => "opendocument",
+            Format::LegacyOffice => "legacy-office",
             Format::Epub => "epub",
             Format::Jupyter => "jupyter",
             Format::Email => "email",
@@ -54,6 +62,8 @@ fn from_extension(ext: &str) -> Option<Format> {
         "docx" => Format::Docx,
         "xlsx" | "xls" | "ods" | "csv" => Format::Spreadsheet,
         "pptx" => Format::Pptx,
+        "odt" | "odp" => Format::OpenDocument,
+        "doc" | "ppt" => Format::LegacyOffice,
         "epub" => Format::Epub,
         "ipynb" => Format::Jupyter,
         "eml" | "mbox" => Format::Email,
@@ -84,6 +94,11 @@ fn from_magic(header: &[u8]) -> Option<Format> {
     }
     if header.starts_with(&[0x1f, 0x8b]) {
         return Some(Format::Archive); // gzip
+    }
+    // OLE compound file (legacy .doc/.ppt/.xls/.msg). Better an actionable
+    // error than the plaintext reader dumping binary garbage.
+    if header.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
+        return Some(Format::LegacyOffice);
     }
     if header.starts_with(&[0x89, b'P', b'N', b'G']) || header.starts_with(&[0xff, 0xd8, 0xff]) {
         return Some(Format::Image); // PNG / JPEG
@@ -176,5 +191,22 @@ mod tests {
     #[test]
     fn plain_text_default() {
         assert_eq!(detect(Path::new("notes"), b"just some words"), Format::Text);
+    }
+
+    #[test]
+    fn legacy_office_by_extension_and_magic() {
+        assert_eq!(detect(Path::new("a.doc"), b""), Format::LegacyOffice);
+        assert_eq!(detect(Path::new("a.ppt"), b""), Format::LegacyOffice);
+        let ole = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0x00];
+        assert_eq!(detect(Path::new("mystery"), &ole), Format::LegacyOffice);
+        // Legacy .xls stays with calamine, which reads it natively.
+        assert_eq!(detect(Path::new("a.xls"), &ole), Format::Spreadsheet);
+    }
+
+    #[test]
+    fn opendocument_by_extension() {
+        assert_eq!(detect(Path::new("a.odt"), b""), Format::OpenDocument);
+        assert_eq!(detect(Path::new("a.odp"), b""), Format::OpenDocument);
+        assert_eq!(detect(Path::new("a.ods"), b""), Format::Spreadsheet);
     }
 }

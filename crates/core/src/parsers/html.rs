@@ -246,6 +246,7 @@ static RE_RAW_IMG: LazyLock<regex::Regex> =
 ///   alt text when there is no src)
 /// - table rows padded to column width with runs of spaces are collapsed
 ///   (alignment is cosmetic in markdown and explodes token counts)
+/// - setext headings (`Title` + `======`) become ATX (`# Title`)
 fn tidy_markdown(md: &str) -> String {
     let md = RE_RAW_IMG.replace_all(md, |caps: &regex::Captures| {
         let tag = &caps[0];
@@ -256,16 +257,47 @@ fn tidy_markdown(md: &str) -> String {
         }
     });
 
-    md.lines()
-        .map(|line| {
-            if line.trim_start().starts_with('|') {
-                collapse_spaces(line)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let lines: Vec<&str> = md.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let underline = lines.get(i + 1).copied().and_then(setext_level);
+        if let Some(level) = underline
+            && is_heading_text(line)
+        {
+            out.push(format!("{} {}", "#".repeat(level), line.trim()));
+            i += 2;
+            continue;
+        }
+        if line.trim_start().starts_with('|') {
+            out.push(collapse_spaces(line));
+        } else {
+            out.push(line.to_string());
+        }
+        i += 1;
+    }
+    out.join("\n")
+}
+
+/// `====` underlines mean h1, `----` mean h2 (3+ chars, nothing else on the line).
+fn setext_level(line: &str) -> Option<usize> {
+    let t = line.trim();
+    if t.len() >= 3 && t.chars().all(|c| c == '=') {
+        Some(1)
+    } else if t.len() >= 3 && t.chars().all(|c| c == '-') {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// The line above an underline only counts as heading text when it's a plain
+/// short-ish line — not empty, not a list item / table row / existing heading
+/// (an `----` after those is a horizontal rule, not an underline).
+fn is_heading_text(line: &str) -> bool {
+    let t = line.trim();
+    !t.is_empty() && !t.starts_with(['|', '#', '-', '*', '>', '='])
 }
 
 /// Extracts a double-quoted attribute value out of a raw HTML tag string.

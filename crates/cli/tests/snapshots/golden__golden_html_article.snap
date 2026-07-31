@@ -7,15 +7,13 @@ expression: "gobble(&[\"test_assets/saved_article.html\", \"-q\"])"
 title: "How Goblins Sort Their Hoard — Goblin Weekly"
 ---
 
-How Goblins Sort Their Hoard
-==========
+# How Goblins Sort Their Hoard
 
 By the Archivist, 3rd Age
 
 Every goblin knows that a hoard is only as good as its index. A pile of unsorted treasure is just a pile; a *catalogued* pile is wealth.
 
-The three bins
-----------
+## The three bins
 
 The classic system uses three bins, described in [the hoard theory primer](/docs/hoard-theory):
 

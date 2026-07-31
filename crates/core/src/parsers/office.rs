@@ -164,37 +164,27 @@ fn emphasize(text: &str, marker: &str) -> String {
     format!("{}{}{}{}{}", lead, marker, core, marker, trail)
 }
 
+/// A Word table as a standard markdown pipe table (row 0 is the header row).
 fn format_table(t: &docx_rs::Table) -> String {
-    let mut table_string = String::new();
-    let mut headers = Vec::new();
-
+    let mut out = String::new();
     for (row_idx, row_child) in t.rows.iter().enumerate() {
         let docx_rs::TableChild::TableRow(row) = row_child;
-        let mut row_string = String::new();
+        let cells: Vec<String> = row
+            .cells
+            .iter()
+            .map(|cell_child| {
+                let docx_rs::TableRowChild::TableCell(cell) = cell_child;
+                extract_cell_text(cell)
+                    .replace('|', "\\|")
+                    .replace('\n', " ")
+            })
+            .collect();
+        out.push_str(&format!("| {} |\n", cells.join(" | ")));
         if row_idx == 0 {
-            for (col_idx, cell_child) in row.cells.iter().enumerate() {
-                let docx_rs::TableRowChild::TableCell(cell) = cell_child;
-                let text = extract_cell_text(cell);
-                headers.push(if text.is_empty() {
-                    format!("Col {}", col_idx)
-                } else {
-                    text
-                });
-            }
-        } else {
-            row_string.push_str(&format!("Row {}: ", row_idx));
-            for (col_idx, cell_child) in row.cells.iter().enumerate() {
-                let docx_rs::TableRowChild::TableCell(cell) = cell_child;
-                let default_header = format!("Col {}", col_idx);
-                let header = headers.get(col_idx).unwrap_or(&default_header);
-                let val = extract_cell_text(cell);
-                row_string.push_str(&format!("{}: {}; ", header, val));
-            }
-            row_string.push('\n');
-            table_string.push_str(&row_string);
+            out.push_str(&format!("|{}\n", "---|".repeat(cells.len())));
         }
     }
-    table_string
+    out
 }
 
 fn extract_cell_text(cell: &docx_rs::TableCell) -> String {
@@ -223,7 +213,7 @@ mod tests {
     use docx_rs::{Paragraph, Run, Table, TableCell, TableRow};
 
     #[test]
-    fn test_format_table_sequence_of_records() {
+    fn test_format_table_markdown_pipe() {
         // Construct a table manually
         let t = Table::new(vec![
             TableRow::new(vec![
@@ -248,8 +238,10 @@ mod tests {
 
         let result = format_table(&t);
         println!("Table:\n{}", result);
-        assert!(result.contains("Row 1: Header1: Value1; Header2: Value2;"));
-        assert!(result.contains("Row 2: Header1: Value3; Header2: Value4;"));
+        assert!(result.contains("| Header1 | Header2 |"));
+        assert!(result.contains("|---|---|"));
+        assert!(result.contains("| Value1 | Value2 |"));
+        assert!(result.contains("| Value3 | Value4 |"));
     }
 
     #[test]

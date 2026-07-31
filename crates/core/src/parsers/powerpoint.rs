@@ -9,37 +9,74 @@ impl Gobble for PptxGobbler {
         let file = std::fs::File::open(path)?;
         let mut archive = zip::ZipArchive::new(file)?;
 
-        let mut slide_contents: Vec<(usize, String)> = Vec::new();
+        let mut slide_texts: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut notes_texts: std::collections::HashMap<usize, String> =
+            std::collections::HashMap::new();
+        let mut presentation_xml = String::new();
+        let mut rels_xml = String::new();
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
             let name = file.name().to_string();
 
-            // We only care about slide files: "ppt/slides/slideN.xml"
-            if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
-                // Extract the slide number N
+            if name == "ppt/presentation.xml" {
+                file.read_to_string(&mut presentation_xml)?;
+            } else if name == "ppt/_rels/presentation.xml.rels" {
+                file.read_to_string(&mut rels_xml)?;
+            } else if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
+                let mut xml_content = String::new();
+                file.read_to_string(&mut xml_content)?;
+                let text = extract_text_from_slide_xml(&xml_content);
+                if !text.trim().is_empty() {
+                    slide_texts.insert(name, text);
+                }
+            } else if name.starts_with("ppt/notesSlides/notesSlide") && name.ends_with(".xml") {
                 let num_str = name
-                    .trim_start_matches("ppt/slides/slide")
+                    .trim_start_matches("ppt/notesSlides/notesSlide")
                     .trim_end_matches(".xml");
-
-                if let Ok(slide_num) = num_str.parse::<usize>() {
+                if let Ok(n) = num_str.parse::<usize>() {
                     let mut xml_content = String::new();
                     file.read_to_string(&mut xml_content)?;
-
-                    let text = extract_text_from_slide_xml(&xml_content);
+                    // Notes slides carry a slide-number placeholder; digit-only
+                    // lines are that artifact, not the speaker's words.
+                    let text = extract_text_from_slide_xml(&xml_content)
+                        .lines()
+                        .filter(|l| {
+                            !l.trim()
+                                .trim_start_matches("- ")
+                                .chars()
+                                .all(|c| c.is_ascii_digit())
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     if !text.trim().is_empty() {
-                        slide_contents.push((slide_num, text));
+                        notes_texts.insert(n, text);
                     }
                 }
             }
         }
 
-        // Sort by slide number
-        slide_contents.sort_by_key(|(num, _)| *num);
+        // True slide order comes from the presentation manifest (sldIdLst → rels
+        // targets); filename numbers are only a fallback, since decks that were
+        // reordered in PowerPoint keep their original file names.
+        let mut ordered = manifest_slide_order(&presentation_xml, &rels_xml);
+        ordered.retain(|name| slide_texts.contains_key(name));
+        let mut leftovers: Vec<String> = slide_texts
+            .keys()
+            .filter(|k| !ordered.contains(k))
+            .cloned()
+            .collect();
+        leftovers.sort_by_key(|name| slide_file_number(name).unwrap_or(usize::MAX));
+        ordered.extend(leftovers);
 
         let mut output = String::new();
-        for (num, content) in slide_contents {
-            output.push_str(&format!("## Slide {}\n\n{}", num, content));
+        for (pos, name) in ordered.iter().enumerate() {
+            let content = &slide_texts[name];
+            output.push_str(&format!("## Slide {}\n\n{}", pos + 1, content));
+            if let Some(notes) = slide_file_number(name).and_then(|n| notes_texts.get(&n)) {
+                output.push_str(&format!("\n\n**Speaker notes:**\n{}", notes));
+            }
             output.push_str("\n\n---\n\n");
         }
 
@@ -49,6 +86,75 @@ impl Gobble for PptxGobbler {
 
         Ok(output)
     }
+}
+
+/// The `N` in `ppt/slides/slideN.xml` (notes files use the same number).
+fn slide_file_number(name: &str) -> Option<usize> {
+    name.trim_start_matches("ppt/slides/slide")
+        .trim_end_matches(".xml")
+        .parse()
+        .ok()
+}
+
+/// Reads `<p:sldIdLst>` from presentation.xml (r:id order) and resolves each id
+/// through presentation.xml.rels to a slide part name. Returns full zip paths
+/// (`ppt/slides/slideN.xml`) in presentation order; empty when either part is
+/// missing or unparsable.
+fn manifest_slide_order(presentation_xml: &str, rels_xml: &str) -> Vec<String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    // rels: Id → Target
+    let mut id_to_target: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut reader = Reader::from_str(rels_xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if e.local_name().as_ref() == b"Relationship" =>
+            {
+                let mut id = None;
+                let mut target = None;
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"Id" => id = attr.unescape_value().ok().map(|v| v.into_owned()),
+                        b"Target" => target = attr.unescape_value().ok().map(|v| v.into_owned()),
+                        _ => {}
+                    }
+                }
+                if let (Some(id), Some(target)) = (id, target) {
+                    id_to_target.insert(id, target);
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    // presentation.xml: sldId r:id attributes, in document order
+    let mut order = Vec::new();
+    let mut reader = Reader::from_str(presentation_xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if e.local_name().as_ref() == b"sldId" =>
+            {
+                for attr in e.attributes().flatten() {
+                    if attr.key.as_ref().ends_with(b"id")
+                        && let Ok(rid) = attr.unescape_value()
+                        && let Some(target) = id_to_target.get(rid.as_ref())
+                    {
+                        // Targets are relative to ppt/ ("slides/slide1.xml").
+                        let full = format!("ppt/{}", target.trim_start_matches('/'));
+                        order.push(full);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    order
 }
 
 fn extract_text_from_slide_xml(xml: &str) -> String {
@@ -61,12 +167,11 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
     let mut output = String::new();
     let mut in_text_node = false;
 
-    // Table state trackers
+    // Table state trackers (tables render as markdown pipe tables, row 0 = header)
     let mut in_table = false;
     let mut current_row_idx = 0;
-    let mut current_col_idx = 0;
     let mut current_cell_text = String::new();
-    let mut headers: Vec<String> = Vec::new();
+    let mut row_cells: Vec<String> = Vec::new();
 
     loop {
         match reader.read_event() {
@@ -78,10 +183,7 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
                         output.push('\n'); // Pad before table
                     }
                     b"a:tr" if in_table => {
-                        current_col_idx = 0;
-                        if current_row_idx > 0 {
-                            output.push_str(&format!("\nRow {}: ", current_row_idx));
-                        }
+                        row_cells.clear();
                     }
                     b"a:tc" if in_table => {
                         current_cell_text.clear();
@@ -106,29 +208,22 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
             Ok(Event::End(ref e)) => match e.name().as_ref() {
                 b"a:tbl" => {
                     in_table = false;
-                    headers.clear();
                     output.push('\n'); // Pad after table
                 }
                 b"a:tr" if in_table => {
+                    output.push_str(&format!("\n| {} |", row_cells.join(" | ")));
+                    if current_row_idx == 0 {
+                        output.push_str(&format!("\n|{}", "---|".repeat(row_cells.len())));
+                    }
                     current_row_idx += 1;
                 }
                 b"a:tc" if in_table => {
-                    let text = current_cell_text.trim().to_string();
-                    if current_row_idx == 0 {
-                        // Header row
-                        headers.push(if text.is_empty() {
-                            format!("Col {}", current_col_idx)
-                        } else {
-                            text
-                        });
-                    } else {
-                        let header = headers
-                            .get(current_col_idx)
-                            .cloned()
-                            .unwrap_or_else(|| format!("Col {}", current_col_idx));
-                        output.push_str(&format!("{}: {}; ", header, text));
-                    }
-                    current_col_idx += 1;
+                    row_cells.push(
+                        current_cell_text
+                            .trim()
+                            .replace('|', "\\|")
+                            .replace('\n', " "),
+                    );
                 }
                 b"a:t" => in_text_node = false,
                 b"a:p" if !in_table => output.push('\n'),
@@ -170,6 +265,25 @@ mod tests {
 
         let result = extract_text_from_slide_xml(xml);
         assert!(result.contains("Regular Text"));
-        assert!(result.contains("Row 1: Header1: Value1; Header2: Value2;"));
+        assert!(result.contains("| Header1 | Header2 |"));
+        assert!(result.contains("|---|---|"));
+        assert!(result.contains("| Value1 | Value2 |"));
+    }
+
+    #[test]
+    fn manifest_order_beats_filename_order() {
+        let rels = r#"<Relationships>
+            <Relationship Id="rId2" Target="slides/slide2.xml"/>
+            <Relationship Id="rId1" Target="slides/slide1.xml"/>
+        </Relationships>"#;
+        // The deck was reordered: slide2 is presented first.
+        let pres = r#"<p:presentation xmlns:p="x" xmlns:r="y"><p:sldIdLst>
+            <p:sldId id="257" r:id="rId2"/>
+            <p:sldId id="256" r:id="rId1"/>
+        </p:sldIdLst></p:presentation>"#;
+        assert_eq!(
+            manifest_slide_order(pres, rels),
+            vec!["ppt/slides/slide2.xml", "ppt/slides/slide1.xml"]
+        );
     }
 }

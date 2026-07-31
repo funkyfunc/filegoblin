@@ -9,9 +9,9 @@ pub mod github;
 pub mod gobble;
 pub mod html;
 pub mod jupyter;
-#[cfg(feature = "ocr")]
 pub mod ocr;
 pub mod office;
+pub mod opendocument;
 pub mod pdf;
 pub mod powerpoint;
 pub mod rtf;
