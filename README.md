@@ -61,6 +61,7 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] URL fetching routes by Content-Type: HTML → extractor, raw markdown/JSON/text → passthrough, binary documents (a PDF URL!) → the normal parser pipeline
 - [x] Recursive crawling (`--horde`) + GitHub repo cloning — **on by default** in the CLI binary (`web` feature; disable with `--no-default-features`)
 - [x] Fail-loud contract for agents: exit `4` whenever nothing could be extracted, hard errors on invalid flags, quiet exit on broken pipes, explicit paths take precedence over piped stdin
+- [x] MCP server (`--mcp`): stdio Model Context Protocol server exposing a `convert` tool — plug filegoblin into Claude Desktop/Code with one config line
 - [x] Golden-file test suite: end-to-end snapshots of real fixture output per format (`cargo insta review` to inspect changes)
 - [x] WASM Plugin Extensibility (`--plugin`) — requires `--features wasm`
 - [x] Semantic BM25 Search with Relevance Scores (`--search`) — requires `--features rag`

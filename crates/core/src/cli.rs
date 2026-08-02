@@ -160,6 +160,10 @@ pub struct Cli {
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub interactive: bool,
 
+    /// Run as an MCP (Model Context Protocol) stdio server exposing a `convert` tool
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub mcp: bool,
+
     /// Suppress all auxiliary output (mascots, progress logs, etc) to ensure clean pipeline usage
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub quiet: bool,

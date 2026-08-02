@@ -3,6 +3,7 @@ pub mod compressor;
 pub mod curation;
 pub mod format;
 pub mod git;
+pub mod mcp;
 pub mod net;
 pub mod parsers;
 pub mod pipeline;
@@ -118,6 +119,55 @@ pub fn gobble_app(targets: &[String], args: &crate::cli::Cli) -> Result<GobbleOu
         redactions,
         produced,
     })
+}
+
+/// Runs the full ingest pipeline for the given targets and returns the combined
+/// markdown as a String instead of writing to stdout. Used by the MCP server
+/// (whose stdout carries only protocol messages). Failed extractions are
+/// dropped; if nothing at all was extracted the first error (or a generic
+/// message) is returned so a no-op can't look like success.
+pub fn gobble_to_string(targets: &[String], args: &crate::cli::Cli) -> Result<String> {
+    if targets.is_empty() {
+        anyhow::bail!("No targets to gobble");
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(100);
+    let targets_clone = targets.to_vec();
+    let args_clone = args.clone();
+    let producer =
+        std::thread::spawn(move || routing::route_targets(&targets_clone, &args_clone, tx));
+    let docs: Vec<crate::pipeline::GobbleDocument> = rx.into_iter().collect();
+    producer
+        .join()
+        .map_err(|_| anyhow::anyhow!("The ingestion thread panicked"))??;
+
+    let content: Vec<&crate::pipeline::GobbleDocument> = docs
+        .iter()
+        .filter(|d| d.error.is_none() && !d.content.trim().is_empty())
+        .collect();
+    if content.iter().all(|d| d.path == "_tree.md") {
+        if let Some(err) = docs.iter().find_map(|d| d.error.as_deref()) {
+            anyhow::bail!("{}", err);
+        }
+        anyhow::bail!("Nothing could be extracted from {}", targets.join(", "));
+    }
+
+    // Same block format as the stdout paths: bare content for a single
+    // document, FILE_START breadcrumbs (tree map first) for bundles.
+    let single = content.len() == 1;
+    let mut out = String::new();
+    for doc in content {
+        if doc.path == "_tree.md" {
+            out.push_str(&doc.content);
+        } else if single {
+            out.push_str(doc.content.trim());
+        } else {
+            out.push_str(&format!(
+                "// --- FILE_START: {} ---\n{}\n\n",
+                doc.path, doc.content
+            ));
+        }
+    }
+    Ok(out.trim().to_string())
 }
 
 /// Whether an output mode needs the full corpus in memory (so it can't stream).

@@ -69,6 +69,12 @@ fn main() -> Result<()> {
     #[cfg_attr(not(feature = "tui"), allow(unused_mut))]
     let mut args = Cli::parse();
 
+    // MCP server mode owns stdin/stdout entirely: no mascot, no stdin-as-target
+    // fallback, no path requirement.
+    if args.mcp {
+        return filegoblin_core::mcp::serve();
+    }
+
     // Explicit paths win. Only when NO paths are given do we fall back to a piped
     // stdin ("cat x | filegoblin" works bare) — never in addition to paths, so
     // `filegoblin file.md` spawned with an open-but-idle stdin pipe (the normal
