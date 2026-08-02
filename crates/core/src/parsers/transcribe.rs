@@ -43,10 +43,7 @@ mod imp {
     const MODEL_URL: &str =
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 
-    pub struct Segment {
-        pub start_cs: i64,
-        pub text: String,
-    }
+    use crate::parsers::transcript::Segment;
 
     pub fn transcribe_file(path: &Path, per_segment: bool, quiet: bool) -> Result<String> {
         // Transcripts are content-addressed: file hash + model identity.
@@ -365,54 +362,24 @@ mod imp {
         Ok(())
     }
 
-    /// Sparse-timestamped paragraphs: a `**[HH:MM:SS]**` marker on silence gaps
-    /// (>2s), size (~700 chars), or 60s elapsed — dense enough to navigate,
-    /// cheap enough for LLM context. `--full` emits every segment stamped.
+    /// Delegates to the shared transcript renderer so a whisper transcript and
+    /// a subtitle file produce the same markdown shape.
     pub fn format_transcript(
         path: &Path,
         lang: &str,
         segments: &[Segment],
         per_segment: bool,
     ) -> String {
-        let mut out = format!(
-            "# Transcript: {}\n\n**Model:** whisper large-v3-turbo · **Language:** {}\n\n",
-            path.file_name().unwrap_or_default().to_string_lossy(),
-            lang
-        );
-        if per_segment {
-            for s in segments {
-                out.push_str(&format!("**[{}]** {}\n", fmt_ts(s.start_cs), s.text));
-            }
-            return out.trim_end().to_string();
-        }
-
-        let mut para = String::new();
-        let mut para_start = 0i64;
-        let mut last_end = 0i64;
-        for s in segments {
-            let gap = s.start_cs - last_end;
-            let elapsed = s.start_cs - para_start;
-            if !para.is_empty() && (gap > 200 || para.len() > 700 || elapsed > 6_000) {
-                out.push_str(&format!("**[{}]** {}\n\n", fmt_ts(para_start), para.trim()));
-                para.clear();
-            }
-            if para.is_empty() {
-                para_start = s.start_cs;
-            }
-            para.push_str(&s.text);
-            para.push(' ');
-            last_end = s.start_cs;
-        }
-        if !para.trim().is_empty() {
-            out.push_str(&format!("**[{}]** {}\n", fmt_ts(para_start), para.trim()));
-        }
-        out.trim_end().to_string()
-    }
-
-    /// Centiseconds → HH:MM:SS.
-    fn fmt_ts(cs: i64) -> String {
-        let s = cs / 100;
-        format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+        let meta = vec![
+            ("Model", "whisper large-v3-turbo".to_string()),
+            ("Language", lang.to_string()),
+        ];
+        crate::parsers::transcript::render(
+            &path.file_name().unwrap_or_default().to_string_lossy(),
+            &meta,
+            segments,
+            per_segment,
+        )
     }
 
     #[cfg(test)]

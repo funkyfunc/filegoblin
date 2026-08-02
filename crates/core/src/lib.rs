@@ -427,6 +427,7 @@ pub(crate) fn route_and_gobble(
         Format::Code => parsers::code::CodeGobbler.gobble(path, &opts),
         Format::Epub => parsers::epub::EpubGobbler.gobble(path, &opts),
         Format::Feed => parsers::feed::FeedGobbler.gobble(path, &opts),
+        Format::Subtitle => parsers::subtitle::SubtitleGobbler.gobble(path, &opts),
         Format::Html => parsers::html::HtmlGobbler {
             extract_full: opts.full,
             ..Default::default()

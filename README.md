@@ -63,6 +63,7 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] Recursive crawling (`--horde`) + GitHub repo cloning — **on by default** in the CLI binary (`web` feature; disable with `--no-default-features`)
 - [x] Fail-loud contract for agents: exit `4` whenever nothing could be extracted, hard errors on invalid flags, quiet exit on broken pipes, explicit paths take precedence over piped stdin
 - [x] MCP server (`--mcp`): stdio Model Context Protocol server exposing a `convert` tool — plug filegoblin into Claude Desktop/Code with one config line
+- [x] Subtitles (`.srt`/`.vtt`): cue files → the same timestamped transcript markdown whisper produces, with speaker labels and rolling-caption dedup
 - [x] RSS/Atom feeds: a feed URL or saved feed file → a clean markdown list of entries
 - [x] Conversion cache: repeat URL fetches and OCR/transcription results come back instantly (`~/.filegoblin/cache`, `--no-cache` to bypass)
 - [x] Audio/video transcription (`--features transcribe-metal`): mp3/m4a/wav/flac/ogg/opus/mp4/mov/webm/mkv (audio track) → timestamped transcript markdown via whisper.cpp, on-device, model auto-downloads once
@@ -104,6 +105,7 @@ keep the binary lean). Feature-gated items are marked below.
 | **Email** | `~/thread.eml`, `~/inbox.mbox` | `EmailGobbler` | Header block + markdown body + attachment list |
 | **RTF** | `~/notes.rtf` | `RtfGobbler` | Plain text |
 | **Images** | `~/screenshot.png`, `~/IMG_0042.HEIC` | `OcrGobbler` (built-in on macOS) | OCR Text |
+| **Subtitles** | `~/movie.srt`, `~/talk.vtt` | `SubtitleGobbler` | Timestamped transcript |
 | **RSS/Atom** | `https://hnrss.org/frontpage` | `FeedGobbler` | Entry list (title, link, date, body) |
 | **Webpages** | `https://news.ycombinator.com` | `HtmlGobbler` (default build) | DOM extraction + front-matter |
 
