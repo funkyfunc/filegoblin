@@ -69,6 +69,8 @@ fn main() -> Result<()> {
     #[cfg_attr(not(feature = "tui"), allow(unused_mut))]
     let mut args = Cli::parse();
 
+    filegoblin_core::cache::set_enabled(!args.no_cache);
+
     // MCP server mode owns stdin/stdout entirely: no mascot, no stdin-as-target
     // fallback, no path requirement.
     if args.mcp {

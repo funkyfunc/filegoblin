@@ -32,8 +32,20 @@ pub fn ocr_available() -> bool {
 /// - macOS: Apple Vision (always available, hardware accelerated, no weights)
 /// - Linux + `ocr` feature: pure-Rust `ocrs`/`rten` (weights via `just get-brains`)
 /// - Windows + `ocr` feature: the Windows.Media.Ocr API
-#[allow(unreachable_code, unused_variables)]
 pub fn ocr_image_bytes(bytes: &[u8]) -> Result<String> {
+    // OCR is content-addressed: identical image bytes always yield the same
+    // text for a given backend, so results cache indefinitely.
+    let key = crate::cache::key(bytes);
+    if let Some(text) = crate::cache::get_blob("ocr", &key) {
+        return Ok(text);
+    }
+    let text = ocr_image_bytes_uncached(bytes)?;
+    crate::cache::put_blob("ocr", &key, &text);
+    Ok(text)
+}
+
+#[allow(unreachable_code, unused_variables)]
+fn ocr_image_bytes_uncached(bytes: &[u8]) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
         return vision_ocr(bytes);

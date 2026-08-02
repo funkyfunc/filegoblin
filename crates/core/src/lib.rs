@@ -1,4 +1,5 @@
 pub mod browser;
+pub mod cache;
 pub mod cli;
 pub mod compressor;
 pub mod curation;
@@ -547,9 +548,47 @@ impl FetchedBody {
     }
 }
 
+/// Wire format for the URL cache: two header lines (media type, content type —
+/// header values cannot contain newlines) followed by the raw body bytes.
+#[cfg(feature = "web")]
+impl FetchedBody {
+    fn to_cache_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.bytes.len() + 128);
+        out.extend_from_slice(self.media_type.as_deref().unwrap_or("").as_bytes());
+        out.push(b'\n');
+        out.extend_from_slice(self.content_type.as_deref().unwrap_or("").as_bytes());
+        out.push(b'\n');
+        out.extend_from_slice(&self.bytes);
+        out
+    }
+
+    fn from_cache_bytes(raw: &[u8]) -> Option<Self> {
+        let nl1 = raw.iter().position(|&b| b == b'\n')?;
+        let nl2 = nl1 + 1 + raw[nl1 + 1..].iter().position(|&b| b == b'\n')?;
+        let line = |s: &[u8]| {
+            let v = String::from_utf8_lossy(s).into_owned();
+            (!v.is_empty()).then_some(v)
+        };
+        Some(Self {
+            media_type: line(&raw[..nl1]),
+            content_type: line(&raw[nl1 + 1..nl2]),
+            bytes: raw[nl2 + 1..].to_vec(),
+        })
+    }
+}
+
 #[cfg(feature = "web")]
 fn fetch_url(url: &Url, quiet: bool) -> Result<FetchedBody> {
     use std::io::Read;
+
+    if let Some(cached) = crate::cache::get_url(url.as_str())
+        && let Some(body) = FetchedBody::from_cache_bytes(&cached)
+    {
+        if !quiet {
+            eprintln!("♻️  Using cached fetch of {} (--no-cache to refetch)", url);
+        }
+        return Ok(body);
+    }
 
     // reqwest respects HTTP_PROXY / HTTPS_PROXY automatically.
     if let Ok(proxy) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("HTTP_PROXY"))
@@ -599,11 +638,13 @@ fn fetch_url(url: &Url, quiet: bool) -> Result<FetchedBody> {
         .map(|ct| ct.split(';').next().unwrap_or("").trim().to_lowercase())
         .filter(|mt| !mt.is_empty());
 
-    Ok(FetchedBody {
+    let body = FetchedBody {
         bytes: buf,
         media_type,
         content_type,
-    })
+    };
+    crate::cache::put_url(url.as_str(), &body.to_cache_bytes());
+    Ok(body)
 }
 
 /// Decodes a fetched page's bytes: honours the `Content-Type` charset when

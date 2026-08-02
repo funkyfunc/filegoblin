@@ -165,6 +165,11 @@ pub struct Cli {
     #[arg(short, long, help_heading = "Developer Utilities")]
     pub interactive: bool,
 
+    /// Skip the conversion cache (~/.filegoblin/cache) for this run: refetch
+    /// URLs and redo OCR/transcription even when a cached result exists
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub no_cache: bool,
+
     /// Run as an MCP (Model Context Protocol) stdio server exposing a `convert` tool
     #[arg(long, help_heading = "Developer Utilities")]
     pub mcp: bool,

@@ -64,6 +64,8 @@ rten-tensor = { version = "0.24.0", optional = true }
 scraper = "0.25.0"
 encoding_rs = { version = "0.8", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
+# Cache keys (pure Rust)
+sha2 = "0.10"
 serde_json = "1.0.149"
 rayon = "1.10.0"
 tantivy = { version = "0.22", optional = true }
