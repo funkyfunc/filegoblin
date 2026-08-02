@@ -1,2 +1,6 @@
 [alias]
 horde-check = "!cargo clippy --workspace -- -D warnings && cargo fmt --check && cargo test --workspace"
+
+[env]
+# audiopus_sys bundles a libopus whose CMakeLists predates cmake 4's policy floor
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

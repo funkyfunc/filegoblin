@@ -26,7 +26,7 @@ rag = ["dep:tantivy"]
 # Audio/video → transcript via whisper.cpp. Build needs cmake + a C/C++
 # compiler (statically linked — allowed per the engineering standard). The
 # model (~574MB) auto-downloads on first use to ~/.filegoblin/models.
-transcribe = ["dep:whisper-rs", "dep:symphonia", "dep:ureq"]
+transcribe = ["dep:whisper-rs", "dep:symphonia", "dep:opus", "dep:ureq"]
 # Metal GPU acceleration on macOS (needs Xcode CLT at build time).
 transcribe-metal = ["transcribe", "whisper-rs/metal"]
 
@@ -74,7 +74,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10"
 whisper-rs = { version = "0.16", optional = true }
 # Defaults already cover flac/ogg/vorbis/wav/pcm/mkv; opt into the rest.
-symphonia = { version = "0.5.5", features = ["mp3", "aac", "isomp4"], optional = true }
+symphonia = { version = "0.5.5", features = ["mp3", "aac", "isomp4", "caf"], optional = true }
+# Opus decode (bundled libopus, statically linked) — symphonia demuxes webm/mkv/ogg/caf but has no Opus decoder
+opus = { version = "0.3", optional = true }
 ureq = { version = "2.10", default-features = false, features = ["tls"], optional = true }
 serde_json = "1.0.149"
 rayon = "1.10.0"

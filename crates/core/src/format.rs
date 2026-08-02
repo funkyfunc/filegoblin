@@ -77,7 +77,7 @@ fn from_extension(ext: &str) -> Option<Format> {
         "html" | "htm" => Format::Html,
         "rs" | "js" | "ts" | "py" | "go" | "c" | "cpp" => Format::Code,
         "png" | "jpg" | "jpeg" | "webp" => Format::Image,
-        "mp3" | "m4a" | "wav" | "flac" | "ogg" | "oga" | "aac" => Format::Audio,
+        "mp3" | "m4a" | "wav" | "flac" | "ogg" | "oga" | "aac" | "opus" | "caf" => Format::Audio,
         "mp4" | "m4v" | "mov" | "webm" | "mkv" => Format::Video,
         "zip" | "gz" | "tgz" => Format::Archive,
         "md" | "markdown" => Format::Markdown,
@@ -118,7 +118,11 @@ fn from_magic(header: &[u8]) -> Option<Format> {
     if header.starts_with(b"RIFF") && header.len() >= 12 && &header[8..12] == b"WAVE" {
         return Some(Format::Audio);
     }
-    if header.starts_with(b"ID3") || header.starts_with(b"OggS") || header.starts_with(b"fLaC") {
+    if header.starts_with(b"caff")
+        || header.starts_with(b"ID3")
+        || header.starts_with(b"OggS")
+        || header.starts_with(b"fLaC")
+    {
         return Some(Format::Audio);
     }
     if header.len() >= 12 && &header[4..8] == b"ftyp" {

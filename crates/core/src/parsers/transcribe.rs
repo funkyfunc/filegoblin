@@ -130,11 +130,51 @@ mod imp {
             .ok_or_else(|| anyhow::anyhow!("No audio track found in this file"))?;
         let track_id = track.id;
         let codec = track.codec_params.codec;
+
+        // Opus (webm/mkv/ogg/caf): symphonia demuxes it but has no decoder, so
+        // packets go through libopus. It resamples internally — ask for 16kHz
+        // mono-downmixable output directly, exactly what whisper wants.
+        if codec == symphonia::core::codecs::CODEC_TYPE_OPUS {
+            let ch = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+            let opus_ch = if ch >= 2 {
+                opus::Channels::Stereo
+            } else {
+                opus::Channels::Mono
+            };
+            let n_ch = if ch >= 2 { 2 } else { 1 };
+            let mut dec = opus::Decoder::new(16_000, opus_ch)
+                .map_err(|e| anyhow::anyhow!("libopus init failed: {e}"))?;
+            let mut pcm: Vec<f32> = Vec::new();
+            // Max opus frame: 120ms @ 16k per channel.
+            let mut frame = vec![0f32; 1920 * n_ch];
+            loop {
+                let packet = match format.next_packet() {
+                    Ok(p) => p,
+                    Err(SymErr::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        break;
+                    }
+                    Err(SymErr::ResetRequired) => break,
+                    Err(e) => return Err(e).context("Failed while reading media packets"),
+                };
+                if packet.track_id() != track_id {
+                    continue;
+                }
+                // A corrupt packet mid-stream shouldn't kill the transcript.
+                let Ok(samples) = dec.decode_float(&packet.data, &mut frame, false) else {
+                    continue;
+                };
+                for f in frame[..samples * n_ch].chunks(n_ch) {
+                    pcm.push(f.iter().sum::<f32>() / n_ch as f32);
+                }
+            }
+            return Ok((pcm, 16_000));
+        }
+
         let mut decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &DecoderOptions::default())
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "Unsupported audio codec ({codec:?} — Opus is a known gap). \
+                    "Unsupported audio codec ({codec:?}). \
                      Convert first: ffmpeg -i {} -ar 16000 -ac 1 out.wav",
                     path.display()
                 )
@@ -420,6 +460,16 @@ mod imp {
             let p = Path::new(&manifest).join("../../test_assets/spoken_sample.wav");
             let (pcm, rate) = decode_to_mono_f32(&p).unwrap();
             assert!(rate >= 8000);
+            assert!(pcm.len() as u32 > rate, "expect >1s of audio");
+        }
+
+        /// Opus-in-CAF decodes through libopus (regression for the webm gap).
+        #[test]
+        fn decodes_opus_fixture() {
+            let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+            let p = Path::new(&manifest).join("../../test_assets/spoken_opus.caf");
+            let (pcm, rate) = decode_to_mono_f32(&p).unwrap();
+            assert_eq!(rate, 16_000);
             assert!(pcm.len() as u32 > rate, "expect >1s of audio");
         }
 
