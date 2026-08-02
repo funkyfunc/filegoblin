@@ -434,6 +434,7 @@ pub(crate) fn route_and_gobble(
         // On macOS this always works (Apple Vision); elsewhere the gobbler
         // itself explains the missing `ocr` feature.
         Format::Image => parsers::ocr::OcrGobbler.gobble(path, &opts),
+        Format::Audio | Format::Video => parsers::transcribe::TranscribeGobbler.gobble(path, &opts),
         // Archives reaching this point were found *inside* a directory walk
         // (a directly-targeted archive is intercepted and extracted upstream in
         // `gobble_local`). Reading one as plaintext would emit binary garbage.

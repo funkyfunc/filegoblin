@@ -13,3 +13,8 @@ get-brains:
 install:
 	@echo "Installing latest filegoblin locally..."
 	cargo install --path crates/cli --locked --force
+
+# Fetch the whisper model for --features transcribe (also auto-downloads on first use)
+get-whisper:
+	@mkdir -p ~/.filegoblin/models
+	curl -L https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin -o ~/.filegoblin/models/ggml-large-v3-turbo-q5_0.bin

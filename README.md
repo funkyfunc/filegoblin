@@ -64,6 +64,7 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] Fail-loud contract for agents: exit `4` whenever nothing could be extracted, hard errors on invalid flags, quiet exit on broken pipes, explicit paths take precedence over piped stdin
 - [x] MCP server (`--mcp`): stdio Model Context Protocol server exposing a `convert` tool — plug filegoblin into Claude Desktop/Code with one config line
 - [x] Conversion cache: repeat URL fetches and OCR/transcription results come back instantly (`~/.filegoblin/cache`, `--no-cache` to bypass)
+- [x] Audio/video transcription (`--features transcribe-metal`): mp3/m4a/wav/flac/mp4/mov/mkv → timestamped transcript markdown via whisper.cpp, on-device, model auto-downloads once
 - [x] Golden-file test suite: end-to-end snapshots of real fixture output per format (`cargo insta review` to inspect changes)
 - [x] WASM Plugin Extensibility (`--plugin`) — requires `--features wasm`
 - [x] Semantic BM25 Search with Relevance Scores (`--search`) — requires `--features rag`

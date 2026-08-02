@@ -26,6 +26,10 @@ pub enum Format {
     Html,
     Code,
     Image,
+    /// Audio files (mp3, m4a, wav, flac, ogg, aac) — transcribed to text.
+    Audio,
+    /// Video containers (mp4, mov, webm, mkv) — audio track transcribed.
+    Video,
     Archive,
     Markdown,
     Text,
@@ -48,6 +52,8 @@ impl Format {
             Format::Html => "html",
             Format::Code => "code",
             Format::Image => "image",
+            Format::Audio => "audio",
+            Format::Video => "video",
             Format::Archive => "archive",
             Format::Markdown => "markdown",
             Format::Text => "text",
@@ -71,6 +77,8 @@ fn from_extension(ext: &str) -> Option<Format> {
         "html" | "htm" => Format::Html,
         "rs" | "js" | "ts" | "py" | "go" | "c" | "cpp" => Format::Code,
         "png" | "jpg" | "jpeg" | "webp" => Format::Image,
+        "mp3" | "m4a" | "wav" | "flac" | "ogg" | "oga" | "aac" => Format::Audio,
+        "mp4" | "m4v" | "mov" | "webm" | "mkv" => Format::Video,
         "zip" | "gz" | "tgz" => Format::Archive,
         "md" | "markdown" => Format::Markdown,
         _ => return None,
@@ -105,6 +113,24 @@ fn from_magic(header: &[u8]) -> Option<Format> {
     }
     if header.starts_with(b"RIFF") && header.len() >= 12 && &header[8..12] == b"WEBP" {
         return Some(Format::Image);
+    }
+    // Media containers (renamed/extension-less audio & video).
+    if header.starts_with(b"RIFF") && header.len() >= 12 && &header[8..12] == b"WAVE" {
+        return Some(Format::Audio);
+    }
+    if header.starts_with(b"ID3") || header.starts_with(b"OggS") || header.starts_with(b"fLaC") {
+        return Some(Format::Audio);
+    }
+    if header.len() >= 12 && &header[4..8] == b"ftyp" {
+        // ISO base media: M4A brand = audio, everything else (mp4/mov/m4v) video.
+        return Some(if &header[8..11] == b"M4A" {
+            Format::Audio
+        } else {
+            Format::Video
+        });
+    }
+    if header.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some(Format::Video); // Matroska / WebM (EBML)
     }
     // RFC822-ish email headers at the very start of the stream.
     if header.starts_with(b"From ")

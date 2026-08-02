@@ -18,6 +18,8 @@ web = ["filegoblin-core/web"]
 ocr = ["filegoblin-core/ocr"]
 wasm = ["filegoblin-core/wasm"]
 rag = ["filegoblin-core/rag"]
+transcribe = ["filegoblin-core/transcribe"]
+transcribe-metal = ["filegoblin-core/transcribe-metal"]
 tui = ["dep:filegoblin-tui"]
 
 [dev-dependencies]

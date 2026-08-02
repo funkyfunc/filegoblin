@@ -16,6 +16,7 @@ pub mod pdf;
 pub mod powerpoint;
 pub mod rtf;
 pub mod sheet;
+pub mod transcribe;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 

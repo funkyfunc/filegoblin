@@ -23,6 +23,12 @@ web = ["dep:reqwest", "dep:governor", "dep:robotxt", "dep:tokio", "dep:encoding_
 ocr = ["dep:rten", "dep:rten-tensor", "dep:ocrs", "dep:tokio"]
 wasm = ["dep:wasmtime"]
 rag = ["dep:tantivy"]
+# Audio/video → transcript via whisper.cpp. Build needs cmake + a C/C++
+# compiler (statically linked — allowed per the engineering standard). The
+# model (~574MB) auto-downloads on first use to ~/.filegoblin/models.
+transcribe = ["dep:whisper-rs", "dep:symphonia", "dep:ureq"]
+# Metal GPU acceleration on macOS (needs Xcode CLT at build time).
+transcribe-metal = ["transcribe", "whisper-rs/metal"]
 
 [dependencies]
 aho-corasick = { version = "1.1.4", features = ["perf-literal", "std"] }
@@ -66,6 +72,10 @@ encoding_rs = { version = "0.8", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 # Cache keys (pure Rust)
 sha2 = "0.10"
+whisper-rs = { version = "0.16", optional = true }
+# Defaults already cover flac/ogg/vorbis/wav/pcm/mkv; opt into the rest.
+symphonia = { version = "0.5.5", features = ["mp3", "aac", "isomp4"], optional = true }
+ureq = { version = "2.10", default-features = false, features = ["tls"], optional = true }
 serde_json = "1.0.149"
 rayon = "1.10.0"
 tantivy = { version = "0.22", optional = true }

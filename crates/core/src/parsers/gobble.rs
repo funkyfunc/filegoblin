@@ -10,6 +10,8 @@ pub struct ParseOptions {
     pub full: bool,
     /// Structural extraction mode (`--extract`).
     pub extract: Option<crate::cli::ExtractMode>,
+    /// Suppress auxiliary stderr notes (`--quiet`).
+    pub quiet: bool,
 }
 
 impl From<&crate::cli::Cli> for ParseOptions {
@@ -17,6 +19,7 @@ impl From<&crate::cli::Cli> for ParseOptions {
         Self {
             full: cli.full,
             extract: cli.extract,
+            quiet: cli.quiet,
         }
     }
 }
