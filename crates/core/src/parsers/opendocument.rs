@@ -126,6 +126,15 @@ fn content_xml_to_md(xml: &str) -> String {
                     }
                 }
             }
+            Ok(Event::GeneralRef(e)) => {
+                if let Some(s) = crate::parsers::resolve_xml_entity(&e) {
+                    if in_table {
+                        cell_text.push_str(&s);
+                    } else {
+                        line.push_str(&s);
+                    }
+                }
+            }
             Ok(Event::End(ref e)) => match e.name().as_ref() {
                 b"text:h" | b"text:p" if !in_table => {
                     flush_block(&mut out, &mut line, &mut heading_level, list_depth);
@@ -219,6 +228,18 @@ mod tests {
         assert!(result.contains("| Name | Value |"));
         assert!(result.contains("|---|---|"));
         assert!(result.contains("| Alpha | 42 |"));
+    }
+
+    #[test]
+    fn entities_in_paragraphs_survive() {
+        let xml = r#"<office:document-content><office:body><office:text>
+            <text:p>Ben &amp; Jerry&apos;s &lt;notes&gt;</text:p>
+        </office:text></office:body></office:document-content>"#;
+        let file = make_od(xml, "odt");
+        let result = OpenDocGobbler
+            .gobble(file.path(), &ParseOptions::default())
+            .unwrap();
+        assert!(result.contains("Ben & Jerry's <notes>"), "got: {result}");
     }
 
     #[test]

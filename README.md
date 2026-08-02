@@ -63,6 +63,7 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] Recursive crawling (`--horde`) + GitHub repo cloning — **on by default** in the CLI binary (`web` feature; disable with `--no-default-features`)
 - [x] Fail-loud contract for agents: exit `4` whenever nothing could be extracted, hard errors on invalid flags, quiet exit on broken pipes, explicit paths take precedence over piped stdin
 - [x] MCP server (`--mcp`): stdio Model Context Protocol server exposing a `convert` tool — plug filegoblin into Claude Desktop/Code with one config line
+- [x] RSS/Atom feeds: a feed URL or saved feed file → a clean markdown list of entries
 - [x] Conversion cache: repeat URL fetches and OCR/transcription results come back instantly (`~/.filegoblin/cache`, `--no-cache` to bypass)
 - [x] Audio/video transcription (`--features transcribe-metal`): mp3/m4a/wav/flac/ogg/opus/mp4/mov/webm/mkv (audio track) → timestamped transcript markdown via whisper.cpp, on-device, model auto-downloads once
 - [x] Golden-file test suite: end-to-end snapshots of real fixture output per format (`cargo insta review` to inspect changes)
@@ -103,6 +104,7 @@ keep the binary lean). Feature-gated items are marked below.
 | **Email** | `~/thread.eml`, `~/inbox.mbox` | `EmailGobbler` | Header block + markdown body + attachment list |
 | **RTF** | `~/notes.rtf` | `RtfGobbler` | Plain text |
 | **Images** | `~/screenshot.png`, `~/IMG_0042.HEIC` | `OcrGobbler` (built-in on macOS) | OCR Text |
+| **RSS/Atom** | `https://hnrss.org/frontpage` | `FeedGobbler` | Entry list (title, link, date, body) |
 | **Webpages** | `https://news.ycombinator.com` | `HtmlGobbler` (default build) | DOM extraction + front-matter |
 
 - **Semantic Search:** BM25 relevance scoring via `tantivy` with zero model weights.

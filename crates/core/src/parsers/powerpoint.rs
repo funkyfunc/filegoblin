@@ -162,7 +162,10 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
     use quick_xml::events::Event;
 
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    // NOT trim_text(true): it trims each text event, and entity refs split a
+    // run into several, eating the spaces around them ("R&amp;D x" -> "R&Dx").
+    // Text is only collected inside <a:t>, so untrimmed events are safe here.
+    reader.config_mut().trim_text(false);
 
     let mut output = String::new();
     let mut in_text_node = false;
@@ -202,6 +205,15 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
                         current_cell_text.push_str(&decoded);
                     } else {
                         output.push_str(&decoded);
+                    }
+                }
+            }
+            Ok(Event::GeneralRef(e)) => {
+                if in_text_node && let Some(s) = crate::parsers::resolve_xml_entity(&e) {
+                    if in_table {
+                        current_cell_text.push_str(&s);
+                    } else {
+                        output.push_str(&s);
                     }
                 }
             }
@@ -268,6 +280,15 @@ mod tests {
         assert!(result.contains("| Header1 | Header2 |"));
         assert!(result.contains("|---|---|"));
         assert!(result.contains("| Value1 | Value2 |"));
+    }
+
+    /// Entities are separate events in quick-xml 0.39; without handling them
+    /// an `&amp;` in slide text disappeared.
+    #[test]
+    fn entities_in_slide_text_survive() {
+        let xml = r#"<a:p><a:r><a:t>R&amp;D &lt;strategy&gt;</a:t></a:r></a:p>"#;
+        let result = extract_text_from_slide_xml(xml);
+        assert!(result.contains("R&D <strategy>"), "got: {result}");
     }
 
     #[test]

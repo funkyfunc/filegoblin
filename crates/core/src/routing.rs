@@ -235,6 +235,36 @@ fn route_fetched_body(
     }
 
     if body.is_textual() {
+        let text = body.decode_text();
+
+        // RSS/Atom: render the entry list instead of dumping raw XML. Detected
+        // by declared type OR by the root element, since plenty of feeds are
+        // served as text/xml (or even text/plain).
+        let declared_feed = body
+            .media_type
+            .as_deref()
+            .is_some_and(|mt| mt.contains("rss") || mt.contains("atom"));
+        if declared_feed || crate::parsers::feed::looks_like_feed(&text) {
+            match crate::parsers::feed::FeedGobbler
+                .gobble_str(&text, &crate::parsers::gobble::ParseOptions::from(args))
+            {
+                Ok(md) => {
+                    let _ = tx.send(crate::pipeline::GobbleDocument::extracted(
+                        target.to_string(),
+                        md,
+                        "feed",
+                        None,
+                    ));
+                    return;
+                }
+                // Not really a feed after all — fall through to passthrough.
+                Err(e) if declared_feed => {
+                    eprintln!("{} Feed parse failed for {}: {}", "⚠️".yellow(), url, e);
+                }
+                Err(_) => {}
+            }
+        }
+
         let label = match body.media_type.as_deref() {
             Some("text/markdown") | Some("application/markdown") => "markdown",
             Some("application/json") => "json",
@@ -242,7 +272,7 @@ fn route_fetched_body(
         };
         let _ = tx.send(crate::pipeline::GobbleDocument::extracted(
             target.to_string(),
-            body.decode_text(),
+            text,
             label,
             None,
         ));

@@ -20,6 +20,8 @@ pub enum Format {
     /// detected so the user gets an actionable error instead of binary garbage.
     LegacyOffice,
     Epub,
+    /// RSS 2.0 / Atom / RDF syndication feeds.
+    Feed,
     Jupyter,
     Email,
     Rtf,
@@ -46,6 +48,7 @@ impl Format {
             Format::OpenDocument => "opendocument",
             Format::LegacyOffice => "legacy-office",
             Format::Epub => "epub",
+            Format::Feed => "feed",
             Format::Jupyter => "jupyter",
             Format::Email => "email",
             Format::Rtf => "rtf",
@@ -71,6 +74,7 @@ fn from_extension(ext: &str) -> Option<Format> {
         "odt" | "odp" => Format::OpenDocument,
         "doc" | "ppt" => Format::LegacyOffice,
         "epub" => Format::Epub,
+        "rss" | "atom" => Format::Feed,
         "ipynb" => Format::Jupyter,
         "eml" | "mbox" => Format::Email,
         "rtf" => Format::Rtf,
@@ -158,6 +162,12 @@ fn from_magic(header: &[u8]) -> Option<Format> {
         .collect();
     if prefix.starts_with(b"<!doctype html") || prefix.starts_with(b"<html") {
         return Some(Format::Html);
+    }
+    // Syndication feeds share the XML prolog with everything else, so sniff a
+    // larger window for the root element.
+    let text = String::from_utf8_lossy(&header[..header.len().min(1024)]);
+    if crate::parsers::feed::looks_like_feed(&text) {
+        return Some(Format::Feed);
     }
     None
 }
