@@ -86,6 +86,11 @@ pub struct Cli {
     #[arg(long, help_heading = "Crawling & Ingestion")]
     pub depth: Option<usize>,
 
+    /// Render URLs with your installed Chrome/Chromium (headless) so
+    /// JavaScript-built pages work. Uses a throwaway profile (no cookies)
+    #[arg(long, help_heading = "Crawling & Ingestion")]
+    pub browser: bool,
+
     // --- CURATION & INTELLIGENCE ---
     /// Local Zero-Dependency Semantic Search (evaluates and returns top matches)
     #[arg(long, help_heading = "Curation & Intelligence")]

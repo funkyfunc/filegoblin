@@ -11,6 +11,19 @@ use std::sync::LazyLock;
 /// and converts the surviving subtree to markdown. Hyperlink targets are kept
 /// (an LLM needs URLs to follow or cite anything) and resolved against
 /// `source_url` when one is known.
+/// Typed marker inside the "page needs JavaScript" error chain, so routing can
+/// detect it (via `anyhow` downcast) and offer / trigger `--browser` rendering.
+#[derive(Debug)]
+pub struct JsGated;
+
+impl std::fmt::Display for JsGated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "page requires JavaScript rendering")
+    }
+}
+
+impl std::error::Error for JsGated {}
+
 #[derive(Default)]
 pub struct HtmlGobbler {
     /// Convert the whole document instead of isolating the main content.
@@ -76,11 +89,11 @@ impl Gobble for HtmlGobbler {
             .map(|b| b.text().flat_map(str::split_whitespace).count())
             .unwrap_or(0);
         if body_words < 10 && has_scripts {
-            anyhow::bail!(
+            return Err(anyhow::Error::new(JsGated).context(
                 "This page appears to require JavaScript rendering or authentication.\n\
-                 filegoblin uses a static HTTP fetcher and cannot execute JavaScript.\n\
-                 💡 Try: save the page as HTML from your browser, then: filegoblin <saved-file.html>"
-            );
+                 filegoblin's static fetcher cannot execute JavaScript.\n\
+                 💡 Try again with --browser to render it with your installed Chrome",
+            ));
         }
 
         let fragments = if full {

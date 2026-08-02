@@ -59,6 +59,7 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] PowerPoint: manifest-true slide order + speaker notes
 - [x] Magic-byte format detection — extension-first, falling back to content signatures so renamed / extension-less files (including archives) still route correctly; legacy `.doc`/`.ppt` detected with an actionable error
 - [x] URL fetching routes by Content-Type: HTML → extractor, raw markdown/JSON/text → passthrough, binary documents (a PDF URL!) → the normal parser pipeline
+- [x] `--browser`: render JavaScript-built pages (SPAs) with your installed Chrome/Edge/Brave — headless, throwaway profile, no bundled browser
 - [x] Recursive crawling (`--horde`) + GitHub repo cloning — **on by default** in the CLI binary (`web` feature; disable with `--no-default-features`)
 - [x] Fail-loud contract for agents: exit `4` whenever nothing could be extracted, hard errors on invalid flags, quiet exit on broken pipes, explicit paths take precedence over piped stdin
 - [x] MCP server (`--mcp`): stdio Model Context Protocol server exposing a `convert` tool — plug filegoblin into Claude Desktop/Code with one config line

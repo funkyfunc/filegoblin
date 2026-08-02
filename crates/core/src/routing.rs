@@ -179,7 +179,25 @@ fn route_fetched_body(
     use crate::parsers::gobble::Gobble;
 
     if body.looks_like_html() {
-        let html_content = body.decode_text();
+        // With --browser, the user's installed Chrome renders the page so
+        // JS-built content exists in the DOM. SSRF note: the browser does not
+        // honour our redirect guards; the initial host was already validated
+        // by the reqwest fetch above, and the mode is strictly opt-in.
+        let html_content = if args.browser {
+            match crate::browser::render_url(url, args.quiet) {
+                Ok(dom) => dom,
+                Err(e) => {
+                    eprintln!(
+                        "{} Browser rendering failed ({}); using the static fetch",
+                        "⚠️".yellow(),
+                        e
+                    );
+                    body.decode_text()
+                }
+            }
+        } else {
+            body.decode_text()
+        };
         match (crate::parsers::html::HtmlGobbler {
             extract_full: args.full,
             source_url: Some(target.to_string()),
@@ -197,12 +215,21 @@ fn route_fetched_body(
                     None,
                 ));
             }
-            Err(e) => eprintln!(
-                "{} Failed to extract web content from {}: {}",
-                "⚠️".yellow(),
-                url,
-                e
-            ),
+            Err(e) => {
+                eprintln!(
+                    "{} Failed to extract web content from {}: {}",
+                    "⚠️".yellow(),
+                    url,
+                    e
+                );
+                // In-band failure record (was silently dropped before): the
+                // JSON contract sees it, and produced=0 still exits 4.
+                let _ = tx.send(crate::pipeline::GobbleDocument::failed(
+                    target.to_string(),
+                    "html",
+                    format!("{:#}", e),
+                ));
+            }
         }
         return;
     }
