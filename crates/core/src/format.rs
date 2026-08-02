@@ -76,7 +76,9 @@ fn from_extension(ext: &str) -> Option<Format> {
         "rtf" => Format::Rtf,
         "html" | "htm" => Format::Html,
         "rs" | "js" | "ts" | "py" | "go" | "c" | "cpp" => Format::Code,
-        "png" | "jpg" | "jpeg" | "webp" => Format::Image,
+        "png" | "jpg" | "jpeg" | "webp" | "heic" | "heif" | "avif" | "tiff" | "tif" | "gif" => {
+            Format::Image
+        }
         "mp3" | "m4a" | "wav" | "flac" | "ogg" | "oga" | "aac" | "opus" | "caf" => Format::Audio,
         "mp4" | "m4v" | "mov" | "webm" | "mkv" => Format::Video,
         "zip" | "gz" | "tgz" => Format::Archive,
@@ -126,11 +128,15 @@ fn from_magic(header: &[u8]) -> Option<Format> {
         return Some(Format::Audio);
     }
     if header.len() >= 12 && &header[4..8] == b"ftyp" {
-        // ISO base media: M4A brand = audio, everything else (mp4/mov/m4v) video.
-        return Some(if &header[8..11] == b"M4A" {
-            Format::Audio
-        } else {
-            Format::Video
+        // ISO base media family — the major brand decides. HEIC/HEIF/AVIF
+        // (every iPhone photo) share the ftyp container with mp4/mov, so
+        // brand-checking is the only way to tell a still image from a video.
+        let brand = &header[8..12];
+        return Some(match brand {
+            b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+            | b"avif" | b"avis" => Format::Image,
+            b"M4A " | b"M4B " => Format::Audio,
+            _ => Format::Video,
         });
     }
     if header.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
@@ -231,6 +237,28 @@ mod tests {
         assert_eq!(detect(Path::new("mystery"), &ole), Format::LegacyOffice);
         // Legacy .xls stays with calamine, which reads it natively.
         assert_eq!(detect(Path::new("a.xls"), &ole), Format::Spreadsheet);
+    }
+
+    /// Regression: HEIC/HEIF (every iPhone photo) shares the `ftyp` container
+    /// with mp4/mov, so brand-blind sniffing sent stills to the transcriber.
+    #[test]
+    fn ftyp_brands_split_images_audio_and_video() {
+        let ftyp = |brand: &[u8]| {
+            let mut h = vec![0, 0, 0, 0x28];
+            h.extend_from_slice(b"ftyp");
+            h.extend_from_slice(brand);
+            h.extend_from_slice(b"\0\0\0\0mif1MiHE");
+            h
+        };
+        assert_eq!(detect(Path::new("photo"), &ftyp(b"heic")), Format::Image);
+        assert_eq!(detect(Path::new("photo"), &ftyp(b"mif1")), Format::Image);
+        assert_eq!(detect(Path::new("photo"), &ftyp(b"avif")), Format::Image);
+        assert_eq!(detect(Path::new("song"), &ftyp(b"M4A ")), Format::Audio);
+        assert_eq!(detect(Path::new("clip"), &ftyp(b"isom")), Format::Video);
+        assert_eq!(detect(Path::new("clip"), &ftyp(b"qt  ")), Format::Video);
+        // Extension still wins over the brand.
+        assert_eq!(detect(Path::new("a.heic"), b""), Format::Image);
+        assert_eq!(detect(Path::new("a.heif"), b""), Format::Image);
     }
 
     #[test]

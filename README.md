@@ -102,7 +102,7 @@ keep the binary lean). Feature-gated items are marked below.
 | **Source Code** | `~/project/src` | `CodeGobbler` | Full content (or `--extract symbols`) |
 | **Email** | `~/thread.eml`, `~/inbox.mbox` | `EmailGobbler` | Header block + markdown body + attachment list |
 | **RTF** | `~/notes.rtf` | `RtfGobbler` | Plain text |
-| **Images** | `~/screenshot.png` | `OcrGobbler` (built-in on macOS) | OCR Text |
+| **Images** | `~/screenshot.png`, `~/IMG_0042.HEIC` | `OcrGobbler` (built-in on macOS) | OCR Text |
 | **Webpages** | `https://news.ycombinator.com` | `HtmlGobbler` (default build) | DOM extraction + front-matter |
 
 - **Semantic Search:** BM25 relevance scoring via `tantivy` with zero model weights.
