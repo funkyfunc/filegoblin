@@ -3,6 +3,7 @@ pub mod cache;
 pub mod cli;
 pub mod compressor;
 pub mod curation;
+pub mod explore;
 pub mod format;
 pub mod git;
 pub mod mcp;
@@ -640,7 +641,7 @@ impl FetchedBody {
 const CACHE_FORMAT_MAGIC: &[u8] = b"filegoblin-cache-v1";
 
 #[cfg(feature = "web")]
-fn fetch_url(url: &Url, quiet: bool) -> Result<FetchedBody> {
+pub(crate) fn fetch_url(url: &Url, quiet: bool) -> Result<FetchedBody> {
     use std::io::Read;
 
     // Before anything else, including the cache: a blocked target must not be

@@ -378,3 +378,58 @@ dependency to serve input no real document produces. Poor return; revisit only
 if a real page ever trips the cap.
 
 **Status:** Accepted.
+
+## 2026-08-03: `--walk` — browse and pick, instead of swallowing a whole site
+
+**Context:** `--horde` on a website converts everything reachable, so a docs
+site hands back its changelog, blog archive and language variants alongside the
+four pages that were wanted. You cannot tell what is worth converting until you
+have seen it, and by then it is all converted. The parked TUI had solved this —
+browse, preview, select — and losing it removed the only way to do so.
+
+Investigation turned up a second, worse problem: **`--depth` and
+`--include`/`--exclude` are applied by the local file walker and never read by
+the crawler**, so `--horde --depth 1` against a URL silently crawled the whole
+site. There was no working way to scope a web crawl at all.
+
+**Decision:** Two modes, with the existing behaviour unchanged as the default.
+`--walk` opens an interactive picker; everything else works exactly as before.
+Interactive is opt-in and requires a TTY, because agents, pipes and the MCP
+server all call this binary and a default that waits for a keypress would break
+all three.
+
+Split along the lib/bin line the project already keeps: `core::explore` is the
+headless engine — *what does this node render as, and where does it lead* — for
+both sources (a URL previews as its converted page and leads to same-origin
+links; a directory previews as a listing and leads to its entries; a file
+previews as its conversion and leads nowhere). `cli::walk` is the screen. That
+keeps the interesting edge cases (link scoping, dedup, dotfiles, unconvertible
+nodes) in library tests, and navigation state (`WalkState`) is pure so every
+keypress is a testable transition rather than something only reachable through a
+terminal.
+
+Reuse rather than reimplementation is what made this small: previews go through
+`gobble_to_string`, so the preview *is* the output, with scrubbing and
+compression applied; link scoping calls the crawler's `normalize_link`, so
+walking and crawling agree on what counts as "this site" (including the port);
+and the URL cache makes backing up free. Selection ends by handing targets to
+the same `gobble_app` every other path uses, so output modes, exit codes and
+redaction need no special cases.
+
+crossterm for keys, drawing hand-rolled: the layout is one static screen, and
+ratatui would be a large dependency for it — that was the parked TUI's weight,
+and re-adding it to solve a smaller problem would be a poor trade. The UI draws
+to **stderr**, preserving the stdout-is-sacred invariant, so
+`filegoblin --walk <target> > out.md` behaves like every other invocation.
+
+Verified by driving the real binary in a PTY for both sources: a directory walk
+(selection surviving navigation in and out of subdirectories, and a selected
+directory correctly pulling in everything beneath it) and a served local site
+(following a link, converting the new page, finding *its* outbound links, and
+excluding the offsite one). In both cases the unselected "junk" page stayed out
+of the output and stdout carried only markdown.
+
+**Status:** Accepted. Still open: `--depth` and `--include`/`--exclude` remain
+unwired for crawls — `--walk` sidesteps that rather than fixing it, and the
+cheap non-interactive scoping is still missing. Also deferred: search/filter
+within the picker, and multi-select across a whole subtree at once.

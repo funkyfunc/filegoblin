@@ -1,3 +1,5 @@
+mod walk;
+
 use anyhow::Result;
 use clap::Parser;
 use colored::*;
@@ -66,7 +68,7 @@ fn is_broken_pipe(err: &anyhow::Error) -> bool {
 }
 
 fn main() -> Result<()> {
-    let args = Cli::parse();
+    let mut args = Cli::parse();
 
     filegoblin_core::cache::set_enabled(!args.no_cache);
 
@@ -100,6 +102,31 @@ fn main() -> Result<()> {
             );
             eprintln!("Usage: filegoblin <target>  --OR--  cat <file> | filegoblin");
             std::process::exit(2);
+        }
+    }
+
+    // `--walk` replaces the target list with whatever the user picked, then
+    // hands off to the identical pipeline — so scrubbing, compression, output
+    // modes and exit codes all behave exactly as they do without it.
+    if args.walk {
+        let Some(root) = targets.first().cloned() else {
+            eprintln!("{} --walk needs a target to start from.", "❌".red());
+            std::process::exit(2);
+        };
+        match walk::run(&root, &args)? {
+            Some(picked) => {
+                // The picker offers a directory as "include everything beneath
+                // it", so honour that: without horde, a directory target falls
+                // through to the single-file reader and errors.
+                if picked.iter().any(|t| std::path::Path::new(t).is_dir()) {
+                    args.horde = true;
+                }
+                targets = picked;
+            }
+            None => {
+                eprintln!("Nothing selected — no output.");
+                std::process::exit(4);
+            }
         }
     }
 

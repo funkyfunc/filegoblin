@@ -288,6 +288,42 @@ filegoblin . --horde --git-diff HEAD~1
 filegoblin . --horde --git-diff HEAD~1 --diff-format
 ```
 
+**Walk and pick (`--walk`) — for when you don't want the whole site:**
+
+Pointing `--horde` at a website converts everything it can reach: the changelog,
+the 2019 blog archive, every language variant. `--walk` opens a picker instead —
+read each page, follow its links, mark what you want, convert only that.
+
+```bash
+filegoblin --walk https://docs.example.com > context.md
+filegoblin --walk ./my-repo > context.md
+```
+
+```
+ https://docs.example.com/guide/     8.4k tok  ↳1
+ # Getting Started
+
+ Install the CLI, then point it at a file. Every
+ conversion happens locally on your machine.
+
+ ─ pick ──────────────────────────────────────────
+ ❯ ◉ this page — Getting Started
+   ○ Next: Configuration
+   ○ API Reference
+
+  1 selected   ↑↓ move · space keep · ⏎ follow · b back · d done · q quit
+```
+
+The preview is the actual converted markdown, so you're judging what you'd
+get, not a guess. Links are scoped to the same origin (host *and* port), and
+selecting a directory includes everything beneath it. Pages you revisit come
+from the conversion cache, so backing up is instant.
+
+The picker draws on stderr and the markdown goes to stdout, so redirecting works
+normally. It needs a terminal — piping without one is a clear error rather than
+a hang, and every other invocation is unchanged, so scripts, agents and the MCP
+server are unaffected.
+
 **MCP Server (Claude Desktop / Claude Code):**
 
 `filegoblin --mcp` speaks the Model Context Protocol over stdio, exposing a single

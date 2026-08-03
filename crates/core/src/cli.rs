@@ -111,6 +111,18 @@ pub struct Cli {
     #[arg(short = 'E', long, help_heading = "Crawling & Ingestion")]
     pub exclude: Vec<String>,
 
+    /// Browse the target and pick what to convert, instead of swallowing everything
+    ///
+    /// Opens an interactive picker: read each page or file, follow links and
+    /// folders, mark what you want, then convert only that. Works for websites
+    /// and local directories. Needs a terminal — the default (non-interactive)
+    /// behaviour is unchanged, so scripts, pipes, and the MCP server are
+    /// unaffected.
+    /// `--json` is fine here (the picker draws on stderr, JSON still goes to
+    /// stdout); `--clipboard` is not, since it replaces the input entirely.
+    #[arg(long, help_heading = "Crawling & Ingestion", conflicts_with_all = ["mcp", "clipboard"])]
+    pub walk: bool,
+
     /// Limit recursion depth for --horde crawling (e.g. --depth 1 for top-level only)
     #[arg(long, help_heading = "Crawling & Ingestion")]
     pub depth: Option<usize>,

@@ -40,3 +40,7 @@ filegoblin-core = { path = "../core", version = "1.12.0" }
 anyhow = "1.0.102"
 clap = { version = "4.5.60", features = ["derive", "env"] }
 colored = "3.1.1"
+# Raw-mode key handling for `--walk`. Terminal *drawing* is hand-rolled: the
+# picker is one static layout, so ratatui would be a large dependency for a
+# screen this simple (and this crate has no other UI).
+crossterm = "0.29.0"

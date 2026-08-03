@@ -23,7 +23,12 @@ const MAX_PAGES: usize = 500;
 ///
 /// Same-origin means host **and port**: comparing `host_str()` alone let a
 /// crawl of `example.com` follow links to `example.com:8443` or `:22`.
-fn normalize_link(base: &Url, href: &str, seed_host: &str, seed_port: Option<u16>) -> Option<Url> {
+pub(crate) fn normalize_link(
+    base: &Url,
+    href: &str,
+    seed_host: &str,
+    seed_port: Option<u16>,
+) -> Option<Url> {
     let next = base.join(href).ok()?;
     if !matches!(next.scheme(), "http" | "https") {
         return None;
