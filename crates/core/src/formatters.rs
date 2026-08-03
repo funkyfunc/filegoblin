@@ -535,8 +535,15 @@ pub fn format_and_output(
         if args.manifest && file_token_list.len() > 1 {
             combined.push_str("| # | File | Tokens |\n");
             combined.push_str("|---|------|--------|\n");
-            for (i, (path, toks)) in file_token_list.iter().enumerate() {
-                if path != "_tree.md" {
+            // Number the rows we actually emit. Enumerating the full list and
+            // then skipping `_tree.md` inside the loop meant the first real
+            // file was numbered 2 whenever a tree map was present.
+            for (i, (path, toks)) in file_token_list
+                .iter()
+                .filter(|(path, _)| path != "_tree.md")
+                .enumerate()
+            {
+                {
                     combined.push_str(&format!("| {} | {} | {} |\n", i + 1, path, toks));
                 }
             }

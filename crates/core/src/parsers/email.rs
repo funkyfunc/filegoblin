@@ -50,7 +50,9 @@ fn format_message(message: &Message) -> String {
     if let Some(date) = message.date() {
         out.push_str(&format!("**Date:** {}\n", date.to_rfc3339()));
     }
-    out.push_str(&format!("**Subject:** {}\n\n", subject));
+    // No `**Subject:**` line — the `# Email:` heading above already carries it,
+    // and repeating it just spent tokens saying the same thing twice.
+    out.push('\n');
 
     // Prefer a genuine text/plain part; otherwise convert the HTML body to
     // markdown through the DOM extractor. (mail-parser's `body_text` silently

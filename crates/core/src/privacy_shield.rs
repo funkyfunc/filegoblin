@@ -388,10 +388,17 @@ fn default_rules() -> Result<Vec<RegexRule>> {
             r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:@/]+:[^\s:@/]+@[^\s/]+",
             None,
         )?,
-        // Generic "api_key = <token>" assignment
+        // Generic "api_key = <token>" assignment.
+        //
+        // Only the *value* is matched: a look-behind-style prefix group would
+        // otherwise swallow the key name too, so `api_key = sk_live_…` redacted
+        // to a bare `[SECRET]` and the reader lost the one piece of context
+        // that says what the secret was for. Rust's regex crate has no
+        // look-behind, so the name is matched and re-emitted by the replacer
+        // (see `redact`).
         rule(
             PiiKind::Secret,
-            r"(?i)\bapi[_-]?key.{1,20}?[a-zA-Z0-9]{20,}\b",
+            r"(?i)\b(api[_-]?key|secret|token|passwd|password)\b[\s:=\x22']{1,20}[a-zA-Z0-9_\-]{16,}",
             None,
         )?,
     ])
@@ -400,6 +407,22 @@ fn default_rules() -> Result<Vec<RegexRule>> {
 // ---------------------------------------------------------------------------
 // The shield
 // ---------------------------------------------------------------------------
+
+/// For a match that looks like `name = value`, the byte index where the value
+/// starts — so the name and its separator can be preserved in the output.
+///
+/// Returns `None` for a match that is just a value, which is every rule except
+/// the generic assignment one.
+fn split_assignment_prefix(matched: &str) -> Option<usize> {
+    // Only the shapes the assignment rule can produce: an identifier, then
+    // separator characters, then the secret itself.
+    let name_end = matched.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))?;
+    let rest = &matched[name_end..];
+    let sep_len = rest
+        .find(|c: char| !(c.is_whitespace() || matches!(c, ':' | '=' | '"' | '\'')))
+        .filter(|&n| n > 0)?;
+    Some(name_end + sep_len)
+}
 
 /// Assigns stable, indexed placeholders per (label, value) for `Pseudonym` mode.
 /// `EMAIL`'s first distinct value becomes `[EMAIL_1]`, the next `[EMAIL_2]`, and any
@@ -569,14 +592,26 @@ impl PrivacyShield {
                 if s >= e {
                     return None;
                 }
+                // Keep an assignment's key name: `api_key = [SECRET]` tells a
+                // downstream model what was removed, where a bare `[SECRET]`
+                // destroys the only context in the line.
+                let matched = &input[s..e];
+                let (prefix, value_start) = match split_assignment_prefix(matched) {
+                    Some(idx) => (&matched[..idx], s + idx),
+                    None => ("", s),
+                };
+
                 let replacement = match self.style {
-                    RedactStyle::Typed => format!("[{}]", m.kind.label()),
-                    RedactStyle::Plain => "[REDACTED]".to_string(),
-                    RedactStyle::Pseudonym => self
-                        .interner
-                        .lock()
-                        .unwrap()
-                        .placeholder(&m.kind.label(), &input[s..e]),
+                    RedactStyle::Typed => format!("{}[{}]", prefix, m.kind.label()),
+                    RedactStyle::Plain => format!("{}[REDACTED]", prefix),
+                    RedactStyle::Pseudonym => format!(
+                        "{}{}",
+                        prefix,
+                        self.interner
+                            .lock()
+                            .unwrap()
+                            .placeholder(&m.kind.label(), &input[value_start..e])
+                    ),
                 };
                 Some((s, e, replacement))
             })
@@ -623,6 +658,21 @@ SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
             !out.contains("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"),
             "signature leaked: {out}"
         );
+    }
+
+    /// The key name is the one piece of context that says what a secret was
+    /// for; redacting the whole assignment threw it away.
+    #[test]
+    fn assignment_keeps_its_key_name() {
+        let out = shield().redact("api_key = abcdefghijklmnopqrstuvwxyz123456");
+        assert!(out.starts_with("api_key = ["), "got: {out}");
+        assert!(
+            !out.contains("abcdefghijklmnopqrstuvwxyz"),
+            "value must go: {out}"
+        );
+
+        let out = shield().redact("password: hunter2hunter2hunter2hunter2");
+        assert!(out.starts_with("password: ["), "got: {out}");
     }
 
     #[test]

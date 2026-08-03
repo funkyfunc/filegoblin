@@ -67,7 +67,7 @@ mod imp {
             return Ok(cached);
         }
 
-        let (pcm, rate) = decode_to_mono_f32(path)?;
+        let (pcm, rate, truncated) = decode_to_mono_f32(path)?;
         let pcm = resample_linear(&pcm, rate, 16_000);
         let seconds = pcm.len() / 16_000;
         if pcm.is_empty() {
@@ -82,7 +82,26 @@ mod imp {
         }
 
         let (lang, segments) = run_whisper(&pcm)?;
-        let out = format_transcript(path, &lang, &segments, per_segment);
+        // Music, silence, or a failed decode yields no speech. Returning a
+        // header-only "transcript" — and caching it forever — looked like a
+        // successful conversion of a file with nothing to say.
+        if segments.is_empty() {
+            anyhow::bail!(
+                "No speech was detected in this file (~{}m{:02}s of audio decoded). \
+                 Music or silence will do this.",
+                seconds / 60,
+                seconds % 60
+            );
+        }
+
+        let mut out = format_transcript(path, &lang, &segments, per_segment);
+        if truncated {
+            out.push_str(
+                "\n\n> [Decoding stopped early at a stream boundary — this transcript covers \
+                 only the first section of the file. Re-encode it (for example \
+                 `ffmpeg -i in.ogg -ar 16000 -ac 1 out.wav`) to transcribe the whole thing.]\n",
+            );
+        }
         crate::cache::put_blob("transcript", &cache_key, &out);
         Ok(out)
     }
@@ -106,7 +125,12 @@ mod imp {
 
     /// Demuxes and decodes the first audio track to interleaved-downmixed mono
     /// f32 at the source sample rate.
-    pub fn decode_to_mono_f32(path: &Path) -> Result<(Vec<f32>, u32)> {
+    ///
+    /// Returns `(samples, sample_rate, truncated)`. `truncated` is set when
+    /// decoding stopped early at a stream-chain boundary — concatenated
+    /// recordings and internet-radio rips hit this — so the caller can say the
+    /// transcript is partial instead of presenting it as the whole recording.
+    pub fn decode_to_mono_f32(path: &Path) -> Result<(Vec<f32>, u32, bool)> {
         use symphonia::core::audio::SampleBuffer;
         use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
         use symphonia::core::errors::Error as SymErr;
@@ -115,6 +139,7 @@ mod imp {
         use symphonia::core::meta::MetadataOptions;
         use symphonia::core::probe::Hint;
 
+        let mut truncated = false;
         let src = std::fs::File::open(path).context("Failed to open media file")?;
         let mss = MediaSourceStream::new(Box::new(src), Default::default());
         let mut hint = Hint::new();
@@ -144,6 +169,19 @@ mod imp {
         // mono-downmixable output directly, exactly what whisper wants.
         if codec == symphonia::core::codecs::CODEC_TYPE_OPUS {
             let ch = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+            // A plain stereo decoder cannot read a multistream (surround) Opus
+            // packet, so every decode would fail and the run ended with the
+            // generic "No audio samples could be decoded" — true, but it hides
+            // that the codec was found and only the channel layout was the
+            // problem, which is actionable.
+            if ch > 2 {
+                anyhow::bail!(
+                    "This file carries {ch}-channel (surround) Opus audio, which needs a \
+                     multistream decoder filegoblin does not bundle. Downmix it first: \
+                     ffmpeg -i {} -ac 1 -ar 16000 out.wav",
+                    path.display()
+                );
+            }
             let opus_ch = if ch >= 2 {
                 opus::Channels::Stereo
             } else {
@@ -161,7 +199,10 @@ mod imp {
                     Err(SymErr::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                         break;
                     }
-                    Err(SymErr::ResetRequired) => break,
+                    Err(SymErr::ResetRequired) => {
+                        truncated = true;
+                        break;
+                    }
                     Err(e) => return Err(e).context("Failed while reading media packets"),
                 };
                 if packet.track_id() != track_id {
@@ -175,7 +216,7 @@ mod imp {
                     pcm.push(f.iter().sum::<f32>() / n_ch as f32);
                 }
             }
-            return Ok((pcm, 16_000));
+            return Ok((pcm, 16_000, truncated));
         }
 
         let mut decoder = symphonia::default::get_codecs()
@@ -194,7 +235,10 @@ mod imp {
             let packet = match format.next_packet() {
                 Ok(p) => p,
                 Err(SymErr::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(SymErr::ResetRequired) => break,
+                Err(SymErr::ResetRequired) => {
+                    truncated = true;
+                    break;
+                }
                 Err(e) => return Err(e).context("Failed while reading media packets"),
             };
             if packet.track_id() != track_id {
@@ -216,7 +260,7 @@ mod imp {
                 Err(_) => break,
             }
         }
-        Ok((pcm, rate))
+        Ok((pcm, rate, truncated))
     }
 
     /// Linear-interpolation resampler. Whisper is robust to resampler quality,
@@ -480,7 +524,7 @@ mod imp {
         fn decodes_wav_fixture() {
             let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
             let p = Path::new(&manifest).join("../../test_assets/spoken_sample.wav");
-            let (pcm, rate) = decode_to_mono_f32(&p).unwrap();
+            let (pcm, rate, _truncated) = decode_to_mono_f32(&p).unwrap();
             assert!(rate >= 8000);
             assert!(pcm.len() as u32 > rate, "expect >1s of audio");
         }
@@ -490,7 +534,7 @@ mod imp {
         fn decodes_opus_fixture() {
             let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
             let p = Path::new(&manifest).join("../../test_assets/spoken_opus.caf");
-            let (pcm, rate) = decode_to_mono_f32(&p).unwrap();
+            let (pcm, rate, _truncated) = decode_to_mono_f32(&p).unwrap();
             assert_eq!(rate, 16_000);
             assert!(pcm.len() as u32 > rate, "expect >1s of audio");
         }
