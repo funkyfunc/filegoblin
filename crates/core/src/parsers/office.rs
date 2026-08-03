@@ -176,25 +176,16 @@ fn emphasize(text: &str, marker: &str) -> String {
 
 /// A Word table as a standard markdown pipe table (row 0 is the header row).
 fn format_table(t: &docx_rs::Table) -> String {
-    let mut out = String::new();
-    for (row_idx, row_child) in t.rows.iter().enumerate() {
+    let mut builder = crate::parsers::TableBuilder::default();
+    for row_child in t.rows.iter() {
         let docx_rs::TableChild::TableRow(row) = row_child;
-        let cells: Vec<String> = row
-            .cells
-            .iter()
-            .map(|cell_child| {
-                let docx_rs::TableRowChild::TableCell(cell) = cell_child;
-                extract_cell_text(cell)
-                    .replace('|', "\\|")
-                    .replace('\n', " ")
-            })
-            .collect();
-        out.push_str(&format!("| {} |\n", cells.join(" | ")));
-        if row_idx == 0 {
-            out.push_str(&format!("|{}\n", "---|".repeat(cells.len())));
+        for cell_child in row.cells.iter() {
+            let docx_rs::TableRowChild::TableCell(cell) = cell_child;
+            builder.push_cell(&extract_cell_text(cell), 1);
         }
+        builder.end_row();
     }
-    out
+    builder.render()
 }
 
 fn extract_cell_text(cell: &docx_rs::TableCell) -> String {
@@ -205,15 +196,40 @@ fn extract_cell_text(cell: &docx_rs::TableCell) -> String {
                 text.push_str(&p.raw_text());
                 text.push(' ');
             }
+            // Markdown has no nested tables, and rendering one as a pipe table
+            // inside a cell produced `| a | b |---|---| c |` garbage once the
+            // parent flattened its newlines. Flatten to readable text instead.
             docx_rs::TableCellContent::Table(t) => {
-                let t_str = format_table(t);
-                text.push_str(&t_str);
+                text.push_str(&flatten_nested_table(t));
                 text.push(' ');
             }
             _ => {}
         }
     }
     text.trim().to_string()
+}
+
+/// A table inside a cell, as `a: b; c: d / e: f` — cells joined by `; `, rows
+/// by ` / `. Lossy by necessity, but readable and never malformed.
+fn flatten_nested_table(t: &docx_rs::Table) -> String {
+    let rows: Vec<String> = t
+        .rows
+        .iter()
+        .map(|row_child| {
+            let docx_rs::TableChild::TableRow(row) = row_child;
+            row.cells
+                .iter()
+                .map(|cell_child| {
+                    let docx_rs::TableRowChild::TableCell(cell) = cell_child;
+                    extract_cell_text(cell)
+                })
+                .filter(|c| !c.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .filter(|r| !r.trim().is_empty())
+        .collect();
+    rows.join(" / ")
 }
 
 #[cfg(test)]

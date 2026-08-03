@@ -394,12 +394,37 @@ fn collapse_spaces(line: &str) -> String {
 /// Resolves relative markdown link/image targets (`](/docs/x)`) against the
 /// page URL, leaving absolute URLs, fragments, and mailto/data links untouched.
 fn absolutize_md_links(md: &str, base: &url::Url) -> String {
+    // Rewriting is line-based so fenced and indented code blocks can be
+    // skipped: a shell snippet containing `](` used to have its "target"
+    // resolved into a URL, corrupting the code.
     let mut out = String::with_capacity(md.len());
-    let mut rest = md;
+    let mut in_fence = false;
+    for (i, line) in md.split_inclusive('\n').enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        // An indented code block starts with 4 spaces or a tab. Line 0 of a
+        // document is never a continuation, so this is safe to apply directly.
+        let indented_code = line.starts_with("    ") || line.starts_with('\t');
+        if in_fence || (indented_code && i > 0) {
+            out.push_str(line);
+            continue;
+        }
+        out.push_str(&absolutize_line(line, base));
+    }
+    out
+}
+
+fn absolutize_line(line: &str, base: &url::Url) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
     while let Some(pos) = rest.find("](") {
         let (head, tail) = rest.split_at(pos + 2);
         out.push_str(head);
-        let Some(close) = tail.find(')') else {
+        let Some(close) = closing_paren(tail) else {
             rest = tail;
             break;
         };
@@ -409,6 +434,28 @@ fn absolutize_md_links(md: &str, base: &url::Url) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Index of the `)` that closes a markdown link target, honouring balanced
+/// parens inside it.
+///
+/// Stopping at the *first* `)` truncated any target containing one —
+/// `/wiki/Foo_(bar)` resolved to `/wiki/Foo_(bar` and left a stray `)` in the
+/// text, which is exactly the shape Wikipedia links take.
+fn closing_paren(s: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(i),
+            ')' => depth -= 1,
+            // A target never spans lines; bail rather than swallowing the rest
+            // of the document looking for a balancing paren.
+            '\n' => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 fn resolve_target(target: &str, base: &url::Url) -> String {
@@ -468,6 +515,41 @@ mod regression_tests {
             .expect("a link-only page must not be an error");
         assert!(out.contains("create"), "got: {out}");
         assert!(out.contains("delete"), "got: {out}");
+    }
+
+    /// Regression: the rewriter stopped at the first `)`, so a Wikipedia-style
+    /// target lost its tail and left a stray paren in the text.
+    #[test]
+    fn link_targets_containing_parens_survive() {
+        let base = url::Url::parse("https://en.wikipedia.org/wiki/Main").unwrap();
+        let md = "See [Mercury](/wiki/Mercury_(planet)) for details.";
+        let out = absolutize_md_links(md, &base);
+        assert!(
+            out.contains("(https://en.wikipedia.org/wiki/Mercury_(planet))"),
+            "got: {out}"
+        );
+        assert!(out.ends_with("for details."), "got: {out}");
+    }
+
+    /// Regression: `](` inside a code block was treated as a link target.
+    #[test]
+    fn code_blocks_are_left_alone() {
+        let base = url::Url::parse("https://example.com/docs/").unwrap();
+        let md =
+            "Text [a](b)\n\n```bash\narr=(x); echo ${arr[0]}](/not/a/link)\n```\n\nMore [c](d)";
+        let out = absolutize_md_links(md, &base);
+        assert!(
+            out.contains("${arr[0]}](/not/a/link)"),
+            "code must be untouched: {out}"
+        );
+        assert!(
+            out.contains("[a](https://example.com/docs/b)"),
+            "got: {out}"
+        );
+        assert!(
+            out.contains("[c](https://example.com/docs/d)"),
+            "got: {out}"
+        );
     }
 
     /// An HTML file with no readable text and no scripts is an error, not an

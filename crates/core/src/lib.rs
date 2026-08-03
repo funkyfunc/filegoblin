@@ -286,7 +286,7 @@ pub fn gobble_local(
     // ARCHIVE INTERCEPTION — by detected format, not just extension, so an
     // extension-less/renamed zip is extracted instead of read as "plaintext".
     if root.is_file() {
-        let header = crate::format::read_header(root, 512);
+        let header = crate::format::read_header(root, crate::format::SNIFF_BYTES);
         if crate::format::detect(root, &header) == crate::format::Format::Archive {
             let archive_gobbler = crate::parsers::archive::ArchiveGobbler;
             return archive_gobbler.extract_archive(root, args);
@@ -452,7 +452,7 @@ pub(crate) fn route_and_gobble(
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
 
-    let header = crate::format::read_header(path, 512);
+    let header = crate::format::read_header(path, crate::format::SNIFF_BYTES);
     let format = crate::format::detect(path, &header);
     let opts = crate::parsers::gobble::ParseOptions::from(args);
 

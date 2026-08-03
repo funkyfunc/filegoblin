@@ -406,7 +406,7 @@ fn route_fetched_body(
     // "point filegoblin at it directly to extract it" — which is exactly what
     // the user had done.
     let staged_path = staged.path();
-    let header = crate::format::read_header(staged_path, 512);
+    let header = crate::format::read_header(staged_path, crate::format::SNIFF_BYTES);
     if crate::format::detect(staged_path, &header) == crate::format::Format::Archive {
         match crate::parsers::archive::ArchiveGobbler.extract_archive(staged_path, args) {
             Ok(docs) => {

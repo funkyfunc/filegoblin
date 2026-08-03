@@ -128,14 +128,92 @@ impl SheetGobbler {
 fn cell_to_string(cell: &Data) -> String {
     match cell {
         Data::String(s) => s.trim().to_string(),
-        Data::Float(f) => f.to_string(),
+        Data::Float(f) => format_float(*f),
         Data::Int(i) => i.to_string(),
         Data::Bool(b) => b.to_string(),
-        Data::DateTime(d) => d.as_f64().to_string(),
+        // A date is stored as a serial number; `as_f64().to_string()` printed
+        // `45292.5` where the sheet showed a date, which is unreadable to a
+        // human and actively misleading to a model.
+        Data::DateTime(d) => excel_serial_to_string(d.as_f64()),
         Data::DateTimeIso(d) => d.to_string(),
         Data::DurationIso(d) => d.to_string(),
         Data::Error(e) => format!("ERROR: {:?}", e),
         Data::Empty => String::new(),
+    }
+}
+
+/// Renders an Excel date serial as `YYYY-MM-DD`, adding `HH:MM:SS` when the
+/// cell carries a time component.
+///
+/// Done by hand rather than pulling in chrono (calamine only exposes the
+/// conversion behind its `dates` feature). Serials count days from 1899-12-30;
+/// serials at or below 59 predate Excel's phantom 1900-02-29 and need one day
+/// back. A serial that doesn't convert sensibly falls back to the raw number
+/// rather than inventing a date.
+fn excel_serial_to_string(serial: f64) -> String {
+    if !serial.is_finite() || serial <= 0.0 || serial > 2_958_465.0 {
+        return format_float(serial);
+    }
+    let days_from_1899 = serial.trunc() as i64;
+    // Days between 1899-12-30 and the 1970-01-01 civil epoch.
+    let unix_days = if days_from_1899 <= 59 {
+        days_from_1899 - 25_568
+    } else {
+        days_from_1899 - 25_569
+    };
+    let (y, m, d) = civil_from_days(unix_days);
+
+    let frac = serial.fract();
+    if frac <= f64::EPSILON {
+        return format!("{:04}-{:02}-{:02}", y, m, d);
+    }
+    // Round to the nearest second: a serial is a binary fraction of a day, so
+    // 12:00 often arrives as .49999999.
+    let total_seconds = (frac * 86_400.0).round() as i64;
+    let (h, min, s) = (
+        total_seconds / 3600,
+        (total_seconds % 3600) / 60,
+        total_seconds % 60,
+    );
+    if h >= 24 {
+        // Rounded past midnight; report the date alone rather than 24:00:00.
+        return format!("{:04}-{:02}-{:02}", y, m, d);
+    }
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, min, s)
+}
+
+/// Days since 1970-01-01 → (year, month, day). Howard Hinnant's `civil_from_days`.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Formats a spreadsheet float without binary-representation noise.
+///
+/// `f64::to_string` faithfully prints `0.30000000000000004` for a cell the
+/// sheet displays as `0.3`. Excel itself only guarantees 15 significant digits,
+/// so rounding there and trimming trailing zeros reproduces what the user saw.
+fn format_float(f: f64) -> String {
+    if !f.is_finite() {
+        return f.to_string();
+    }
+    if f == f.trunc() && f.abs() < 1e15 {
+        return format!("{}", f as i64);
+    }
+    // 15 *significant* digits, via scientific notation, then back to a plain
+    // number. Excel itself only guarantees 15, so this reproduces the displayed
+    // value rather than the stored binary approximation.
+    match format!("{:.14e}", f).parse::<f64>() {
+        Ok(rounded) => rounded.to_string(),
+        Err(_) => f.to_string(),
     }
 }
 
@@ -339,5 +417,54 @@ mod tests {
         assert_eq!(column_index_to_letter(0), "A");
         assert_eq!(column_index_to_letter(25), "Z");
         assert_eq!(column_index_to_letter(26), "AA");
+    }
+}
+
+#[cfg(test)]
+mod value_format_tests {
+    use super::*;
+
+    /// `f64::to_string` printed `0.30000000000000004` for a cell showing `0.3`.
+    #[test]
+    fn floats_lose_binary_noise_but_stay_exact() {
+        assert_eq!(format_float(0.1 + 0.2), "0.3");
+        assert_eq!(format_float(1.0), "1");
+        assert_eq!(format_float(42.5), "42.5");
+        assert_eq!(format_float(-0.75), "-0.75");
+        assert_eq!(format_float(1e20), "100000000000000000000");
+        // Rounding is to 15 significant digits — what the sheet displays — so a
+        // repeating value keeps its digits without the 16th-place artifact.
+        assert!(
+            format_float(1.0 / 3.0).starts_with("0.333333333333333"),
+            "got: {}",
+            format_float(1.0 / 3.0)
+        );
+    }
+
+    /// A date used to render as its raw serial (`45292.5`).
+    #[test]
+    fn date_serials_render_as_dates() {
+        // 45292 = 2024-01-01; the .5 is midday.
+        assert_eq!(excel_serial_to_string(45292.0), "2024-01-01");
+        assert_eq!(excel_serial_to_string(45292.5), "2024-01-01 12:00:00");
+        // 25569 = the unix epoch.
+        assert_eq!(excel_serial_to_string(25569.0), "1970-01-01");
+        // 1 = 1900-01-01, before Excel's phantom leap day.
+        assert_eq!(excel_serial_to_string(1.0), "1900-01-01");
+        // 61 = 1900-03-01, the first serial after it.
+        assert_eq!(excel_serial_to_string(61.0), "1900-03-01");
+        // Nonsense falls back to the number rather than inventing a date.
+        assert_eq!(excel_serial_to_string(-5.0), "-5");
+    }
+
+    #[test]
+    fn civil_conversion_handles_leap_years() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(59), (1970, 3, 1));
+        // 2000 was a leap year; 1900 was not. 36526 = 2000-01-01, so
+        // 2000-02-29 is 36585 and 2000-03-01 is 36586.
+        assert_eq!(excel_serial_to_string(36526.0), "2000-01-01");
+        assert_eq!(excel_serial_to_string(36585.0), "2000-02-29");
+        assert_eq!(excel_serial_to_string(36586.0), "2000-03-01");
     }
 }

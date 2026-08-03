@@ -83,7 +83,14 @@ fn from_extension(ext: &str) -> Option<Format> {
         "eml" | "mbox" => Format::Email,
         "rtf" => Format::Rtf,
         "html" | "htm" => Format::Html,
-        "rs" | "js" | "ts" | "py" | "go" | "c" | "cpp" => Format::Code,
+        // A short list here isn't cosmetic: anything missing is labelled
+        // `text` in the --json contract and skips code-specific handling
+        // (`--extract symbols`, comment stripping under --compress).
+        "rs" | "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" | "py" | "pyi" | "go" | "c" | "h"
+        | "cpp" | "cc" | "cxx" | "hpp" | "java" | "kt" | "kts" | "rb" | "swift" | "cs" | "php"
+        | "scala" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "lua" | "pl" | "r" | "sql" | "vim"
+        | "ex" | "exs" | "erl" | "hs" | "ml" | "clj" | "cljs" | "dart" | "zig" | "nim" | "jl"
+        | "tf" | "proto" | "gradle" | "cmake" => Format::Code,
         "png" | "jpg" | "jpeg" | "webp" | "heic" | "heif" | "avif" | "tiff" | "tif" | "gif" => {
             Format::Image
         }
@@ -191,6 +198,14 @@ pub fn detect(path: &Path, header: &[u8]) -> Format {
     from_magic(header).unwrap_or(Format::Text)
 }
 
+/// How many leading bytes callers should read for [`detect`].
+///
+/// Byte-level magic needs only ~64, but the text sniffers look at a 1024-byte
+/// window — and callers were passing 512, so a feed with more than 512 bytes of
+/// XML prolog or comments before `<rss` was never recognised. Reading a little
+/// extra costs nothing and keeps the window the sniffers expect.
+pub const SNIFF_BYTES: usize = 2048;
+
 /// Reads up to `n` leading bytes of a file for magic-byte detection.
 pub fn read_header(path: &Path, n: usize) -> Vec<u8> {
     use std::io::Read;
@@ -202,6 +217,51 @@ pub fn read_header(path: &Path, n: usize) -> Vec<u8> {
         buf.clear();
     }
     buf
+}
+
+#[cfg(test)]
+mod extension_coverage_tests {
+    use super::*;
+
+    /// The code list was seven entries, so ordinary source files were labelled
+    /// `text` in the --json contract and skipped code-specific handling.
+    #[test]
+    fn common_languages_are_recognised_as_code() {
+        for name in [
+            "App.java",
+            "main.rb",
+            "View.swift",
+            "Model.kt",
+            "service.cs",
+            "index.php",
+            "deploy.sh",
+            "query.sql",
+            "handler.ex",
+            "lib.hs",
+            "main.zig",
+            "infra.tf",
+            "api.proto",
+        ] {
+            assert_eq!(
+                detect(Path::new(name), b""),
+                Format::Code,
+                "{name} should be Code"
+            );
+        }
+    }
+
+    /// A feed with a long prolog needs more than the 512 bytes callers used to
+    /// read for the 1024-byte text sniff window to see the root element.
+    #[test]
+    fn sniff_window_covers_a_long_xml_prolog() {
+        let mut doc = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        doc.push_str(&format!("<!-- {} -->\n", "padding ".repeat(80)));
+        doc.push_str("<rss version=\"2.0\"><channel><title>T</title></channel></rss>");
+        assert!(doc.len() > 512, "fixture must exceed the old window");
+
+        let header: Vec<u8> = doc.bytes().take(SNIFF_BYTES).collect();
+        assert_eq!(detect(Path::new("feed_no_ext"), &header), Format::Feed);
+    }
 }
 
 #[cfg(test)]
