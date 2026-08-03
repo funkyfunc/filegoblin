@@ -83,7 +83,7 @@ pub fn enforce_budget(
             if score_file(&doc.path) == RelevanceRank::High {
                 let fallback = crate::compressor::CompressionPipeline::new(
                     &crate::cli::CompressionLevel::Contextual,
-                    Some(&doc.path),
+                    crate::compressor::language_for_path(&doc.path),
                 )
                 .process(&doc.content);
                 let shrink_cost =

@@ -94,7 +94,8 @@ pub fn gobble_app(targets: &[String], args: &crate::cli::Cli) -> Result<GobbleOu
                 doc.content = s.redact(&doc.content);
             }
             if let Some(level) = &args.compress {
-                doc.content = crate::compressor::CompressionPipeline::new(level, Some(&doc.path))
+                let language = crate::compressor::language_for_path(&doc.path);
+                doc.content = crate::compressor::CompressionPipeline::new(level, language)
                     .process(&doc.content);
             }
             doc

@@ -13,6 +13,31 @@ pub struct CompressionPipeline {
     transformers: Vec<Box<dyn TokenTransformer>>,
 }
 
+/// Maps a file path to the language name [`level2::CommentStripper`] expects.
+///
+/// Two call sites passed the *path* straight in as the "language", so
+/// `CommentStripper::new("src/main.rs")` matched nothing and contextual
+/// comment-stripping was a silent no-op in streaming mode and in the
+/// `--max-tokens` skeletonization fallback — while the buffered path, which
+/// passes a real language from markdown code fences, did the work. Same flags,
+/// different output, depending only on whether something forced buffering.
+pub fn language_for_path(path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())?
+        .to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "rs" => "rust",
+        "js" | "mjs" | "cjs" | "jsx" => "js",
+        "ts" | "tsx" => "ts",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+        "java" => "java",
+        "go" => "go",
+        _ => return None,
+    })
+}
+
 impl CompressionPipeline {
     pub fn new(level: &CompressionLevel, language: Option<&str>) -> Self {
         let mut transformers: Vec<Box<dyn TokenTransformer>> = Vec::new();

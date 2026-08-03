@@ -8,11 +8,23 @@ enum RustToken {
     DocComment,
     #[regex(r"//.*", priority = 10, allow_greedy = true)] // Line comment
     LineComment,
-    #[regex(r"/\*([^*]|\*[^/])*\*/", priority = 10)] // Block comment
+    // `[^*]|\*[^/]` cannot match a `*` immediately before the closing `/`, so
+    // this failed on the very common `/* … **/`. Matching "any run not
+    // containing `*/`" handles both.
+    #[regex(r"/\*([^*]|\*+[^*/])*\*+/", priority = 10)] // Block comment
     BlockComment,
     #[regex(r#""([^"\\]|\\[\s\S])*""#, priority = 5)] // String literal
     StringLiteral,
-    #[regex(r"r#*.*#*", allow_greedy = true)] // Raw String Literal (simplified)
+    // A *complete* raw string, anchored to a real opener. The old `r#*.*#*`
+    // matched any token starting with `r` and swallowed the rest of the line,
+    // so `return x; // secret` lexed as one raw string and its comment
+    // survived — comment stripping quietly under-delivered on most lines
+    // containing an r-identifier. Zero, one, and two hash levels are handled;
+    // deeper nesting (rare) falls back to ordinary tokens, which can strip a
+    // `//` sequence inside such a literal.
+    #[regex(r#"b?r"[^"]*""#, priority = 7)]
+    #[regex(r##"b?r#"([^"]|"[^#])*"#"##, priority = 7)]
+    #[regex(r###"b?r##"([^"]|"[^#]|"#[^#])*"##"###, priority = 7)]
     RawStringLiteral,
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", priority = 1)]
     Identifier,
