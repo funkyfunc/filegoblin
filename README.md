@@ -322,10 +322,12 @@ why that is off by default.
 
 - **URLs pointing at private addresses are refused.** Loopback, private ranges,
   link-local (including the cloud metadata endpoint `169.254.169.254`), and any
-  hostname that *resolves* to one are blocked before a request is made, on the
-  initial URL and on every redirect hop. Set `FILEGOBLIN_ALLOW_LOCAL_URLS=1` to
-  allow them — reasonable for converting your own dev server, and worth thinking
-  about before enabling it for the MCP server, where the URL comes from a model.
+  hostname that *resolves* to one are blocked — on the initial URL, on every
+  redirect hop, and inside the DNS resolver itself, so a name that resolves
+  differently between the check and the connection (DNS rebinding) is refused
+  too. Set `FILEGOBLIN_ALLOW_LOCAL_URLS=1` to allow them — reasonable for
+  converting your own dev server, and worth thinking about before enabling it
+  for the MCP server, where the URL comes from a model.
 - **`--browser` is a wider surface.** Chrome does not honour those redirect
   guards, so a page it renders can redirect somewhere filegoblin would refuse to
   fetch directly. The initial URL is still validated, the profile is a throwaway

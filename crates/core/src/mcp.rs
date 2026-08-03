@@ -22,13 +22,35 @@ const SUPPORTED_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2024-11-05"];
 /// tens of megabytes.
 const MAX_TOOL_RESULT_BYTES: usize = 1024 * 1024;
 
+/// How many conversions may run at once. Beyond this, a `tools/call` runs on
+/// the read loop as it always did — the point is that `ping` and `tools/list`
+/// stay answerable, not unbounded parallelism.
+const MAX_CONCURRENT_CONVERSIONS: usize = 4;
+
+/// Shared stdout. Every response is written under this lock so two workers can
+/// never interleave halves of a line into the protocol stream.
+type SharedOut = std::sync::Arc<std::sync::Mutex<std::io::Stdout>>;
+
 /// Runs the server until stdin closes. A broken stdout pipe (client died) is a
 /// clean exit, not an error.
+///
+/// `tools/call` runs on a worker thread; everything else is answered inline.
+/// The loop used to be strictly sequential, so a large PDF or repository
+/// conversion blocked `ping` — and a client that pings on a timer concludes the
+/// server is dead. Only conversions are slow, so only they need to move off the
+/// read loop, which keeps the handshake ordering exactly as it was.
 pub fn serve() -> Result<()> {
-    use std::io::{BufRead, Write};
+    use std::io::BufRead;
     let stdin = std::io::stdin();
     let mut stdin = stdin.lock();
-    let mut stdout = std::io::stdout();
+    let stdout: SharedOut = std::sync::Arc::new(std::sync::Mutex::new(std::io::stdout()));
+
+    // Ids the client has cancelled. Per spec a cancelled request MUST NOT get a
+    // response, so a worker that finishes after cancellation drops its result.
+    let cancelled: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
     // Read raw bytes, not `lines()`: one invalid UTF-8 byte from a buggy client
     // used to end the whole session with "stream did not contain valid UTF-8".
@@ -37,24 +59,103 @@ pub fn serve() -> Result<()> {
     loop {
         buf.clear();
         match stdin.read_until(b'\n', &mut buf) {
-            Ok(0) => return Ok(()), // EOF
+            Ok(0) => break, // EOF
             Ok(_) => {}
-            Err(e) => return Err(e.into()),
-        }
-        let line = String::from_utf8_lossy(&buf);
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Some(response) = handle_line(&line) {
-            let write = writeln!(stdout, "{}", response).and_then(|_| stdout.flush());
-            if let Err(e) = write {
-                if e.kind() == std::io::ErrorKind::BrokenPipe {
-                    return Ok(());
-                }
+            Err(e) => {
+                join_workers(workers);
                 return Err(e.into());
             }
         }
+        let line = String::from_utf8_lossy(&buf).into_owned();
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Record cancellations before anything else so a worker still running
+        // sees them.
+        if let Some(id) = cancelled_request_id(&line) {
+            cancelled
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id);
+            continue;
+        }
+
+        // Slow path: a conversion, if we have capacity for another.
+        if let Some((id, params)) = slow_tools_call(&line)
+            && in_flight.load(std::sync::atomic::Ordering::SeqCst) < MAX_CONCURRENT_CONVERSIONS
+        {
+            in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let stdout = stdout.clone();
+            let cancelled = cancelled.clone();
+            let in_flight = in_flight.clone();
+            workers.push(std::thread::spawn(move || {
+                let response = handle_tools_call(&id, &params);
+                in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                let key = id.to_string();
+                if cancelled
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(&key)
+                {
+                    return; // cancelled: the spec forbids answering
+                }
+                let _ = write_line(&stdout, &response);
+            }));
+            // Reap finished workers so the vector can't grow without bound.
+            workers.retain(|h| !h.is_finished());
+            continue;
+        }
+
+        if let Some(response) = handle_line(&line)
+            && let Err(e) = write_line(&stdout, &response)
+        {
+            join_workers(workers);
+            return if e.kind() == std::io::ErrorKind::BrokenPipe {
+                Ok(()) // client hung up
+            } else {
+                Err(e.into())
+            };
+        }
     }
+
+    // Finish anything still converting before exiting, so a response is never
+    // lost to EOF.
+    join_workers(workers);
+    Ok(())
+}
+
+fn join_workers(workers: Vec<std::thread::JoinHandle<()>>) {
+    for w in workers {
+        let _ = w.join();
+    }
+}
+
+fn write_line(stdout: &SharedOut, response: &Value) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut out = stdout.lock().unwrap_or_else(|e| e.into_inner());
+    writeln!(out, "{}", response)?;
+    out.flush()
+}
+
+/// The request id from a `notifications/cancelled`, if this line is one.
+fn cancelled_request_id(line: &str) -> Option<String> {
+    let msg: Value = serde_json::from_str(line).ok()?;
+    if msg.get("method")?.as_str()? != "notifications/cancelled" {
+        return None;
+    }
+    Some(msg.get("params")?.get("requestId")?.to_string())
+}
+
+/// `(id, params)` when this line is a `tools/call` — the only method slow
+/// enough to be worth a thread.
+fn slow_tools_call(line: &str) -> Option<(Value, Value)> {
+    let msg: Value = serde_json::from_str(line).ok()?;
+    if msg.get("method")?.as_str()? != "tools/call" {
+        return None;
+    }
+    let id = msg.get("id")?.clone();
+    Some((id, msg.get("params").cloned().unwrap_or(Value::Null)))
 }
 
 /// Dispatches one wire line. `None` means no reply (notifications, or replies

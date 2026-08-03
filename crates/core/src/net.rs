@@ -43,9 +43,11 @@ pub(crate) static LOCAL_URL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::
 /// and over MCP the URL comes from a model steered by whatever page it just
 /// read, not from the user.
 ///
-/// Honest limitation: resolution here and connection later are separate
-/// lookups, so a DNS entry that changes in between (rebinding) can still slip
-/// through. Blocking that properly needs a resolver hook in the HTTP client.
+/// This is the *early, friendly* check — it fails before a connection is
+/// attempted and can explain itself. [`GuardedResolver`] is the authoritative
+/// one: it filters at resolution time, so the answer that gets validated is the
+/// answer that gets connected to, closing the rebinding window this check alone
+/// used to leave open.
 pub fn guard_url(url: &url::Url) -> anyhow::Result<()> {
     if !matches!(url.scheme(), "http" | "https") {
         anyhow::bail!(
@@ -129,6 +131,60 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// DNS resolver that refuses to hand back a blocked address.
+///
+/// This is what actually closes the rebinding hole. [`guard_url`] resolves a
+/// host to *check* it, and reqwest then resolves independently to *connect* —
+/// two lookups, so a record that changes in between (or a round-robin that
+/// returns a public address once and a private one next) slips through. Doing
+/// the check inside the resolver makes the answer that gets validated the same
+/// answer that gets connected to.
+#[cfg(feature = "web")]
+#[derive(Debug, Default)]
+struct GuardedResolver;
+
+#[cfg(feature = "web")]
+impl reqwest::dns::Resolve for GuardedResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let allow_local = allow_local_urls();
+            // Port 0: reqwest substitutes the real port afterwards.
+            let lookup = tokio::task::spawn_blocking(move || {
+                use std::net::ToSocketAddrs;
+                (host.as_str(), 0u16)
+                    .to_socket_addrs()
+                    .map(|addrs| (host, addrs.collect::<Vec<_>>()))
+            })
+            .await??;
+            let (host, addrs) = lookup;
+
+            if allow_local {
+                return Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs);
+            }
+
+            let (allowed, blocked): (Vec<_>, Vec<_>) =
+                addrs.into_iter().partition(|sa| !is_blocked_ip(sa.ip()));
+
+            // Refuse the whole name if *any* answer was private, rather than
+            // quietly connecting to the public one: a mixed answer is the
+            // signature of a rebinding attempt, not an accident.
+            if !blocked.is_empty() {
+                return Err(format!(
+                    "Refusing to connect to `{}`: it resolves to the private or loopback \
+                     address {}. Set FILEGOBLIN_ALLOW_LOCAL_URLS=1 if that is intended.",
+                    host, blocked[0]
+                )
+                .into());
+            }
+            if allowed.is_empty() {
+                return Err(format!("`{}` did not resolve to any address", host).into());
+            }
+            Ok(Box::new(allowed.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 /// A redirect policy that follows up to `max` hops but refuses any hop whose
 /// scheme is not http/https or whose host is blocked by [`is_blocked_host`].
 #[cfg(feature = "web")]
@@ -154,6 +210,7 @@ pub fn blocking_client() -> reqwest::Result<reqwest::blocking::Client> {
         .user_agent(user_agent())
         .timeout(REQUEST_TIMEOUT)
         .redirect(ssrf_redirect_policy(10))
+        .dns_resolver(std::sync::Arc::new(GuardedResolver))
         .build()
 }
 
@@ -183,6 +240,7 @@ pub fn async_client() -> reqwest::Result<reqwest::Client> {
         .user_agent(user_agent())
         .timeout(REQUEST_TIMEOUT)
         .redirect(ssrf_redirect_policy(10))
+        .dns_resolver(std::sync::Arc::new(GuardedResolver))
         .build()
 }
 
@@ -246,6 +304,37 @@ mod tests {
     fn guard_allows_ordinary_public_urls() {
         let url = url::Url::parse("https://example.com/page").unwrap();
         assert!(guard_url(&url).is_ok());
+    }
+
+    /// The resolver is the authoritative guard, so it must refuse on its own —
+    /// without `guard_url` having run first. Uses `localhost`, which the hosts
+    /// file resolves to loopback, so no external DNS is involved.
+    #[cfg(feature = "web")]
+    #[test]
+    fn the_resolver_refuses_loopback_even_without_the_pre_check() {
+        let _guard = LOCAL_URL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let client = blocking_client().unwrap();
+        // Port 9 (discard) is closed everywhere; if the resolver were not
+        // filtering we would get a *connection* error instead of ours.
+        let err = client
+            .get("http://localhost:9/")
+            .send()
+            .expect_err("a loopback name must not be connectable");
+        // reqwest's Display is just "error sending request"; the reason lives
+        // in the source chain.
+        let mut chain = vec![err.to_string()];
+        let mut src: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(&err);
+        while let Some(e) = src {
+            chain.push(e.to_string());
+            src = e.source();
+        }
+        let msg = chain.join(" | ");
+        assert!(
+            msg.contains("private or loopback"),
+            "expected the resolver's refusal, got: {msg}"
+        );
     }
 
     /// The escape hatch exists for "convert my local dev server", and must

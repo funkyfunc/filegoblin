@@ -337,3 +337,44 @@ paragraph.
 nesting cost (mitigated by the depth cap, not fixed); MCP is still sequential
 with no cancellation, so a slow conversion blocks `ping`; DNS rebinding remains
 possible between `guard_url`'s resolution and the connection.
+
+## 2026-08-02: Closing two of the three deferred items
+
+**Context:** The follow-through entry above left three things open. Two turned
+out to be worth doing properly rather than living with.
+
+**DNS rebinding — closed, by moving the check into the resolver.** `guard_url`
+resolved a host to *validate* it and reqwest then resolved independently to
+*connect*, so a record that changed in between — or a round-robin answering
+public once and private next — slipped through. A `reqwest::dns::Resolve`
+implementation (`net::GuardedResolver`, wired into both the blocking and async
+clients) now filters at resolution time, which makes the answer that gets
+validated the same answer that gets connected to. A name resolving to a mix of
+public and private addresses is refused outright rather than connecting to the
+public one, since a mixed answer is the signature of a rebinding attempt.
+`guard_url` stays as the early, friendly check that can explain itself before a
+connection is attempted; the resolver is the authoritative one. Tested by
+driving the client directly at a loopback name, bypassing `guard_url` entirely,
+and asserting the refusal comes from the resolver (walking the error's source
+chain — reqwest's Display is only "error sending request").
+
+**MCP head-of-line blocking — closed for the case that mattered.** The read
+loop was strictly sequential, so a large PDF or repository conversion blocked
+`ping`, and a client that pings on a timer concludes the server has died.
+`tools/call` is the only method slow enough to matter, so only it moves to a
+worker thread (capped at 4 in flight, degrading to inline beyond that);
+everything else is still answered inline, which keeps handshake ordering
+untouched. Responses are written under one stdout mutex so two workers cannot
+interleave halves of a line into the protocol stream. `notifications/cancelled`
+is now acted on rather than merely tolerated: the id is recorded and a worker
+that finishes afterwards drops its response, per the spec's requirement that a
+cancelled request MUST NOT be answered. What is *not* implemented is preemption
+— a running conversion still runs to completion in the background; cancelling
+frees the client, not the CPU.
+
+**html5ever/html2md nesting cost — deliberately left.** The 1000-level depth cap
+already bounds the DoS, and going further means patching or replacing a
+dependency to serve input no real document produces. Poor return; revisit only
+if a real page ever trips the cap.
+
+**Status:** Accepted.
