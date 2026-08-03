@@ -607,6 +607,8 @@ impl FetchedBody {
 impl FetchedBody {
     fn to_cache_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.bytes.len() + 128);
+        out.extend_from_slice(CACHE_FORMAT_MAGIC);
+        out.push(b'\n');
         out.extend_from_slice(self.media_type.as_deref().unwrap_or("").as_bytes());
         out.push(b'\n');
         out.extend_from_slice(self.content_type.as_deref().unwrap_or("").as_bytes());
@@ -616,19 +618,31 @@ impl FetchedBody {
     }
 
     fn from_cache_bytes(raw: &[u8]) -> Option<Self> {
-        let nl1 = raw.iter().position(|&b| b == b'\n')?;
-        let nl2 = nl1 + 1 + raw[nl1 + 1..].iter().position(|&b| b == b'\n')?;
+        // Entries written by an older filegoblin have no magic line. Treating
+        // them as a miss is correct and free — the alternative, which this
+        // format previously had no way to avoid, is parsing the first two lines
+        // of the *body* as headers and serving a mangled document.
+        let rest = raw
+            .strip_prefix(CACHE_FORMAT_MAGIC)
+            .and_then(|r| r.strip_prefix(b"\n"))?;
+
+        let nl1 = rest.iter().position(|&b| b == b'\n')?;
+        let nl2 = nl1 + 1 + rest[nl1 + 1..].iter().position(|&b| b == b'\n')?;
         let line = |s: &[u8]| {
             let v = String::from_utf8_lossy(s).into_owned();
             (!v.is_empty()).then_some(v)
         };
         Some(Self {
-            media_type: line(&raw[..nl1]),
-            content_type: line(&raw[nl1 + 1..nl2]),
-            bytes: raw[nl2 + 1..].to_vec(),
+            media_type: line(&rest[..nl1]),
+            content_type: line(&rest[nl1 + 1..nl2]),
+            bytes: rest[nl2 + 1..].to_vec(),
         })
     }
 }
+
+/// Version marker for the URL-cache wire format. Bump the number whenever the
+/// layout below changes, so old entries miss instead of mis-parsing.
+const CACHE_FORMAT_MAGIC: &[u8] = b"filegoblin-cache-v1";
 
 #[cfg(feature = "web")]
 fn fetch_url(url: &Url, quiet: bool) -> Result<FetchedBody> {
@@ -798,5 +812,38 @@ mod tests {
         assert_eq!(res.unwrap(), "Plaintext fallback text");
         assert_eq!(format, crate::format::Format::Text);
         std::fs::remove_file(test_file).ok();
+    }
+}
+
+#[cfg(all(test, feature = "web"))]
+mod cache_format_tests {
+    use super::FetchedBody;
+
+    #[test]
+    fn cache_entries_round_trip() {
+        let body = FetchedBody {
+            bytes: b"<html>hi</html>".to_vec(),
+            media_type: Some("text/html".to_string()),
+            content_type: Some("text/html; charset=utf-8".to_string()),
+        };
+        let back = FetchedBody::from_cache_bytes(&body.to_cache_bytes()).unwrap();
+        assert_eq!(back.bytes, body.bytes);
+        assert_eq!(back.media_type, body.media_type);
+        assert_eq!(back.content_type, body.content_type);
+    }
+
+    /// Regression: with no version marker, an entry written by an older
+    /// filegoblin had the first two lines of its *body* eaten as headers and
+    /// the remainder served as the document.
+    #[test]
+    fn entries_without_the_version_marker_miss_rather_than_mis_parse() {
+        let legacy = b"text/html\ntext/html; charset=utf-8\n<html>body</html>".to_vec();
+        assert!(
+            FetchedBody::from_cache_bytes(&legacy).is_none(),
+            "an unversioned entry must be treated as a miss"
+        );
+        // Arbitrary garbage is a miss too, not a panic.
+        assert!(FetchedBody::from_cache_bytes(b"").is_none());
+        assert!(FetchedBody::from_cache_bytes(b"nonsense").is_none());
     }
 }

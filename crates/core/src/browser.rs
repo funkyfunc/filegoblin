@@ -296,8 +296,14 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let _ = reader.join();
-    let _ = err_reader.join();
+    // Bounded, not `join()`. Chrome's helper processes inherit the stdout
+    // pipe, so if one wedges after the browser is SIGKILLed the write end
+    // never closes, `read()` never returns 0, and an unconditional join hangs
+    // forever — *after* the wall-clock timer already fired. Detaching a stuck
+    // reader leaks one thread; blocking here leaks the whole run.
+    join_bounded(reader, std::time::Duration::from_secs(5));
+    join_bounded(err_reader, std::time::Duration::from_secs(2));
+
     let bytes = std::mem::take(&mut *collected.lock().unwrap());
     let dom = String::from_utf8_lossy(&bytes).into_owned();
     let trimmed = dom.trim_start().to_lowercase();
@@ -337,6 +343,19 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
         );
     }
     Ok(dom)
+}
+
+/// Waits up to `timeout` for a pipe-reader thread, then gives up and lets it
+/// run detached rather than blocking the process forever.
+fn join_bounded(handle: std::thread::JoinHandle<()>, timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while !handle.is_finished() {
+        if std::time::Instant::now() > deadline {
+            return; // detached; the thread ends when its pipe finally closes
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = handle.join();
 }
 
 /// The last meaningful line or two of Chrome's stderr, for error messages.

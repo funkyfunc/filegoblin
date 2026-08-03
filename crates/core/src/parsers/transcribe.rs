@@ -253,7 +253,11 @@ mod imp {
         // (very chatty) stderr output entirely.
         QUIET_LOGS.get_or_init(whisper_rs::install_logging_hooks);
 
-        let _serial = INFER.lock().unwrap();
+        // `.unwrap()` here poisoned the mutex for the rest of the run: one
+        // panicking inference made every *later* file in a horde fail with an
+        // unrelated "PoisonError". The lock guards ordering, not shared state,
+        // so a poisoned lock is safe to reuse.
+        let _serial = INFER.lock().unwrap_or_else(|e| e.into_inner());
         let model = whisper_model_path()?;
         let ctx = WhisperContext::new_with_params(&model, WhisperContextParameters::default())
             .map_err(|e| anyhow::anyhow!("Failed to load whisper model: {e}"))?;

@@ -81,9 +81,19 @@ fn put(kind: &str, key: &str, value: &[u8]) {
     if std::fs::create_dir_all(dir).is_err() {
         return;
     }
-    let part = path.with_extension("part");
+    // A per-process temp name, not a shared `<key>.part`: two filegoblin
+    // processes writing the same key would otherwise truncate and interleave
+    // into the *same* file, and one of them could rename a torn write into
+    // place. Reads have no checksum, so that garbage would be served as content.
+    let part = path.with_extension(format!("part.{}", std::process::id()));
     if std::fs::write(&part, value).is_ok() {
-        let _ = std::fs::rename(&part, &path);
+        // Rename within a directory is atomic, so a reader sees either the old
+        // entry or the complete new one.
+        if std::fs::rename(&part, &path).is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+    } else {
+        let _ = std::fs::remove_file(&part);
     }
 }
 

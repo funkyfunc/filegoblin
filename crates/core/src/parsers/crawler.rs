@@ -14,6 +14,31 @@ use tokio::sync::mpsc;
 /// Maximum number of pages a single crawl will fetch.
 const MAX_PAGES: usize = 500;
 
+/// Decides whether a discovered `href` should join the crawl frontier, and
+/// returns it normalized (fragment stripped).
+///
+/// Split out of the crawl loop so it can be tested without a network: the
+/// crawler had no tests at all, and its scoping rules are exactly the part
+/// where a mistake means crawling somewhere it shouldn't.
+///
+/// Same-origin means host **and port**: comparing `host_str()` alone let a
+/// crawl of `example.com` follow links to `example.com:8443` or `:22`.
+fn normalize_link(base: &Url, href: &str, seed_host: &str, seed_port: Option<u16>) -> Option<Url> {
+    let next = base.join(href).ok()?;
+    if !matches!(next.scheme(), "http" | "https") {
+        return None;
+    }
+    if next.host_str() != Some(seed_host) {
+        return None;
+    }
+    if next.port_or_known_default() != seed_port {
+        return None;
+    }
+    let mut clean = next;
+    clean.set_fragment(None);
+    Some(clean)
+}
+
 /// A unified struct managing web crawler state and orchestration.
 pub struct GoblinCrawler {
     /// Tracks URLs we have already visited or queued to avoid infinite loops.
@@ -98,6 +123,11 @@ impl GoblinCrawler {
 
         let mut join_set = tokio::task::JoinSet::new();
         let in_flight = Arc::new(AtomicUsize::new(1));
+        // Pages actually fetched. `visited` counts everything *discovered*, so
+        // budgeting against it meant one page linking to 600 others exhausted
+        // the crawl before a second page was ever read.
+        let fetched = Arc::new(AtomicUsize::new(0));
+        let seed_port = seed_url.port_or_known_default();
 
         loop {
             if in_flight.load(Ordering::SeqCst) == 0 {
@@ -106,14 +136,15 @@ impl GoblinCrawler {
 
             tokio::select! {
                 Some(current_url) = rx.recv() => {
-                    if !args.quiet {
-                        eprintln!("{}", format!("🕸️  Crawling: {}", current_url).truecolor(100, 150, 255));
-                    }
-
-                    // Stop expanding the frontier once we hit the page budget.
-                    if self.visited.len() > MAX_PAGES {
+                    // Stop fetching once we hit the page budget.
+                    if fetched.load(Ordering::SeqCst) >= MAX_PAGES {
                         in_flight.fetch_sub(1, Ordering::SeqCst);
                         continue;
+                    }
+                    fetched.fetch_add(1, Ordering::SeqCst);
+
+                    if !args.quiet {
+                        eprintln!("{}", format!("🕸️  Crawling: {}", current_url).truecolor(100, 150, 255));
                     }
 
                     if let Some(ref rtxt) = self.robots
@@ -174,23 +205,12 @@ impl GoblinCrawler {
                                             let selector = scraper::Selector::parse("a").unwrap();
                                             for element in document.select(&selector) {
                                                 if let Some(href) = element.value().attr("href")
-                                                    && let Ok(next_url) = current_url.join(href) {
-                                                    // Normalization constraints: Only HTTP/HTTPS, matches base domain, no fragments.
-                                                    let scheme = next_url.scheme();
-                                                    if (scheme == "http" || scheme == "https") &&
-                                                        next_url.host_str() == Some(target_domain_clone.as_str()) {
-
-                                                            let mut clean_url = next_url.clone();
-                                                            clean_url.set_fragment(None);
-
-                                                            let clean_str = clean_url.to_string();
-
-                                                            if visited_clone.insert(clean_str.clone()) {
-                                                                new_links.push(clean_url);
-                                                            }
-                                                        }
-                                                    }
+                                                    && let Some(clean_url) = normalize_link(&current_url, href, &target_domain_clone, seed_port)
+                                                    && visited_clone.insert(clean_url.to_string())
+                                                {
+                                                    new_links.push(clean_url);
                                                 }
+                                            }
                                         }
 
                                         // Send links
@@ -249,4 +269,83 @@ pub fn crawl_web(url: &Url, args: &crate::cli::Cli) -> Result<Vec<(String, Strin
         let crawler = GoblinCrawler::new(url, args.full).await?;
         crawler.crawl(url.clone(), args).await
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seed() -> Url {
+        Url::parse("https://example.com/docs/index.html").unwrap()
+    }
+
+    #[test]
+    fn follows_same_origin_links_and_strips_fragments() {
+        let base = seed();
+        let follow = |href: &str| normalize_link(&base, href, "example.com", Some(443));
+
+        assert_eq!(
+            follow("guide.html").map(|u| u.to_string()),
+            Some("https://example.com/docs/guide.html".to_string())
+        );
+        assert_eq!(
+            follow("/about").map(|u| u.to_string()),
+            Some("https://example.com/about".to_string())
+        );
+        // A fragment is not a distinct page; keeping it would crawl the same
+        // document once per anchor.
+        assert_eq!(
+            follow("guide.html#section-3").map(|u| u.to_string()),
+            Some("https://example.com/docs/guide.html".to_string())
+        );
+        // A query string *is* distinct and must survive.
+        assert_eq!(
+            follow("list?page=2").map(|u| u.to_string()),
+            Some("https://example.com/docs/list?page=2".to_string())
+        );
+    }
+
+    #[test]
+    fn refuses_to_leave_the_seed_origin() {
+        let base = seed();
+        let follow = |href: &str| normalize_link(&base, href, "example.com", Some(443));
+
+        assert!(follow("https://evil.com/x").is_none(), "other host");
+        assert!(follow("https://sub.example.com/x").is_none(), "subdomain");
+        assert!(follow("mailto:a@example.com").is_none(), "mailto");
+        assert!(follow("javascript:alert(1)").is_none(), "javascript");
+        assert!(follow("ftp://example.com/f").is_none(), "non-http scheme");
+    }
+
+    /// Regression: the host check ignored the port, so a crawl of a web site
+    /// would happily follow links to other services on the same machine.
+    #[test]
+    fn a_different_port_is_a_different_origin() {
+        let base = seed();
+        let follow = |href: &str| normalize_link(&base, href, "example.com", Some(443));
+
+        assert!(follow("https://example.com:8443/admin").is_none());
+        assert!(follow("http://example.com:22/").is_none());
+        // The seed's own port is still fine, written explicitly or not.
+        assert!(follow("https://example.com:443/ok").is_some());
+        assert!(follow("https://example.com/ok").is_some());
+    }
+
+    /// A crawl seeded on a non-default port stays on that port.
+    #[test]
+    fn non_default_seed_port_is_honoured() {
+        let base = Url::parse("http://example.com:8080/app/").unwrap();
+        let follow = |href: &str| normalize_link(&base, href, "example.com", Some(8080));
+
+        assert!(follow("next").is_some());
+        assert!(follow("http://example.com/elsewhere").is_none());
+    }
+
+    #[test]
+    fn malformed_hrefs_are_skipped_not_fatal() {
+        let base = seed();
+        assert!(normalize_link(&base, "", "example.com", Some(443)).is_some()); // self-link
+        assert!(normalize_link(&base, "http://", "example.com", Some(443)).is_none());
+        assert!(normalize_link(&base, "///", "example.com", Some(443)).is_none());
+    }
 }
