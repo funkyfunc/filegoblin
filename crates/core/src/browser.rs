@@ -18,6 +18,10 @@ use std::process::{Command, Stdio};
 const LOAD_TIMEOUT_MS: u32 = 15_000;
 const SETTLE_BUDGET_MS: u32 = 5_000;
 const WALL_CLOCK_KILL_MS: u64 = (LOAD_TIMEOUT_MS + SETTLE_BUDGET_MS + 10_000) as u64;
+/// Ceiling on a rendered DOM. The static fetch path enforces
+/// `net::MAX_RESPONSE_BYTES`; the render path buffered without any bound, and a
+/// page that builds a huge DOM in JS could accumulate until the wall clock.
+const MAX_DOM_BYTES: usize = 64 * 1024 * 1024;
 
 /// Finds an installed Chromium-family browser. Env overrides first, then the
 /// per-OS locations used by chrome-launcher/Lighthouse.
@@ -28,6 +32,14 @@ pub fn find_browser() -> Option<PathBuf> {
             if p.exists() {
                 return Some(p);
             }
+            // Falling through silently made a typo in the override invisible:
+            // the user set it, filegoblin ignored it, and any later failure
+            // pointed at the page instead.
+            eprintln!(
+                "⚠️  ${} points at a path that does not exist: {} — falling back to auto-discovery",
+                var,
+                p.display()
+            );
         }
     }
 
@@ -162,7 +174,11 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
     .arg(url.as_str())
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
-    .stderr(Stdio::null());
+    // Captured, not discarded: with stderr thrown away, a missing shared
+    // library, a refusal to start as root without --no-sandbox (the normal
+    // Docker/CI case), and a wrong binary all collapsed into the same
+    // "page may block headless rendering", which blames the page.
+    .stderr(Stdio::piped());
 
     // NOTE: do NOT setpgid/process_group Chrome on macOS — detaching it from
     // the session breaks its helper-process handshake and it never exits.
@@ -177,22 +193,78 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
     let collected = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
     let sink = collected.clone();
     let mut stdout_pipe = child.stdout.take().expect("stdout piped");
+    let overflowed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let overflow_flag = overflowed.clone();
     let reader = std::thread::spawn(move || {
         use std::io::Read;
         let mut chunk = [0u8; 65536];
-        while let Ok(n) = stdout_pipe.read(&mut chunk) {
-            if n == 0 {
+        loop {
+            // `while let Ok(n)` ended the loop on a transient EINTR and left the
+            // partial buffer to pass validation as a successful render.
+            let n = match stdout_pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            };
+            let mut buf = sink.lock().unwrap();
+            // The static fetch path caps bodies at MAX_RESPONSE_BYTES; the
+            // rendered DOM had no ceiling at all.
+            if buf.len() + n > MAX_DOM_BYTES {
+                overflow_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 break;
             }
-            sink.lock().unwrap().extend_from_slice(&chunk[..n]);
+            buf.extend_from_slice(&chunk[..n]);
+        }
+    });
+
+    // Chrome's stderr is drained on its own thread too: a full pipe would
+    // otherwise block the browser before it finishes writing the DOM.
+    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+    let diagnostics = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let diag_sink = diagnostics.clone();
+    let err_reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stderr_pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let mut buf = diag_sink.lock().unwrap();
+                    if buf.len() < 16 * 1024 {
+                        buf.extend_from_slice(&chunk[..n]);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
         }
     });
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(WALL_CLOCK_KILL_MS);
     let mut stable_since: Option<(usize, std::time::Instant)> = None;
+    let mut timed_out = false;
     loop {
-        if child.try_wait()?.is_some() {
-            break; // clean exit
+        if overflowed.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break;
+        }
+        // A `?` here used to leave Chrome running, the reader detached, and the
+        // profile TempDir deleted out from under a live browser.
+        match child.try_wait() {
+            Ok(Some(_)) => break, // clean exit
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                let _ = err_reader.join();
+                return Err(anyhow::anyhow!(
+                    "Failed while waiting on the browser: {}",
+                    e
+                ));
+            }
         }
         // Dump-then-hang detection: output ends like a document and has been
         // quiet for a second → take it and put Chrome down ourselves.
@@ -216,6 +288,7 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
             }
         }
         if std::time::Instant::now() > deadline {
+            timed_out = true;
             let _ = child.kill();
             let _ = child.wait();
             break; // whatever was collected gets validated below
@@ -224,18 +297,68 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
     }
 
     let _ = reader.join();
+    let _ = err_reader.join();
     let bytes = std::mem::take(&mut *collected.lock().unwrap());
     let dom = String::from_utf8_lossy(&bytes).into_owned();
     let trimmed = dom.trim_start().to_lowercase();
-    // Chrome's exit code is unreliable; validate the output instead.
-    if dom.trim().len() < 40 || !(trimmed.starts_with("<!doctype") || trimmed.starts_with("<html"))
-    {
+
+    if overflowed.load(std::sync::atomic::Ordering::Relaxed) {
         anyhow::bail!(
-            "Browser produced no usable DOM for {} (page may block headless rendering)",
-            url
+            "Rendered DOM for {} exceeds the {} MiB limit",
+            url,
+            MAX_DOM_BYTES / (1024 * 1024)
+        );
+    }
+
+    // Chrome's exit code is unreliable; validate the output instead.
+    let looks_like_a_document = trimmed.starts_with("<!doctype")
+        || trimmed.starts_with("<html")
+        || trimmed.starts_with("<?xml");
+    if dom.trim().len() < 40 || !looks_like_a_document {
+        let stderr_tail = browser_diagnostics(&diagnostics);
+        anyhow::bail!(
+            "Browser produced no usable DOM for {}{}",
+            url,
+            if stderr_tail.is_empty() {
+                " (page may block headless rendering)".to_string()
+            } else {
+                format!(" — Chrome said: {}", stderr_tail)
+            }
+        );
+    }
+    // A wall-clock kill mid-write leaves a document that still starts with
+    // `<html`, so the shape check alone reported a truncated page as success.
+    if timed_out && !trimmed.trim_end().ends_with("</html>") {
+        anyhow::bail!(
+            "Browser render of {} timed out after {}s with an incomplete DOM ({} bytes)",
+            url,
+            WALL_CLOCK_KILL_MS / 1000,
+            dom.len()
         );
     }
     Ok(dom)
+}
+
+/// The last meaningful line or two of Chrome's stderr, for error messages.
+fn browser_diagnostics(diagnostics: &std::sync::Mutex<Vec<u8>>) -> String {
+    let raw = diagnostics.lock().unwrap();
+    let text = String::from_utf8_lossy(&raw);
+    let interesting: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        // Chrome is chatty about DBus/GPU/Vulkan on every headless start;
+        // those lines are noise, not the reason a render failed.
+        .filter(|l| !l.contains("dbus") && !l.contains("GPU") && !l.contains("Vulkan"))
+        .collect();
+    interesting
+        .iter()
+        .rev()
+        .take(2)
+        .rev()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 #[cfg(test)]

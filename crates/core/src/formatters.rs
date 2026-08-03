@@ -26,8 +26,14 @@ fn parse_chunk_threshold(chunk: Option<&str>) -> Option<usize> {
     }
 }
 
-/// A relative-path / URL sanitizer for `--split`, mapping a document path to a safe
-/// on-disk `.md` file name.
+/// A relative-path / URL sanitizer for `--split`, mapping a document path to a
+/// safe on-disk `.md` file name **relative to the split root**.
+///
+/// This has to produce a genuinely relative path, not merely a tidier one:
+/// `Path::join` with an absolute argument *replaces* the root, so
+/// `filegoblin /etc/hosts --split` used to target `/etc/hosts.md` outside the
+/// split directory entirely. Stripping `..` textually also isn't enough —
+/// `"../x"` becomes `"/x"`, which is absolute again.
 fn sanitize_split_path(path: &str) -> String {
     let safe = if let Ok(u) = Url::parse(path) {
         let mut p = u.path().trim_start_matches('/').to_string();
@@ -37,14 +43,44 @@ fn sanitize_split_path(path: &str) -> String {
         if p.ends_with('/') {
             p.push_str("index");
         }
-        p.replace("..", "").replace(':', "_")
+        // Distinct pages that differ only in their query string
+        // (`?page=1`, `?page=2`) otherwise collide on one file, last write
+        // winning, during a --horde --split crawl.
+        if let Some(q) = u.query().filter(|q| !q.is_empty()) {
+            p.push('_');
+            p.push_str(q);
+        }
+        p
     } else {
-        path.replace("..", "")
+        path.to_string()
     };
-    if safe.ends_with(".md") {
-        safe
+
+    // Drop traversal and root components rather than rewriting them, then
+    // re-join with a plain separator.
+    let cleaned: Vec<String> = safe
+        .split(['/', '\\'])
+        .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
+        .map(|seg| {
+            seg.chars()
+                .map(|c| match c {
+                    ':' | '?' | '*' | '"' | '<' | '>' | '|' | '\0' => '_',
+                    c => c,
+                })
+                .collect::<String>()
+        })
+        // A Windows drive-relative prefix ("C") is fine as a directory name.
+        .collect();
+
+    let joined = cleaned.join("/");
+    let joined = if joined.is_empty() {
+        "document".to_string()
     } else {
-        format!("{}.md", safe)
+        joined
+    };
+    if joined.ends_with(".md") {
+        joined
+    } else {
+        format!("{}.md", joined)
     }
 }
 

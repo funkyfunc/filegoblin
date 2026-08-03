@@ -83,23 +83,21 @@ impl Gobble for HtmlGobbler {
             .unwrap_or(0);
         drop(doc);
 
-        let mut markdown = self.extract_markdown(content, full, true)?;
+        let mut markdown = self.extract_markdown(content, full, true, opts.already_rendered)?;
 
         // A page whose content genuinely *is* links — a docs table of contents,
         // a sitemap, an "awesome" list — had every candidate block deleted as a
         // link farm and came back empty with Ok. Retry keeping them rather than
         // reporting an empty success.
         if markdown.trim().is_empty() && !full {
-            markdown = self.extract_markdown(content, full, false)?;
+            markdown = self.extract_markdown(content, full, false, opts.already_rendered)?;
         }
 
         if markdown.trim().is_empty() {
             if has_scripts {
-                return Err(anyhow::Error::new(JsGated).context(
-                    "This page appears to require JavaScript rendering or authentication.\n\
-                     filegoblin's static fetcher cannot execute JavaScript.\n\
-                     💡 Try again with --browser to render it with your installed Chrome",
-                ));
+                return Err(
+                    anyhow::Error::new(JsGated).context(js_gated_message(opts.already_rendered))
+                );
             }
             anyhow::bail!(
                 "No readable content found in this HTML ({} words in the body)",
@@ -128,7 +126,13 @@ impl Gobble for HtmlGobbler {
 impl HtmlGobbler {
     /// One extraction pass. `drop_link_farms` is what the empty-output retry
     /// turns off.
-    fn extract_markdown(&self, content: &str, full: bool, drop_link_farms: bool) -> Result<String> {
+    fn extract_markdown(
+        &self,
+        content: &str,
+        full: bool,
+        drop_link_farms: bool,
+        already_rendered: bool,
+    ) -> Result<String> {
         let mut doc = Html::parse_document(content);
         let has_scripts = doc.select(&SEL_SCRIPT).next().is_some();
 
@@ -144,11 +148,7 @@ impl HtmlGobbler {
             .map(|b| b.text().flat_map(str::split_whitespace).count())
             .unwrap_or(0);
         if body_words < 10 && has_scripts {
-            return Err(anyhow::Error::new(JsGated).context(
-                "This page appears to require JavaScript rendering or authentication.\n\
-                 filegoblin's static fetcher cannot execute JavaScript.\n\
-                 💡 Try again with --browser to render it with your installed Chrome",
-            ));
+            return Err(anyhow::Error::new(JsGated).context(js_gated_message(already_rendered)));
         }
 
         let fragments = if full {
@@ -168,6 +168,19 @@ impl HtmlGobbler {
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         ))
+    }
+}
+
+/// The "this page needs JavaScript" message, which must not recommend
+/// `--browser` to someone who already used it.
+fn js_gated_message(already_rendered: bool) -> &'static str {
+    if already_rendered {
+        "This page still has essentially no text after a headless-browser render.\n\
+         It likely requires authentication, or blocks headless Chrome outright."
+    } else {
+        "This page appears to require JavaScript rendering or authentication.\n\
+         filegoblin's static fetcher cannot execute JavaScript.\n\
+         💡 Try again with --browser to render it with your installed Chrome"
     }
 }
 

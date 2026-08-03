@@ -226,33 +226,37 @@ fn route_fetched_body(
 
     if body.looks_like_html() {
         // With --browser, the user's installed Chrome renders the page so
-        // JS-built content exists in the DOM. SSRF note: the browser does not
-        // honour our redirect guards; the initial host was already validated
-        // by the reqwest fetch above, and the mode is strictly opt-in.
-        let html_content = if args.browser {
+        // JS-built content exists in the DOM.
+        //
+        // SSRF note: Chrome does not honour our redirect guards, so it can
+        // follow a redirect anywhere. `guard_url` has already vetted the
+        // initial host (including DNS resolution) in `fetch_url` above, and the
+        // mode is strictly opt-in — but a redirect chain inside the browser is
+        // genuinely outside our control. See docs/ADR.md.
+        let (html_content, rendered) = if args.browser {
             match crate::browser::render_url(url, args.quiet) {
-                Ok(dom) => dom,
+                Ok(dom) => (dom, true),
                 Err(e) => {
                     eprintln!(
                         "{} Browser rendering failed ({}); using the static fetch",
                         "⚠️".yellow(),
                         e
                     );
-                    body.decode_text()
+                    (body.decode_text(), false)
                 }
             }
         } else {
-            body.decode_text()
+            (body.decode_text(), false)
         };
+        let mut opts = crate::parsers::gobble::ParseOptions::from(args);
+        opts.already_rendered = rendered;
         match (crate::parsers::html::HtmlGobbler {
             extract_full: args.full,
             source_url: Some(target.to_string()),
             ..Default::default()
         })
-        .gobble_str(
-            &html_content,
-            &crate::parsers::gobble::ParseOptions::from(args),
-        ) {
+        .gobble_str(&html_content, &opts)
+        {
             Ok(text) => {
                 let _ = tx.send(crate::pipeline::GobbleDocument::extracted(
                     target.to_string(),

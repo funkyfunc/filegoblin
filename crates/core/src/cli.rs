@@ -29,11 +29,32 @@ pub enum ExtractMode {
     Symbols,
 }
 
+/// Accepts `100k`, `2m`, or a bare token count, rejecting anything else at
+/// parse time so a typo can never be silently ignored.
+pub fn parse_token_budget(raw: &str) -> Result<String, String> {
+    let c = raw.trim().to_lowercase();
+    let ok = if let Some(n) = c.strip_suffix('k') {
+        n.parse::<f64>().map(|n| n > 0.0).unwrap_or(false)
+    } else if let Some(n) = c.strip_suffix('m') {
+        n.parse::<f64>().map(|n| n > 0.0).unwrap_or(false)
+    } else {
+        c.parse::<usize>().map(|n| n > 0).unwrap_or(false)
+    };
+    if ok {
+        Ok(raw.to_string())
+    } else {
+        Err(format!(
+            "expected a token budget like `100k`, `2m`, or `5000` — got `{raw}`"
+        ))
+    }
+}
+
 /// The mischievous librarian - A high-performance, robust file ingester.
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
+#[command(name = "filegoblin")]
 #[command(
-    after_help = "EXAMPLES:\n  # Ingest a single file\n  filegoblin src/main.rs\n\n  # Recursively crawl a website and split into separate files\n  filegoblin https://bettercli.org --horde --split\n\n  # Parse a codebase silently and output JSON for a script\n  filegoblin ./my_project --horde -q --json\n"
+    after_help = "EXIT CODES:\n  0  success (also a closed output pipe, e.g. `| head`)\n  1  unexpected error\n  2  bad usage / no target\n  3  --scrub-fail and something was redacted\n  4  nothing could be extracted\n\nEXAMPLES:\n  # Ingest a single file\n  filegoblin src/main.rs\n\n  # Recursively crawl a website and split into separate files\n  filegoblin https://bettercli.org --horde --split\n\n  # Parse a codebase silently and output JSON for a script\n  filegoblin ./my_project --horde -q --json\n\n  # Run as an MCP server for Claude Desktop / Claude Code\n  filegoblin --mcp\n"
 )]
 pub struct Cli {
     /// The target files, directories, or URLs to ingest. When omitted, filegoblin
@@ -54,7 +75,15 @@ pub struct Cli {
     pub split: bool,
 
     /// Chunk combined output into multiple files based on an estimated token limit (e.g. --chunk 100k)
-    #[arg(long, help_heading = "Output Formatting", conflicts_with_all = ["split", "json"])]
+    ///
+    /// Validated here rather than deep in the formatter, where an unparseable
+    /// value used to silently disable chunking and emit one giant file.
+    #[arg(
+        long,
+        help_heading = "Output Formatting",
+        conflicts_with_all = ["split", "json", "summary", "manifest"],
+        value_parser = parse_token_budget,
+    )]
     pub chunk: Option<String>,
 
     /// Write output directly to a combined file instead of standard output
@@ -113,7 +142,10 @@ pub struct Cli {
     pub diff_format: bool,
 
     /// Prepend a manifest table-of-contents with file paths and token counts to horde output
-    #[arg(long, help_heading = "Curation & Intelligence")]
+    ///
+    /// Only the unchunked, non-JSON path builds it; combining it with those
+    /// silently produced output with no manifest at all.
+    #[arg(long, help_heading = "Curation & Intelligence", conflicts_with_all = ["chunk", "json"])]
     pub manifest: bool,
 
     // --- DEVELOPER UTILITIES ---
@@ -122,7 +154,10 @@ pub struct Cli {
     pub tokens: bool,
 
     /// Print only the estimated token count to stdout (no content output)
-    #[arg(long, help_heading = "Developer Utilities")]
+    ///
+    /// Both `--json` and `--split` ignored this entirely, so `--json
+    /// --tokens-only` printed the whole corpus when a number was asked for.
+    #[arg(long, help_heading = "Developer Utilities", conflicts_with_all = ["json", "split", "chunk", "write", "copy", "open"])]
     pub tokens_only: bool,
 
     /// Scrub PII and secrets from the output locally (rules + validation + entropy; zero data egress)
@@ -158,13 +193,20 @@ pub struct Cli {
     pub clipboard: bool,
 
     /// Prepend a heuristic structural summary to the top of the output
-    #[arg(long, help_heading = "Developer Utilities")]
+    ///
+    /// The chunked path sorts the tree map to index 0 and only emits the
+    /// preamble before the first chunk, so `--summary --chunk` dropped it.
+    #[arg(long, help_heading = "Developer Utilities", conflicts_with_all = ["chunk", "json"])]
     pub summary: bool,
 
     /// Skip the conversion cache (~/.filegoblin/cache) for this run: refetch
     /// URLs and redo OCR/transcription even when a cached result exists
     #[arg(long, help_heading = "Developer Utilities")]
     pub no_cache: bool,
+
+    /// Empty the conversion cache (~/.filegoblin/cache) and exit
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub cache_clear: bool,
 
     /// Run as an MCP (Model Context Protocol) stdio server exposing a `convert` tool
     #[arg(long, help_heading = "Developer Utilities")]

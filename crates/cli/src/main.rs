@@ -70,6 +70,14 @@ fn main() -> Result<()> {
 
     filegoblin_core::cache::set_enabled(!args.no_cache);
 
+    if args.cache_clear {
+        let freed = filegoblin_core::cache::clear_all()?;
+        if !args.quiet {
+            eprintln!("🧹 Cache cleared ({} MB freed).", freed / (1024 * 1024));
+        }
+        return Ok(());
+    }
+
     // MCP server mode owns stdin/stdout entirely: no mascot, no stdin-as-target
     // fallback, no path requirement.
     if args.mcp {

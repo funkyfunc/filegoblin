@@ -12,6 +12,10 @@ pub struct ParseOptions {
     pub extract: Option<crate::cli::ExtractMode>,
     /// Suppress auxiliary stderr notes (`--quiet`).
     pub quiet: bool,
+    /// This HTML already came out of a headless-browser render, so a thin page
+    /// must not suggest `--browser` again — which it did, verbatim, on pages it
+    /// had just rendered.
+    pub already_rendered: bool,
 }
 
 impl From<&crate::cli::Cli> for ParseOptions {
@@ -20,6 +24,7 @@ impl From<&crate::cli::Cli> for ParseOptions {
             full: cli.full,
             extract: cli.extract,
             quiet: cli.quiet,
+            already_rendered: false,
         }
     }
 }
