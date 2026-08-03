@@ -202,3 +202,78 @@
 **Context:** Subtitle files are the clean, ToS-free way to get "the text of a video" (see the YouTube decision above) — and they were falling through to the plaintext reader, emitting cue indices and timing arrows as content. They should also look *identical* to a whisper transcript of the same media: where the timings came from shouldn't change the shape of the markdown.
 **Decision:** Extracted `parsers/transcript.rs` (unconditional) holding `Segment` + `render()` — the sparse-timestamped paragraph logic previously buried inside the feature-gated whisper module — and pointed both `transcribe` and the new `subtitle` parser at it. `parsers/subtitle.rs` walks SubRip and WebVTT with one cue loop: `,`/`.` millisecond separators, `HH:MM:SS`/`MM:SS` forms, VTT NOTE/STYLE/REGION blocks skipped, cue settings ignored, `<v Speaker>` kept as a `Speaker:` prefix, styling/karaoke tags and SubRip `{\an8}` overrides stripped, caption entities decoded. **Rolling auto-captions are deduped** (each cue repeats the previous line; naive parsing triples the token count). `Format::Subtitle` covers `.srt`/`.vtt` plus magic sniffing (WEBVTT header, or a real timing line in the first 40 lines), so renamed files still route. Verified live on both dialects and an extension-less copy.
 **Status:** Accepted.
+
+## 2026-08-02: Pre-publish audit — release config, MCP hardening, real SSRF guard
+
+**Context:** A fresh-eyes audit ahead of the first public release read the whole
+tree without deference to this file. It found problems in three classes: a
+release that could not be built, an MCP server a real client could kill, and a
+set of "fail loudly" violations that contradicted the contract recorded in the
+2026-07-27 entry.
+
+**Decision:**
+
+*Release configuration.* `[workspace.metadata.dist] all-features = true`
+activated `transcribe-metal`, and whisper-rs-sys defines `GGML_METAL=ON`
+unconditionally — only the Apple *framework* link lines are target-gated — so
+all three non-Apple targets would have failed at cmake configure. Dist now names
+its features explicitly (`web, ocr, wasm, rag, transcribe`), and `transcribe-metal`
+is documented as a macOS-only source build. Note the 2026-07-13 entry already
+recorded `all-features` breaking once; this was that regression returning, which
+is the argument for CI covering the feature matrix rather than the default set
+alone. `horde-check.yml` now runs three OSes, the optional engines, and the exact
+dist feature list.
+
+*MCP.* `convert`'s `source` argument is model-supplied and was spliced into argv
+for `Cli::parse_from`, so a value of `--help` printed clap's output to **stdout**
+— corrupting the JSON-RPC stream — and then `exit(0)` mid-request, while `-`
+made the server read its own protocol stdin to EOF. Sources are now validated,
+passed after `--`, and parsed with `try_parse_from`. Also: invalid UTF-8 on stdin
+killed the session rather than yielding -32700; the server replied to JSON-RPC
+*responses*; and `2025-03-26` was advertised though that revision made batching
+mandatory and we reject batches.
+
+*The MCP pipeline gap.* `gobble_to_string` took `&Cli` and ran none of the
+curation/privacy/compression stages, so `--scrub` over MCP returned unredacted
+PII with no error — in the one path whose caller is a model rather than a human
+who might notice. It now runs the same stages as `gobble_app`.
+
+*SSRF.* `is_blocked_host` had exactly one non-test caller: the redirect policy.
+The initial URL was never checked, so `convert` on `http://169.254.169.254/…`
+reached the cloud metadata endpoint, and the textual check was bypassable by any
+public name resolving to a private address (`localtest.me`, `*.nip.io`).
+`net::guard_url` now runs on every fetch — single URL, crawler seed, every crawl
+hop, and every redirect — and resolves the host before allowing it. Loopback is
+refused by default with `FILEGOBLIN_ALLOW_LOCAL_URLS` as the opt-in. The
+resolve-then-connect TOCTOU that remains is documented in the function rather
+than papered over; closing it needs a resolver hook in the HTTP client.
+The comment claiming `--browser`'s initial host "was already validated by the
+reqwest fetch above" was simply false and has been corrected.
+
+*Silent data corruption.* Two cases produced *wrong* output rather than missing
+output, which is worse: OpenDocument dropped self-closing `<table:table-cell/>`
+— what LibreOffice writes for every blank cell — so every value to its right
+moved one column left; and the feed walker cleared its buffer on every `Start`,
+so an Atom `<content type="xhtml">` with nested elements produced an entry with
+no body at all. Table rendering existed in five copies with a different bug in
+each; docx/pptx/ODF now share one `TableBuilder` that pads rows to a single
+width.
+
+*Two reachable panics*, both on ordinary input: `feed.rs` sliced fetched text at
+byte 1024 and `pdf.rs` sliced OCR output at byte 40, neither on a char boundary,
+so any non-English page fetched by URL or any CJK scanned PDF aborted the
+process. Both now go through `parsers::str_prefix`.
+
+*Zip-bomb coverage.* The cap in `archive.rs` is well built — it counts actually
+decompressed bytes rather than trusting the declared size — but it was the only
+place that inflated attacker-controlled data. `.docx`/`.pptx`/`.odt`/`.epub` are
+zip containers too and read members with `read_to_string`; they now share a
+capped reader.
+
+**Status:** Accepted. The TUI is parked (excluded from the workspace, dropped
+from the CLI manifest, `--interactive` removed) rather than fixed: it shipped a
+v1.5 banner against a 1.11 workspace, its URL browsing was dead in every binary
+because the `tui` feature never propagated `filegoblin-tui/web`, and it
+hex-dumped the formats the README advertises. Re-integration notes are in its
+Cargo.toml. Deferred: `--browser` inside `--horde` (still unwired, now with a
+runtime note), DNS-rebinding protection, and a resolver-level SSRF hook.

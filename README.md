@@ -14,6 +14,38 @@
 
 ---
 
+## 📦 Installation
+
+**Pre-built binary (recommended).** Grab the archive for your platform from the
+[latest release](https://github.com/funkyfunc/filegoblin/releases/latest), unpack it,
+and put `filegoblin` on your `PATH`. Builds are published for macOS (Apple Silicon
+and Intel), Linux (x86_64 and aarch64), and Windows (x86_64).
+
+**From source** — needs a Rust toolchain (1.87+):
+
+```bash
+cargo install --git https://github.com/funkyfunc/filegoblin filegoblin
+```
+
+That gives you everything in the "always on" list below, including web fetching and
+crawling. The optional engines are opt-in because each one pulls in a heavy
+dependency:
+
+| Want | Add | Build needs |
+|---|---|---|
+| OCR on Linux/Windows | `--features ocr` | `just get-brains` for the weights (macOS uses Apple Vision, no flag) |
+| Audio/video transcription | `--features transcribe` | `cmake` + a C/C++ compiler; downloads a ~574 MB model on first use |
+| Metal-accelerated transcription (macOS only) | `--features transcribe-metal` | Xcode Command Line Tools. **Does not build on Linux/Windows** |
+| WASM plugins | `--features wasm` | — |
+| BM25 search (`--search`) | `--features rag` | — |
+
+```bash
+# Example: a macOS build with GPU-accelerated transcription
+cargo install --git https://github.com/funkyfunc/filegoblin filegoblin --features transcribe-metal
+```
+
+---
+
 ## 🏗 Current Project Structure
 *Note to Agent: Maintain this section as you add modules.*
 
@@ -36,16 +68,14 @@
 │   ├── cli/          (filegoblin: The Headless Binary)
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs       (CLI Entry & Mascot)
-│   └── tui/          (filegoblin-tui: The Interactive Dashboard)
-│       ├── Cargo.toml
-│       └── src/lib.rs
+│   └── tui/          (PARKED — not a workspace member, not shipped in v1)
 └── .cargo/
     └── config.toml   (Aliases)
 ```
 
 ---
 
-## ⚡ Current Capabilities (v1.11.0)
+## ⚡ Current Capabilities (v1.12.0)
 
 Some capabilities are gated behind opt-in Cargo features (built off by default to
 keep the binary lean). Feature-gated items are marked below.
@@ -66,11 +96,11 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] Subtitles (`.srt`/`.vtt`): cue files → the same timestamped transcript markdown whisper produces, with speaker labels and rolling-caption dedup
 - [x] RSS/Atom feeds: a feed URL or saved feed file → a clean markdown list of entries
 - [x] Conversion cache: repeat URL fetches and OCR/transcription results come back instantly (`~/.filegoblin/cache`, `--no-cache` to bypass)
-- [x] Audio/video transcription (`--features transcribe-metal`): mp3/m4a/wav/flac/ogg/opus/mp4/mov/webm/mkv (audio track) → timestamped transcript markdown via whisper.cpp, on-device, model auto-downloads once
+- [x] Audio/video transcription (`--features transcribe`; add `transcribe-metal` on macOS for GPU): mp3/m4a/wav/flac/ogg/opus/mp4/mov/webm/mkv (audio track) → timestamped transcript markdown via whisper.cpp, on-device, model auto-downloads once
 - [x] Golden-file test suite: end-to-end snapshots of real fixture output per format (`cargo insta review` to inspect changes)
 - [x] WASM Plugin Extensibility (`--plugin`) — requires `--features wasm`
 - [x] Semantic BM25 Search with Relevance Scores (`--search`) — requires `--features rag`
-- [x] Interactive Terminal Dashboard (`-i`) with ratatui — requires `--features tui` (in the CLI crate)
+- [x] Conversion cache management: `--no-cache` to bypass, `--cache-clear` to empty it
 - [x] Glob Filtering (`--include`, `--exclude`) & Depth Control (`--depth`)
 - [x] Token Estimation (`--tokens`), Token-Only Mode (`--tokens-only`)
 - [x] Token Compression (`--compress safe|contextual`)
@@ -125,12 +155,6 @@ just get-brains
 ---
 
 ## 🚀 Quick Start
-
-**The Goblin Horde Check:**
-All code must pass the ritual before being merged:
-```bash
-cargo horde-check
-```
 
 **Basic Gobble (Files):**
 ```bash
@@ -264,15 +288,63 @@ filegoblin . --horde --git-diff HEAD~1
 filegoblin . --horde --git-diff HEAD~1 --diff-format
 ```
 
-**Interactive Hoard Selector (TUI):**
-A full, snappy `ratatui` dashboard wrapper around the engine.
-- Navigate with `j / k` and page with `u / d`.
-- Toggle multiple files for ingestion using `Space`.
-- Toggle pipeline flags directly from the bottom bar (`c` for copy, `s` for scrub secrets, etc.).
-- Hit `Enter` to belch out the results!
+**MCP Server (Claude Desktop / Claude Code):**
+
+`filegoblin --mcp` speaks the Model Context Protocol over stdio, exposing a single
+`convert` tool that takes a file path, directory, or URL.
+
+For **Claude Code**:
 ```bash
-filegoblin ./src/ -i
+claude mcp add filegoblin -- filegoblin --mcp
 ```
+
+For **Claude Desktop**, add this to `claude_desktop_config.json`
+(macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`):
+```json
+{
+  "mcpServers": {
+    "filegoblin": {
+      "command": "filegoblin",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+Use an absolute path to the binary if it isn't on the PATH your client sees. To let
+the tool reach services on your own machine, add
+`"env": { "FILEGOBLIN_ALLOW_LOCAL_URLS": "1" }` — see the security note below for
+why that is off by default.
+
+---
+
+## 🔒 Security notes
+
+- **URLs pointing at private addresses are refused.** Loopback, private ranges,
+  link-local (including the cloud metadata endpoint `169.254.169.254`), and any
+  hostname that *resolves* to one are blocked before a request is made, on the
+  initial URL and on every redirect hop. Set `FILEGOBLIN_ALLOW_LOCAL_URLS=1` to
+  allow them — reasonable for converting your own dev server, and worth thinking
+  about before enabling it for the MCP server, where the URL comes from a model.
+- **`--browser` is a wider surface.** Chrome does not honour those redirect
+  guards, so a page it renders can redirect somewhere filegoblin would refuse to
+  fetch directly. The initial URL is still validated, the profile is a throwaway
+  temp dir, and the mode is strictly opt-in.
+- **Archives and Office files have decompression caps.** Zip, tar.gz, and the
+  zip-container formats (`.docx`/`.pptx`/`.odt`/`.epub`) bound what they inflate
+  and refuse entries whose paths escape the extraction directory.
+
+---
+
+## 🛠 Contributing
+
+All code must pass the ritual before being merged:
+```bash
+cargo horde-check   # clippy -D warnings + fmt --check + test, via .cargo/config.toml
+```
+
+Golden-file tests live in `crates/cli/tests/` and use `insta` snapshots; run
+`cargo insta review` to inspect a diff before accepting it.
 
 ---
 

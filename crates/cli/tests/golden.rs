@@ -167,3 +167,79 @@ fn scrub_redacts_email_from_stdin() {
         .success()
         .stdout(contains("[EMAIL]"));
 }
+
+/// The `--scrub-fail` gate is a documented CI contract and had no test.
+#[test]
+fn scrub_fail_exits_3_when_something_was_redacted() {
+    cmd()
+        .args(["-q", "--scrub", "--scrub-fail"])
+        .write_stdin("contact goblin@example.com for loot")
+        .assert()
+        .code(3);
+}
+
+#[test]
+fn scrub_fail_exits_0_when_nothing_was_redacted() {
+    cmd()
+        .args(["-q", "--scrub", "--scrub-fail"])
+        .write_stdin("nothing sensitive in this sentence at all")
+        .assert()
+        .success();
+}
+
+/// Flags that used to be accepted and then silently ignored must now be
+/// rejected at parse time rather than producing surprising output.
+#[test]
+fn silently_ignored_flag_combinations_are_hard_errors() {
+    for args in [
+        vec!["Cargo.toml", "--json", "--tokens-only"],
+        vec!["Cargo.toml", "--summary", "--chunk", "10k"],
+        vec!["Cargo.toml", "--manifest", "--chunk", "10k"],
+    ] {
+        cmd()
+            .args(&args)
+            .assert()
+            .code(2)
+            .stderr(contains("cannot be used with"));
+    }
+}
+
+/// A typo'd --chunk value used to disable chunking silently.
+#[test]
+fn invalid_chunk_value_is_a_hard_error() {
+    cmd()
+        .args(["Cargo.toml", "--chunk", "banana"])
+        .assert()
+        .code(2)
+        .stderr(contains("token budget"));
+}
+
+/// A URL pointing at a private address is refused before any request.
+#[test]
+fn loopback_urls_are_refused() {
+    cmd()
+        .args(["http://127.0.0.1:9/", "-q"])
+        .assert()
+        .code(4)
+        .stderr(contains("private or loopback"));
+}
+
+/// A bad --git-diff ref must not fall back to ingesting the whole repository.
+#[test]
+fn unknown_git_diff_ref_is_fatal() {
+    cmd()
+        .args([".", "--horde", "--git-diff", "no-such-ref-anywhere", "-q"])
+        .assert()
+        .failure()
+        .stderr(contains("Refusing to fall back"));
+}
+
+/// An unparseable glob left an empty set that matched nothing.
+#[test]
+fn invalid_include_glob_is_reported() {
+    cmd()
+        .args([".", "--horde", "--include", "[unclosed", "-q"])
+        .assert()
+        .failure()
+        .stderr(contains("Invalid pattern"));
+}

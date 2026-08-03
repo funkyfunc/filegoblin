@@ -6,15 +6,102 @@ on:
   pull_request:
     branches: [ "main" ]
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  # Default features on all three release platforms. This is the gate.
   check:
-    name: Horde Check
-    runs-on: ubuntu-latest
+    name: Horde Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: Run Horde Check
-        run: cargo clippy -- -D warnings && cargo fmt --check && cargo test
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Format
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --workspace
+
+  # The optional engines. Nothing here was ever compiled in CI before, so a
+  # `-D warnings` regression in feature-gated code only surfaced at release time
+  # — which is also when the dist build first touches these paths.
+  features:
+    name: Features (${{ matrix.os }}, ${{ matrix.features }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        features: ["ocr", "wasm", "rag", "ocr,wasm,rag"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --features ${{ matrix.features }} -- -D warnings
+      - name: Test
+        run: cargo test --workspace --features ${{ matrix.features }}
+
+  # Transcription is split out: it builds whisper.cpp through cmake, so it is
+  # slow, and its tests download a ~574MB model — hence build-and-clippy only.
+  # NOTE: `transcribe-metal` is deliberately never built here. whisper-rs-sys
+  # sets GGML_METAL=ON for every target, so it cannot configure off macOS.
+  transcribe:
+    name: Transcribe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (transcribe)
+        run: cargo clippy --workspace --all-targets --features transcribe -- -D warnings
+
+  # The exact feature set `dist` ships. If this fails, a release tag would fail.
+  release-features:
+    name: Release feature set (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build with the dist feature list
+        run: cargo build -p filegoblin --features web,ocr,wasm,rag,transcribe
+
+  # The parked TUI is outside the workspace, so nothing above compiles it.
+  # Cheap insurance that it doesn't rot while it waits to be re-integrated.
+  parked-tui:
+    name: Parked TUI builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --manifest-path crates/tui/Cargo.toml --all-features

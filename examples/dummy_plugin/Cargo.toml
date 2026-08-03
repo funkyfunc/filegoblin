@@ -1,3 +1,9 @@
+# Standalone by design: this is a *consumer* of the published component API, so
+# it must build the way a third-party plugin would. Without this empty table it
+# is neither a workspace member nor independent, and `cargo build` inside it
+# fails with "current package believes it's in a workspace when it's not".
+[workspace]
+
 [package]
 name = "dummy_plugin"
 version = "0.1.0"

@@ -659,19 +659,17 @@ pub fn stream_and_output(
         }
     });
 
-    if args.summary || args.manifest {
-        if !args.quiet {
-            eprintln!(
-                "{}",
-                "⚠️ Buffer Mode: --summary or --manifest requires full repository scan in memory."
-                    .truecolor(255, 191, 0)
-            );
-        }
-        let compressed_docs: Vec<_> = rx.into_iter().collect();
-        let tokens = compressed_docs.iter().map(|d| d.tokens()).sum();
-        format_and_output(compressed_docs, tokens, display_name, args)?;
-        return Ok(produced.get());
-    }
+    // NOTE: `--summary`, `--manifest`, and `--json` are all in
+    // `requires_buffering`, so they never reach this function. The fallbacks
+    // that used to live here (a buffered re-entry, and a *second*
+    // streamed-JSON writer emitting a different schema — `path` + `content`
+    // only, no `format`/`tokens`/`error`) were unreachable, and the JSON one
+    // would have silently changed the machine contract the day anyone removed
+    // `json` from that list. Deleted rather than left as a trap.
+    debug_assert!(
+        !(args.summary || args.manifest || args.json),
+        "buffered-only modes must not reach stream_and_output"
+    );
 
     if args.split {
         let root_dir_name = sanitize_root_dir_name(display_name);
@@ -725,57 +723,16 @@ pub fn stream_and_output(
             }
         }
         Ok(produced.get())
-    } else if args.json {
-        use std::io::Write;
-
-        // Setup output
-        let mut output_writer: Box<dyn Write> = if let Some(file_path) = args.write.as_deref() {
-            Box::new(std::fs::File::create(file_path)?)
-        } else {
-            Box::new(std::io::stdout())
-        };
-
-        writeln!(output_writer, "[")?;
-
-        let mut first = true;
-        for doc in rx {
-            if !first {
-                writeln!(output_writer, ",")?;
-            }
-            first = false;
-
-            #[derive(serde::Serialize)]
-            struct FileNode<'a> {
-                path: &'a str,
-                content: &'a str,
-            }
-
-            let node = FileNode {
-                path: &doc.path,
-                content: &doc.content,
-            };
-            let serialized = serde_json::to_string_pretty(&node)?;
-            write!(output_writer, "{}", serialized)?;
-        }
-        writeln!(
-            output_writer,
-            "
-]"
-        )?;
-
-        if !args.quiet && args.write.is_some() {
-            eprintln!(
-                "{}",
-                "💾 Streamed JSON array successfully.".truecolor(0, 255, 100)
-            );
-        }
-        Ok(produced.get())
     } else {
         use std::io::Write;
 
         let mut current_combined = String::new();
-        let mut total_tokens = 0;
-        let mut _total_chars = 0;
+        // `chunk_tokens` resets at every flush; `grand_total_tokens` never
+        // does. Reusing one counter for both made the final "~N tokens across
+        // M files" line under-report by everything already written out.
+        let mut chunk_tokens = 0;
+        let mut grand_total_tokens = 0;
+        let mut total_chars = 0;
         let mut part_number = 1;
         let mut file_count = 0;
 
@@ -795,13 +752,14 @@ pub fn stream_and_output(
         for doc in rx {
             file_count += 1;
             let file_tokens = doc.tokens();
-            total_tokens += file_tokens;
+            chunk_tokens += file_tokens;
+            grand_total_tokens += file_tokens;
 
             // Chunking logic
             if let Some(threshold) = token_threshold {
-                if total_tokens > threshold && !current_combined.is_empty() {
+                if chunk_tokens > threshold && !current_combined.is_empty() {
                     let output = format!("{}\n", current_combined.trim());
-                    _total_chars += output.len();
+                    total_chars += output.len();
                     let part_file_name = args
                         .write
                         .as_deref()
@@ -814,7 +772,7 @@ pub fn stream_and_output(
 
                     part_number += 1;
                     current_combined.clear();
-                    total_tokens = file_tokens; // Reset token count for next chunk
+                    chunk_tokens = file_tokens; // this file opens the next chunk
                 }
 
                 if doc.path == "_tree.md" {
@@ -859,20 +817,29 @@ pub fn stream_and_output(
         // Flush remaining chunk
         if token_threshold.is_some() && !current_combined.is_empty() {
             let output = format!("{}\n", current_combined.trim());
+            total_chars += output.len();
             let part_file_name = args
                 .write
                 .as_deref()
                 .map(|o| format!("{}.part{}.md", o.trim_end_matches(".md"), part_number))
                 .unwrap_or_else(|| format!("gobbled.part{}.md", part_number));
             std::fs::write(&part_file_name, &output)?;
+            if !args.quiet {
+                eprintln!("  ↳ Baked {}", part_file_name.truecolor(0, 255, 100));
+            }
         }
 
         if args.tokens && !args.quiet {
+            let chars = if total_chars > 0 {
+                format!("{} chars, ", total_chars)
+            } else {
+                String::new()
+            };
             eprintln!(
                 "{}",
                 format!(
-                    "📊 Output Length (~{} tokens across {} files)",
-                    total_tokens, file_count
+                    "📊 Output Length ({}~{} tokens across {} files)",
+                    chars, grand_total_tokens, file_count
                 )
                 .truecolor(255, 191, 0)
             );
