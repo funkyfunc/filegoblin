@@ -1,6 +1,5 @@
 use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
-use std::io::Read;
 use std::path::Path;
 
 /// OpenDocument text (`.odt`) and presentation (`.odp`) → markdown. Both are
@@ -15,14 +14,13 @@ impl Gobble for OpenDocGobbler {
         let mut archive = zip::ZipArchive::new(file)
             .context("Not a valid OpenDocument container (expected a zip)")?;
 
-        let mut content = String::new();
-        archive
+        let mut entry = archive
             .by_name("content.xml")
-            .context("Missing content.xml — not an OpenDocument file")?
-            .read_to_string(&mut content)
-            .context("Failed to read content.xml")?;
+            .context("Missing content.xml — not an OpenDocument file")?;
+        let content = crate::parsers::read_zip_entry_to_string(&mut entry, "content.xml")?;
+        drop(entry);
 
-        let md = content_xml_to_md(&content);
+        let md = content_xml_to_md(&content)?;
         if md.trim().is_empty() {
             anyhow::bail!("No text could be extracted from this OpenDocument file");
         }
@@ -30,7 +28,12 @@ impl Gobble for OpenDocGobbler {
     }
 }
 
-fn content_xml_to_md(xml: &str) -> String {
+/// A `table:number-columns-repeated` run is expanded, but bounded: ODS writers
+/// pad every row out to the sheet width with a single repeated filler cell
+/// (`table:number-columns-repeated="16384"`), which must not become 16k columns.
+const MAX_CELL_REPEAT: usize = 512;
+
+fn content_xml_to_md(xml: &str) -> Result<String> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -43,11 +46,13 @@ fn content_xml_to_md(xml: &str) -> String {
     let mut list_depth = 0usize;
     let mut slide_count = 0usize;
 
-    // Table state (rendered as markdown pipe tables, row 0 = header)
+    // Rows are buffered and rendered when the table closes so every row can be
+    // padded to a single width — emitting rows as they closed meant a short row
+    // silently shifted its values into the wrong columns.
     let mut in_table = false;
-    let mut table_row_idx = 0usize;
-    let mut row_cells: Vec<String> = Vec::new();
+    let mut table = crate::parsers::TableBuilder::default();
     let mut cell_text = String::new();
+    let mut cell_repeat = 1usize;
 
     let flush_block = |out: &mut String,
                        line: &mut String,
@@ -69,8 +74,30 @@ fn content_xml_to_md(xml: &str) -> String {
     };
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+        // `Empty` is a self-closing element: it gets a Start *and* an End in
+        // one event, so anything that only reacts to `End` must handle it here.
+        let event = reader.read_event().map_err(|e| {
+            anyhow::anyhow!(
+                "Malformed OpenDocument XML at byte {}: {}",
+                reader.buffer_position(),
+                e
+            )
+        })?;
+        let is_empty = matches!(event, Event::Empty(_));
+        match event {
+            Event::Start(ref e) | Event::Empty(ref e) => match e.name().as_ref() {
+                // A self-closing cell — `<table:table-cell/>` is exactly what
+                // LibreOffice writes for every blank cell — never reaches the
+                // `End` arm, so it used to contribute no cell at all and every
+                // value to its right slid one column left.
+                b"table:table-cell" | b"table:covered-table-cell" if in_table => {
+                    cell_repeat = repeat_count(e);
+                    cell_text.clear();
+                    if is_empty || e.name().as_ref() == b"table:covered-table-cell" {
+                        table.push_cell("", cell_repeat);
+                        cell_repeat = 1;
+                    }
+                }
                 b"text:h" => {
                     let level = e
                         .attributes()
@@ -86,12 +113,7 @@ fn content_xml_to_md(xml: &str) -> String {
                     slide_count += 1;
                     out.push_str(&format!("## Slide {}\n\n", slide_count));
                 }
-                b"table:table" => {
-                    in_table = true;
-                    table_row_idx = 0;
-                }
-                b"table:table-row" if in_table => row_cells.clear(),
-                b"table:table-cell" if in_table => cell_text.clear(),
+                b"table:table" => in_table = true,
                 b"text:s" => {
                     if in_table {
                         cell_text.push(' ')
@@ -115,7 +137,7 @@ fn content_xml_to_md(xml: &str) -> String {
                 }
                 _ => {}
             },
-            Ok(Event::Text(e)) => {
+            Event::Text(ref e) => {
                 if let Ok(text) = std::str::from_utf8(e.as_ref())
                     && let Ok(decoded) = quick_xml::escape::unescape(text)
                 {
@@ -126,8 +148,8 @@ fn content_xml_to_md(xml: &str) -> String {
                     }
                 }
             }
-            Ok(Event::GeneralRef(e)) => {
-                if let Some(s) = crate::parsers::resolve_xml_entity(&e) {
+            Event::GeneralRef(ref e) => {
+                if let Some(s) = crate::parsers::resolve_xml_entity(e) {
                     if in_table {
                         cell_text.push_str(&s);
                     } else {
@@ -135,42 +157,42 @@ fn content_xml_to_md(xml: &str) -> String {
                     }
                 }
             }
-            Ok(Event::End(ref e)) => match e.name().as_ref() {
+            Event::End(ref e) => match e.name().as_ref() {
                 b"text:h" | b"text:p" if !in_table => {
                     flush_block(&mut out, &mut line, &mut heading_level, list_depth);
                 }
                 b"text:p" if in_table => cell_text.push(' '),
                 b"text:list" => list_depth = list_depth.saturating_sub(1),
+                b"table:covered-table-cell" if in_table => cell_text.clear(),
                 b"table:table-cell" if in_table => {
-                    row_cells.push(
-                        cell_text
-                            .split_whitespace()
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .replace('|', "\\|"),
-                    );
+                    table.push_cell(&cell_text, cell_repeat);
+                    cell_repeat = 1;
                     cell_text.clear();
                 }
-                b"table:table-row" if in_table => {
-                    out.push_str(&format!("| {} |\n", row_cells.join(" | ")));
-                    if table_row_idx == 0 {
-                        out.push_str(&format!("|{}\n", "---|".repeat(row_cells.len())));
-                    }
-                    table_row_idx += 1;
-                }
+                b"table:table-row" if in_table => table.end_row(),
                 b"table:table" => {
                     in_table = false;
+                    out.push_str(&table.render());
                     out.push('\n');
                 }
                 _ => {}
             },
-            Ok(Event::Eof) => break,
-            Err(_) => break, // tolerate malformed chunks; emit what we have
+            Event::Eof => break,
             _ => {}
         }
     }
 
-    out
+    Ok(out)
+}
+
+/// `table:number-columns-repeated` on a cell, clamped to [`MAX_CELL_REPEAT`].
+fn repeat_count(e: &quick_xml::events::BytesStart) -> usize {
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == b"table:number-columns-repeated")
+        .and_then(|a| a.unescape_value().ok()?.parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, MAX_CELL_REPEAT)
 }
 
 #[cfg(test)]
@@ -240,6 +262,122 @@ mod tests {
             .gobble(file.path(), &ParseOptions::default())
             .unwrap();
         assert!(result.contains("Ben & Jerry's <notes>"), "got: {result}");
+    }
+
+    /// Regression: a self-closing `<table:table-cell/>` (what LibreOffice
+    /// writes for every blank cell) contributed no cell at all, so every value
+    /// to its right moved one column left — silent data corruption in a table
+    /// an LLM then reads as fact.
+    #[test]
+    fn empty_cells_keep_their_column() {
+        let xml = r#"<office:document-content><office:body><office:text>
+            <table:table>
+                <table:table-row>
+                    <table:table-cell><text:p>Name</text:p></table:table-cell>
+                    <table:table-cell><text:p>Middle</text:p></table:table-cell>
+                    <table:table-cell><text:p>Value</text:p></table:table-cell>
+                </table:table-row>
+                <table:table-row>
+                    <table:table-cell><text:p>Alpha</text:p></table:table-cell>
+                    <table:table-cell/>
+                    <table:table-cell><text:p>42</text:p></table:table-cell>
+                </table:table-row>
+            </table:table>
+        </office:text></office:body></office:document-content>"#;
+        let file = make_od(xml, "odt");
+        let result = OpenDocGobbler
+            .gobble(file.path(), &ParseOptions::default())
+            .unwrap();
+        assert!(
+            result.contains("| Alpha |  | 42 |"),
+            "42 must stay in column 3, got: {result}"
+        );
+    }
+
+    /// A merged-away cell still occupies a column position.
+    #[test]
+    fn covered_cells_hold_their_place() {
+        let xml = r#"<office:document-content><office:body><office:text>
+            <table:table>
+                <table:table-row>
+                    <table:table-cell><text:p>A</text:p></table:table-cell>
+                    <table:table-cell><text:p>B</text:p></table:table-cell>
+                    <table:table-cell><text:p>C</text:p></table:table-cell>
+                </table:table-row>
+                <table:table-row>
+                    <table:table-cell><text:p>span</text:p></table:table-cell>
+                    <table:covered-table-cell/>
+                    <table:table-cell><text:p>tail</text:p></table:table-cell>
+                </table:table-row>
+            </table:table>
+        </office:text></office:body></office:document-content>"#;
+        let file = make_od(xml, "odt");
+        let result = OpenDocGobbler
+            .gobble(file.path(), &ParseOptions::default())
+            .unwrap();
+        assert!(result.contains("| span |  | tail |"), "got: {result}");
+    }
+
+    /// A repeated-cell run expands, and the huge trailing filler run that ODS
+    /// writers emit is trimmed rather than becoming thousands of columns.
+    #[test]
+    fn repeated_cells_expand_but_filler_is_trimmed() {
+        let xml = r#"<office:document-content><office:body><office:text>
+            <table:table>
+                <table:table-row>
+                    <table:table-cell><text:p>x</text:p></table:table-cell>
+                    <table:table-cell table:number-columns-repeated="3"><text:p>d</text:p></table:table-cell>
+                    <table:table-cell table:number-columns-repeated="16384"/>
+                </table:table-row>
+            </table:table>
+        </office:text></office:body></office:document-content>"#;
+        let file = make_od(xml, "odt");
+        let result = OpenDocGobbler
+            .gobble(file.path(), &ParseOptions::default())
+            .unwrap();
+        assert!(result.contains("| x | d | d | d |"), "got: {result}");
+        assert!(
+            result.lines().next().unwrap().len() < 100,
+            "filler run must not widen the table, got: {result}"
+        );
+    }
+
+    /// Rows shorter than the header are padded, never left ragged.
+    #[test]
+    fn short_rows_are_padded_to_the_table_width() {
+        let xml = r#"<office:document-content><office:body><office:text>
+            <table:table>
+                <table:table-row>
+                    <table:table-cell><text:p>A</text:p></table:table-cell>
+                    <table:table-cell><text:p>B</text:p></table:table-cell>
+                    <table:table-cell><text:p>C</text:p></table:table-cell>
+                </table:table-row>
+                <table:table-row>
+                    <table:table-cell><text:p>only</text:p></table:table-cell>
+                </table:table-row>
+            </table:table>
+        </office:text></office:body></office:document-content>"#;
+        let file = make_od(xml, "odt");
+        let result = OpenDocGobbler
+            .gobble(file.path(), &ParseOptions::default())
+            .unwrap();
+        assert!(result.contains("| only |  |  |"), "got: {result}");
+    }
+
+    /// Malformed XML is an error, not a half-document returned as success.
+    #[test]
+    fn malformed_xml_fails_loudly() {
+        let xml = r#"<office:document-content><office:body><office:text>
+            <text:p>Good paragraph</text:p>
+            <text:p>Unterminated <<<"#;
+        let file = make_od(xml, "odt");
+        let err = OpenDocGobbler
+            .gobble(file.path(), &ParseOptions::default())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Malformed OpenDocument XML"),
+            "got: {err}"
+        );
     }
 
     #[test]

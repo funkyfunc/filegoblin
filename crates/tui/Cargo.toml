@@ -1,9 +1,20 @@
+# Parked crate — not a member of the root workspace and not shipped in v1.
+# Build it on its own: cargo build --manifest-path crates/tui/Cargo.toml
+# Re-integrating means adding `filegoblin-tui = { path = "../tui", optional
+# = true }` back to crates/cli plus a `tui = ["dep:filegoblin-tui",
+# "filegoblin-tui?/web"]` feature — note the `?/web`, whose absence previously
+# shipped a TUI whose URL browsing was dead.
+[workspace]
+
 [package]
 name = "filegoblin-tui"
-version = "1.11.0"
+version = "1.12.0"
 edition = "2024"
-description = "Interactive TUI file explorer for filegoblin."
+rust-version = "1.87"
+description = "Interactive TUI file explorer for filegoblin (parked, not shipped in v1)."
+repository = "https://github.com/funkyfunc/filegoblin"
 license = "MIT"
+publish = false
 
 
 [features]

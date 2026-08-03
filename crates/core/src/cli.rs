@@ -161,10 +161,6 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities")]
     pub summary: bool,
 
-    /// Launch the interactive TUI "Hoard Selector" dashboard
-    #[arg(short, long, help_heading = "Developer Utilities")]
-    pub interactive: bool,
-
     /// Skip the conversion cache (~/.filegoblin/cache) for this run: refetch
     /// URLs and redo OCR/transcription even when a cached result exists
     #[arg(long, help_heading = "Developer Utilities")]

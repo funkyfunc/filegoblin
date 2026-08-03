@@ -176,7 +176,7 @@ where
                 ]),
                 Line::from(vec![
                     Span::styled("   --m-m-- ", Style::default().fg(C_PRIMARY).add_modifier(Modifier::BOLD)),
-                    Span::styled(" filegoblin v1.5 ", Style::default().fg(C_SECONDARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" filegoblin v{} ", env!("CARGO_PKG_VERSION")), Style::default().fg(C_SECONDARY).add_modifier(Modifier::BOLD)),
                     Span::raw(" | "),
                     Span::styled(format!(":: {}", app.current_dir.target_str()), Style::default().fg(C_MUTED)),
                 ]),

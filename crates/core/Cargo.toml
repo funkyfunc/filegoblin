@@ -1,18 +1,13 @@
 [package]
 name = "filegoblin-core"
-version = "1.11.0"
+version = "1.12.0"
 edition = "2024"
-description = "A zero-dependency, high-performance CLI tool to convert messy file formats into high-fidelity, LLM-optimized Markdown/XML/YAML."
+rust-version = "1.87"
+description = "Conversion engine behind filegoblin: any file, URL, or media into clean Markdown."
 repository = "https://github.com/funkyfunc/filegoblin"
 license = "MIT"
-exclude = [
-    "examples/*",
-    "docs/*",
-    "test_assets/*",
-    "assets/*",
-    ".github/*",
-    "empty_test_dir/*"
-]
+keywords = ["markdown", "llm", "parser", "ocr", "extraction"]
+categories = ["text-processing", "parser-implementations"]
 
 
 [features]

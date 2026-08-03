@@ -66,8 +66,7 @@ fn is_broken_pipe(err: &anyhow::Error) -> bool {
 }
 
 fn main() -> Result<()> {
-    #[cfg_attr(not(feature = "tui"), allow(unused_mut))]
-    let mut args = Cli::parse();
+    let args = Cli::parse();
 
     filegoblin_core::cache::set_enabled(!args.no_cache);
 
@@ -83,7 +82,7 @@ fn main() -> Result<()> {
     // subprocess case for agents) neither blocks on stdin nor grows a phantom
     // "-" target in the output metadata.
     let mut targets = args.paths.clone();
-    if targets.is_empty() && !args.interactive && !args.clipboard {
+    if targets.is_empty() && !args.clipboard {
         if !std::io::stdin().is_terminal() {
             targets.push("-".to_string());
         } else {
@@ -93,39 +92,6 @@ fn main() -> Result<()> {
             );
             eprintln!("Usage: filegoblin <target>  --OR--  cat <file> | filegoblin");
             std::process::exit(2);
-        }
-    }
-
-    if args.interactive {
-        #[cfg(feature = "tui")]
-        {
-            if let Some(selected_targets) = filegoblin_tui::run_tui(&mut args)? {
-                if !args.quiet {
-                    eprintln!(
-                        "{}",
-                        "    (^w^)  <- \"Crunching time!\""
-                            .truecolor(167, 255, 0)
-                            .bold()
-                    );
-                }
-                let outcome = gobble_app(&selected_targets, &args)?;
-                if args.scrub_fail && outcome.redactions > 0 {
-                    std::process::exit(3);
-                }
-                if outcome.produced == 0 {
-                    std::process::exit(4);
-                }
-            }
-            return Ok(());
-        }
-        #[cfg(not(feature = "tui"))]
-        {
-            eprintln!(
-                "{} Interactive mode requires the 'tui' feature.",
-                "❌".red()
-            );
-            eprintln!("Rebuild with: cargo install --path crates/cli --features tui");
-            std::process::exit(1);
         }
     }
 

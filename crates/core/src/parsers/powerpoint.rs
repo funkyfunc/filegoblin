@@ -1,5 +1,5 @@
 use crate::parsers::gobble::{Gobble, ParseOptions};
-use std::io::Read;
+use anyhow::Result;
 use std::path::Path;
 
 pub struct PptxGobbler;
@@ -21,13 +21,12 @@ impl Gobble for PptxGobbler {
             let name = file.name().to_string();
 
             if name == "ppt/presentation.xml" {
-                file.read_to_string(&mut presentation_xml)?;
+                presentation_xml = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
             } else if name == "ppt/_rels/presentation.xml.rels" {
-                file.read_to_string(&mut rels_xml)?;
+                rels_xml = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
             } else if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
-                let mut xml_content = String::new();
-                file.read_to_string(&mut xml_content)?;
-                let text = extract_text_from_slide_xml(&xml_content);
+                let xml_content = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
+                let text = extract_text_from_slide_xml(&xml_content)?;
                 if !text.trim().is_empty() {
                     slide_texts.insert(name, text);
                 }
@@ -36,11 +35,10 @@ impl Gobble for PptxGobbler {
                     .trim_start_matches("ppt/notesSlides/notesSlide")
                     .trim_end_matches(".xml");
                 if let Ok(n) = num_str.parse::<usize>() {
-                    let mut xml_content = String::new();
-                    file.read_to_string(&mut xml_content)?;
+                    let xml_content = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
                     // Notes slides carry a slide-number placeholder; digit-only
                     // lines are that artifact, not the speaker's words.
-                    let text = extract_text_from_slide_xml(&xml_content)
+                    let text = extract_text_from_slide_xml(&xml_content)?
                         .lines()
                         .filter(|l| {
                             !l.trim()
@@ -80,8 +78,11 @@ impl Gobble for PptxGobbler {
             output.push_str("\n\n---\n\n");
         }
 
-        if output.is_empty() {
-            return Ok("No text could be extracted from this presentation.".to_string());
+        if output.trim().is_empty() {
+            anyhow::bail!(
+                "No text could be extracted from this presentation \
+                 (image-only slides, or text stored outside the slide parts)"
+            );
         }
 
         Ok(output)
@@ -157,7 +158,7 @@ fn manifest_slide_order(presentation_xml: &str, rels_xml: &str) -> Vec<String> {
     order
 }
 
-fn extract_text_from_slide_xml(xml: &str) -> String {
+fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -170,33 +171,39 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
     let mut output = String::new();
     let mut in_text_node = false;
 
-    // Table state trackers (tables render as markdown pipe tables, row 0 = header)
     let mut in_table = false;
-    let mut current_row_idx = 0;
+    let mut table = crate::parsers::TableBuilder::default();
     let mut current_cell_text = String::new();
-    let mut row_cells: Vec<String> = Vec::new();
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+        let event = reader.read_event().map_err(|e| {
+            anyhow::anyhow!(
+                "Malformed slide XML at byte {}: {}",
+                reader.buffer_position(),
+                e
+            )
+        })?;
+        let is_empty = matches!(event, Event::Empty(_));
+        match event {
+            Event::Start(ref e) | Event::Empty(ref e) => {
                 match e.name().as_ref() {
                     b"a:tbl" => {
                         in_table = true;
-                        current_row_idx = 0;
                         output.push('\n'); // Pad before table
                     }
-                    b"a:tr" if in_table => {
-                        row_cells.clear();
-                    }
+                    // A self-closing cell still occupies a column.
                     b"a:tc" if in_table => {
                         current_cell_text.clear();
+                        if is_empty {
+                            table.push_cell("", 1);
+                        }
                     }
                     b"a:t" => in_text_node = true,
                     b"a:p" if !in_table => output.push_str("\n- "), // Start of a paragraph/bullet outside tables
                     _ => (),
                 }
             }
-            Ok(Event::Text(e)) => {
+            Event::Text(ref e) => {
                 if in_text_node
                     && let Ok(text) = std::str::from_utf8(e.as_ref())
                     && let Ok(decoded) = quick_xml::escape::unescape(text)
@@ -208,8 +215,20 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
                     }
                 }
             }
-            Ok(Event::GeneralRef(e)) => {
-                if in_text_node && let Some(s) = crate::parsers::resolve_xml_entity(&e) {
+            // CDATA is rare in slide parts but free to honour; without this the
+            // text inside one would vanish with no warning.
+            Event::CData(ref e) => {
+                if in_text_node {
+                    let text = String::from_utf8_lossy(e.as_ref());
+                    if in_table {
+                        current_cell_text.push_str(&text);
+                    } else {
+                        output.push_str(&text);
+                    }
+                }
+            }
+            Event::GeneralRef(ref e) => {
+                if in_text_node && let Some(s) = crate::parsers::resolve_xml_entity(e) {
                     if in_table {
                         current_cell_text.push_str(&s);
                     } else {
@@ -217,42 +236,33 @@ fn extract_text_from_slide_xml(xml: &str) -> String {
                     }
                 }
             }
-            Ok(Event::End(ref e)) => match e.name().as_ref() {
+            Event::End(ref e) => match e.name().as_ref() {
                 b"a:tbl" => {
                     in_table = false;
-                    output.push('\n'); // Pad after table
+                    output.push('\n');
+                    output.push_str(table.render().trim_end());
+                    output.push('\n');
                 }
-                b"a:tr" if in_table => {
-                    output.push_str(&format!("\n| {} |", row_cells.join(" | ")));
-                    if current_row_idx == 0 {
-                        output.push_str(&format!("\n|{}", "---|".repeat(row_cells.len())));
-                    }
-                    current_row_idx += 1;
-                }
+                b"a:tr" if in_table => table.end_row(),
                 b"a:tc" if in_table => {
-                    row_cells.push(
-                        current_cell_text
-                            .trim()
-                            .replace('|', "\\|")
-                            .replace('\n', " "),
-                    );
+                    table.push_cell(&current_cell_text, 1);
+                    current_cell_text.clear();
                 }
                 b"a:t" => in_text_node = false,
                 b"a:p" if !in_table => output.push('\n'),
                 _ => (),
             },
-            Ok(Event::Eof) => break,
-            Err(_) => break, // Silently ignore malformed XML chunks
+            Event::Eof => break,
             _ => (),
         }
     }
 
     // Clean up excessive newlines/bullets generated from empty paragraphs
-    output
+    Ok(output
         .lines()
         .filter(|line| !line.trim().is_empty() && line.trim() != "-")
         .collect::<Vec<&str>>()
-        .join("\n")
+        .join("\n"))
 }
 
 #[cfg(test)]
@@ -275,11 +285,42 @@ mod tests {
             </a:tbl>
         "#;
 
-        let result = extract_text_from_slide_xml(xml);
+        let result = extract_text_from_slide_xml(xml).unwrap();
         assert!(result.contains("Regular Text"));
         assert!(result.contains("| Header1 | Header2 |"));
         assert!(result.contains("|---|---|"));
         assert!(result.contains("| Value1 | Value2 |"));
+    }
+
+    /// A self-closing `<a:tc/>` still holds its column, and a short row is
+    /// padded rather than shifting its values left.
+    #[test]
+    fn empty_slide_table_cells_keep_their_column() {
+        let xml = r#"<a:tbl>
+                <a:tr>
+                    <a:tc><a:txBody><a:p><a:r><a:t>H1</a:t></a:r></a:p></a:txBody></a:tc>
+                    <a:tc><a:txBody><a:p><a:r><a:t>H2</a:t></a:r></a:p></a:txBody></a:tc>
+                    <a:tc><a:txBody><a:p><a:r><a:t>H3</a:t></a:r></a:p></a:txBody></a:tc>
+                </a:tr>
+                <a:tr>
+                    <a:tc><a:txBody><a:p><a:r><a:t>left</a:t></a:r></a:p></a:txBody></a:tc>
+                    <a:tc/>
+                    <a:tc><a:txBody><a:p><a:r><a:t>right</a:t></a:r></a:p></a:txBody></a:tc>
+                </a:tr>
+            </a:tbl>"#;
+        let result = extract_text_from_slide_xml(xml).unwrap();
+        assert!(result.contains("| left |  | right |"), "got: {result}");
+    }
+
+    /// Malformed slide XML is an error, not a silently truncated slide.
+    #[test]
+    fn malformed_slide_xml_fails_loudly() {
+        let xml = r#"<a:p><a:r><a:t>Good</a:t></a:r></a:p><a:p><<<"#;
+        let err = extract_text_from_slide_xml(xml).unwrap_err();
+        assert!(
+            err.to_string().contains("Malformed slide XML"),
+            "got: {err}"
+        );
     }
 
     /// Entities are separate events in quick-xml 0.39; without handling them
@@ -287,7 +328,7 @@ mod tests {
     #[test]
     fn entities_in_slide_text_survive() {
         let xml = r#"<a:p><a:r><a:t>R&amp;D &lt;strategy&gt;</a:t></a:r></a:p>"#;
-        let result = extract_text_from_slide_xml(xml);
+        let result = extract_text_from_slide_xml(xml).unwrap();
         assert!(result.contains("R&D <strategy>"), "got: {result}");
     }
 

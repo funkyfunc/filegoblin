@@ -1,9 +1,13 @@
 [package]
 name = "filegoblin"
-version = "1.11.0"
+version = "1.12.0"
 edition = "2024"
-description = "A zero-dependency, high-performance CLI tool to convert messy file formats into high-fidelity, LLM-optimized Markdown/XML/YAML."
+rust-version = "1.87"
+description = "Point it at any file, URL, or media and get clean Markdown for LLMs and agents."
 repository = "https://github.com/funkyfunc/filegoblin"
+readme = "../../README.md"
+keywords = ["markdown", "llm", "pdf", "ocr", "converter"]
+categories = ["command-line-utilities", "text-processing"]
 license = "MIT"
 
 [[bin]]
@@ -19,8 +23,10 @@ ocr = ["filegoblin-core/ocr"]
 wasm = ["filegoblin-core/wasm"]
 rag = ["filegoblin-core/rag"]
 transcribe = ["filegoblin-core/transcribe"]
+# macOS-only opt-in: whisper-rs-sys turns on GGML_METAL for every target when
+# this is enabled, which cannot configure on Linux/Windows. Never put this in
+# the dist feature list.
 transcribe-metal = ["filegoblin-core/transcribe-metal"]
-tui = ["dep:filegoblin-tui"]
 
 [dev-dependencies]
 assert_cmd = "2.0"
@@ -30,8 +36,7 @@ serde_json = "1.0"
 tempfile = "3.27"
 
 [dependencies]
-filegoblin-core = { path = "../core" }
-filegoblin-tui = { path = "../tui", optional = true }
+filegoblin-core = { path = "../core", version = "1.12.0" }
 anyhow = "1.0.102"
 clap = { version = "4.5.60", features = ["derive", "env"] }
 colored = "3.1.1"

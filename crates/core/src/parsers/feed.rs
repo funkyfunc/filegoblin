@@ -50,10 +50,24 @@ impl Gobble for FeedGobbler {
 /// True when the document looks like a syndication feed (used for both magic
 /// sniffing and content-type routing of fetched URLs).
 pub fn looks_like_feed(content: &str) -> bool {
-    let head = &content[..content.len().min(1024)].to_lowercase();
-    head.contains("<rss")
-        || head.contains("<feed")
+    let head = crate::parsers::str_prefix(content, 1024).to_lowercase();
+    // Word-boundary-ish checks: a bare `contains("<feed")` also fires on
+    // `<feedback>`, which then hard-errors in the feed parser instead of
+    // falling back to text.
+    is_feed_root(&head, "rss")
+        || is_feed_root(&head, "feed")
         || (head.contains("<rdf:rdf") && head.contains("rss"))
+}
+
+/// True when `head` opens an element named exactly `name` (`<rss ...>`,
+/// `<feed>`), not merely one whose name starts with it (`<feedback>`).
+fn is_feed_root(head: &str, name: &str) -> bool {
+    head.match_indices(&format!("<{}", name)).any(|(i, m)| {
+        head[i + m.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| c.is_whitespace() || c == '>' || c == '/')
+    })
 }
 
 fn parse_feed(xml: &str) -> Result<Feed> {

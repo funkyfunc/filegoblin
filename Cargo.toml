@@ -2,8 +2,15 @@
 resolver = "2"
 members = [
     "crates/core",
-    "crates/cli",
-    "crates/tui"
+    "crates/cli"
+]
+# Parked, not shipped in v1: the TUI is a standalone crate with its own
+# workspace (build it with `cargo build --manifest-path crates/tui/Cargo.toml`).
+# The wasm plugin example is a separate crate by design — a consumer of the
+# published component API, not a workspace member.
+exclude = [
+    "crates/tui",
+    "examples/dummy_plugin"
 ]
 
 [profile.release]
@@ -17,4 +24,8 @@ inherits = "release"
 lto = "thin"
 
 [workspace.metadata.dist]
-all-features = true
+# NOT `all-features`: that activates `transcribe-metal`, and whisper-rs-sys
+# defines GGML_METAL=ON unconditionally (only the Apple *framework* link lines
+# are target-gated), so every Linux and Windows target fails at cmake configure.
+# Metal stays an opt-in source build for macOS users. See ADR 2026-08-02.
+features = ["web", "ocr", "wasm", "rag", "transcribe"]

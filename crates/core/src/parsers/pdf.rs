@@ -55,17 +55,24 @@ impl Gobble for PdfGobbler {
                 // TextLayer / ImageText / Mixed: the native converter. For
                 // hybrids, also OCR the page's image so figure text isn't lost.
                 _ => {
-                    let mut md = doc
-                        .to_markdown(page, &options)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string();
+                    // An extraction *error* is not an empty page. Emitting
+                    // `unwrap_or_default()` here silently dropped page N from
+                    // an otherwise complete document — the reader has no way to
+                    // tell a 9-page render of a 10-page file from the real
+                    // thing. Mark it, exactly like the scanned branch does.
+                    let mut md = match doc.to_markdown(page, &options) {
+                        Ok(text) => text.trim().to_string(),
+                        Err(e) => {
+                            unreadable_pages += 1;
+                            failed_page_marker(page + 1, &e.to_string())
+                        }
+                    };
                     if matches!(kind, PageKind::ImageText)
                         && let Some(ocr) = ocr_scanned_page(&doc, page)
                         && !ocr.trim().is_empty()
                         && !md
                             .to_lowercase()
-                            .contains(&normalize(&ocr)[..normalize(&ocr).len().min(40)])
+                            .contains(crate::parsers::str_prefix(&normalize(&ocr), 40))
                     {
                         md.push_str("\n\n> **Text from embedded image:**\n> ");
                         md.push_str(&ocr.trim().replace('\n', "\n> "));
@@ -107,6 +114,14 @@ fn scanned_page_marker(display_page: usize) -> String {
     format!(
         "> [Page {}: scanned image with no text layer — OCR unavailable in this build]",
         display_page
+    )
+}
+
+/// Same idea for a page the extractor refused outright.
+fn failed_page_marker(display_page: usize, err: &str) -> String {
+    format!(
+        "> [Page {}: text extraction failed — {}]",
+        display_page, err
     )
 }
 
