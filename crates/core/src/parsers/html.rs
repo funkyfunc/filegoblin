@@ -71,14 +71,69 @@ impl Gobble for HtmlGobbler {
 
     fn gobble_str(&self, content: &str, opts: &ParseOptions) -> Result<String> {
         let full = self.extract_full || opts.full;
-        let mut doc = Html::parse_document(content);
+        let doc = Html::parse_document(content);
 
         // Checked before noise removal (the removal detaches every <script>).
         let has_scripts = doc.select(&SEL_SCRIPT).next().is_some();
         let title = extract_title(&doc);
+        let total_words = doc
+            .select(&SEL_BODY)
+            .next()
+            .map(|b| b.text().flat_map(str::split_whitespace).count())
+            .unwrap_or(0);
+        drop(doc);
+
+        let mut markdown = self.extract_markdown(content, full, true)?;
+
+        // A page whose content genuinely *is* links — a docs table of contents,
+        // a sitemap, an "awesome" list — had every candidate block deleted as a
+        // link farm and came back empty with Ok. Retry keeping them rather than
+        // reporting an empty success.
+        if markdown.trim().is_empty() && !full {
+            markdown = self.extract_markdown(content, full, false)?;
+        }
+
+        if markdown.trim().is_empty() {
+            if has_scripts {
+                return Err(anyhow::Error::new(JsGated).context(
+                    "This page appears to require JavaScript rendering or authentication.\n\
+                     filegoblin's static fetcher cannot execute JavaScript.\n\
+                     💡 Try again with --browser to render it with your installed Chrome",
+                ));
+            }
+            anyhow::bail!(
+                "No readable content found in this HTML ({} words in the body)",
+                total_words
+            );
+        }
+
+        if let Some(base) = self
+            .source_url
+            .as_deref()
+            .and_then(|s| url::Url::parse(s).ok())
+        {
+            markdown = absolutize_md_links(&markdown, &base);
+        }
+
+        let front_matter = if self.skip_front_matter {
+            String::new()
+        } else {
+            build_front_matter(title.as_deref(), self.source_url.as_deref())
+        };
+
+        Ok(format!("{}{}", front_matter, markdown).trim().to_string())
+    }
+}
+
+impl HtmlGobbler {
+    /// One extraction pass. `drop_link_farms` is what the empty-output retry
+    /// turns off.
+    fn extract_markdown(&self, content: &str, full: bool, drop_link_farms: bool) -> Result<String> {
+        let mut doc = Html::parse_document(content);
+        let has_scripts = doc.select(&SEL_SCRIPT).next().is_some();
 
         remove_matching(&mut doc, if full { &SEL_NOISE_FULL } else { &SEL_NOISE });
-        if !full {
+        if !full && drop_link_farms {
             remove_link_farms(&mut doc);
         }
 
@@ -105,30 +160,14 @@ impl Gobble for HtmlGobbler {
             select_content_roots(&doc)
         };
 
-        let mut markdown = tidy_markdown(
+        Ok(tidy_markdown(
             &fragments
                 .iter()
                 .map(|f| html_fragment_to_md(f).trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n\n"),
-        );
-
-        if let Some(base) = self
-            .source_url
-            .as_deref()
-            .and_then(|s| url::Url::parse(s).ok())
-        {
-            markdown = absolutize_md_links(&markdown, &base);
-        }
-
-        let front_matter = if self.skip_front_matter {
-            String::new()
-        } else {
-            build_front_matter(title.as_deref(), self.source_url.as_deref())
-        };
-
-        Ok(format!("{}{}", front_matter, markdown).trim().to_string())
+        ))
     }
 }
 
@@ -390,6 +429,47 @@ fn build_front_matter(title: Option<&str>, source: Option<&str>) -> String {
     }
     fm.push_str("---\n\n");
     fm
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    /// Regression: `remove_link_farms` deleted every candidate block on a page
+    /// whose content genuinely is links, and the result was an empty success.
+    #[test]
+    fn a_page_that_is_mostly_links_still_produces_content() {
+        let toc = r#"<html><head><title>API Reference</title></head><body>
+            <main>
+              <ul>
+                <li><a href="/api/create">create — make a new widget</a></li>
+                <li><a href="/api/read">read — fetch an existing widget</a></li>
+                <li><a href="/api/update">update — change a widget in place</a></li>
+                <li><a href="/api/delete">delete — remove a widget forever</a></li>
+                <li><a href="/api/list">list — enumerate every widget you own</a></li>
+              </ul>
+            </main>
+        </body></html>"#;
+        let out = HtmlGobbler::default()
+            .gobble_str(toc, &ParseOptions::default())
+            .expect("a link-only page must not be an error");
+        assert!(out.contains("create"), "got: {out}");
+        assert!(out.contains("delete"), "got: {out}");
+    }
+
+    /// An HTML file with no readable text and no scripts is an error, not an
+    /// empty string dressed in front matter.
+    #[test]
+    fn empty_html_without_scripts_fails_loudly() {
+        let empty = "<html><head><title>Nothing</title></head><body></body></html>";
+        let err = HtmlGobbler::default()
+            .gobble_str(empty, &ParseOptions::default())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("No readable content"),
+            "got: {err}"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -60,6 +60,16 @@ impl Gobble for OfficeGobbler {
                 extracted.push_str(block.trim_end());
                 prev_was_list = is_list;
             }
+            // A docx whose content lives entirely in node types this walker
+            // drops (text boxes, SDT content controls, images) used to return
+            // Ok("") — a real file, e.g. a flyer built from text boxes, quietly
+            // converting to nothing at all.
+            if extracted.trim().is_empty() {
+                anyhow::bail!(
+                    "No text could be extracted from this .docx (content may live in text \
+                     boxes, content controls, or images rather than paragraphs)"
+                );
+            }
             Ok(extracted.trim().to_string())
         } else {
             // Spreadsheets are routed to SheetGobbler; OfficeGobbler only handles Word.

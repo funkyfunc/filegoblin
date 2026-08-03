@@ -72,34 +72,53 @@ impl SheetGobbler {
 
         let mut output = String::new();
 
+        let mut failed_sheets: Vec<String> = Vec::new();
         for sheet_name in sheet_names {
-            if let Ok(range) = workbook.worksheet_range(&sheet_name) {
-                output.push_str(&format!("## Sheet: {}\n\n", sheet_name));
+            match workbook.worksheet_range(&sheet_name) {
+                Ok(range) => {
+                    output.push_str(&format!("## Sheet: {}\n\n", sheet_name));
 
-                let mut headers: Option<Vec<String>> = None;
-                for row in range.rows() {
-                    let fields: Vec<String> = row.iter().map(cell_to_string).collect();
+                    let mut headers: Option<Vec<String>> = None;
+                    for row in range.rows() {
+                        let fields: Vec<String> = row.iter().map(cell_to_string).collect();
 
-                    let Some(headers) = &headers else {
-                        if fields.iter().all(|f| f.is_empty()) {
-                            continue; // leading blank rows before the header
+                        let Some(headers) = &headers else {
+                            if fields.iter().all(|f| f.is_empty()) {
+                                continue; // leading blank rows before the header
+                            }
+                            let names = header_names(&fields);
+                            output.push_str(&table_header(&names));
+                            headers = Some(names);
+                            continue;
+                        };
+
+                        if let Some(line) = table_row(headers.len(), &fields) {
+                            output.push_str(&line);
                         }
-                        let names = header_names(&fields);
-                        output.push_str(&table_header(&names));
-                        headers = Some(names);
-                        continue;
-                    };
-
-                    if let Some(line) = table_row(headers.len(), &fields) {
-                        output.push_str(&line);
                     }
+                    output.push('\n');
                 }
-                output.push('\n');
+                // A sheet that fails to open used to disappear entirely, so a
+                // five-sheet workbook could silently arrive with four.
+                Err(e) => failed_sheets.push(format!("{}: {}", sheet_name, e)),
             }
         }
 
         if output.trim().is_empty() {
+            if !failed_sheets.is_empty() {
+                anyhow::bail!(
+                    "No sheet in this workbook could be read:\n{}",
+                    failed_sheets.join("\n")
+                );
+            }
             anyhow::bail!("No data could be extracted from this workbook");
+        }
+        if !failed_sheets.is_empty() {
+            output.push_str(&format!(
+                "\n> [{} sheet(s) could not be read: {}]\n",
+                failed_sheets.len(),
+                failed_sheets.join("; ")
+            ));
         }
 
         Ok(output)

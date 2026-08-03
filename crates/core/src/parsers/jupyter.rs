@@ -57,7 +57,7 @@ impl Gobble for JupyterGobbler {
         }
 
         if output.trim().is_empty() {
-            return Ok("No readable cells found in Jupyter Notebook.".to_string());
+            anyhow::bail!("No readable cells found in this Jupyter notebook");
         }
 
         Ok(output.trim().to_string())

@@ -44,8 +44,15 @@ impl SubtitleGobbler {
 }
 
 /// True for a WebVTT document (the spec requires the magic first line).
+///
+/// A UTF-8 BOM is spec-legal here and common from Windows tools, and `U+FEFF`
+/// is not whitespace — so `trim_start()` alone left BOM'd VTT files labelled
+/// "SubRip".
 pub fn looks_like_vtt(content: &str) -> bool {
-    content.trim_start().starts_with("WEBVTT")
+    content
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .starts_with("WEBVTT")
 }
 
 /// True when the text carries subtitle cue timings — used for magic sniffing of
@@ -81,14 +88,18 @@ fn parse_timestamp(raw: &str) -> Option<i64> {
         [m, s] => (0, m.trim().parse().ok()?, s.parse().ok()?),
         _ => return None,
     };
-    // Fractional part is milliseconds; keep centisecond precision.
-    let millis: i64 = frac
+    // Fractional part is milliseconds; keep centisecond precision. It must be
+    // padded, not just truncated: `.5` means 500ms, and parsing "5" as-is gave
+    // 5ms (so `00:00:01.5` collapsed to a whole second).
+    let mut digits: String = frac
         .chars()
         .filter(|c| c.is_ascii_digit())
         .take(3)
-        .collect::<String>()
-        .parse()
-        .unwrap_or(0);
+        .collect();
+    while digits.len() < 3 {
+        digits.push('0');
+    }
+    let millis: i64 = digits.parse().unwrap_or(0);
     Some((h * 3600 + m * 60 + s) * 100 + millis / 10)
 }
 
@@ -164,8 +175,15 @@ fn strip_cue_tags(line: &str) -> String {
         if let Some(name) = tag.strip_prefix('v')
             && (name.is_empty() || name.starts_with([' ', '.']))
         {
-            let speaker = name.trim_start_matches('.').trim();
-            let speaker = speaker.split_whitespace().next().unwrap_or("");
+            // Per the WebVTT spec the speaker is everything after the first
+            // space; the dot-separated part is CSS classes. Trimming the
+            // classes with `trim_start_matches('.')` and then taking the first
+            // word turned `<v.loud Alice>` into speaker "loud", and truncated
+            // `<v Fred Flintstone>` to "Fred".
+            let speaker = match name.split_once(' ') {
+                Some((_classes, rest)) => rest.trim(),
+                None => "",
+            };
             if !speaker.is_empty() {
                 out.push_str(&format!("{}: ", speaker));
             }
@@ -193,12 +211,87 @@ fn finish_cue_text(s: &str) -> String {
         }
     }
     out.push_str(rest);
-    out.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
+    decode_entities(&out)
+}
+
+/// Decodes the handful of HTML entities that show up in caption files, in one
+/// left-to-right pass.
+///
+/// Chained `.replace()` calls decoded `&amp;` *first*, so a literal
+/// `&amp;lt;div&amp;gt;` — a caption showing escaped markup, exactly what a
+/// coding tutorial displays — came out as real `<div>` tags. A single pass
+/// cannot re-expand what it just wrote.
+fn decode_entities(s: &str) -> String {
+    const ENTITIES: &[(&str, &str)] = &[
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&apos;", "'"),
+        ("&nbsp;", " "),
+    ];
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    'outer: while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        for (entity, replacement) in ENTITIES {
+            if rest[amp..].starts_with(entity) {
+                out.push_str(replacement);
+                rest = &rest[amp + entity.len()..];
+                continue 'outer;
+            }
+        }
+        // Not an entity we know: keep the `&` verbatim and move past it.
+        out.push('&');
+        rest = &rest[amp + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    /// Entities were decoded with chained `.replace()`, so `&amp;` expanded
+    /// first and a caption *showing* escaped markup became real markup.
+    #[test]
+    fn entities_are_decoded_in_one_pass() {
+        assert_eq!(decode_entities("&amp;lt;div&amp;gt;"), "&lt;div&gt;");
+        assert_eq!(decode_entities("Tom &amp; Jerry"), "Tom & Jerry");
+        assert_eq!(decode_entities("&lt;b&gt;bold&lt;/b&gt;"), "<b>bold</b>");
+        // An unknown entity is left alone rather than mangled.
+        assert_eq!(decode_entities("A &weird; B"), "A &weird; B");
+    }
+
+    /// `<v.loud Alice>` names Alice; `loud` is a CSS class.
+    #[test]
+    fn voice_tags_name_the_speaker_not_the_css_class() {
+        assert_eq!(strip_cue_tags("<v.loud Alice>Hello"), "Alice: Hello");
+        assert_eq!(
+            strip_cue_tags("<v Fred Flintstone>Yabba"),
+            "Fred Flintstone: Yabba"
+        );
+        assert_eq!(strip_cue_tags("<v Bob>Hi"), "Bob: Hi");
+    }
+
+    /// A BOM is spec-legal in WebVTT and is not whitespace.
+    #[test]
+    fn bom_prefixed_vtt_is_still_vtt() {
+        assert!(looks_like_vtt(
+            "\u{feff}WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHi"
+        ));
+    }
+
+    /// `.5` is 500ms, not 5ms.
+    #[test]
+    fn short_fractional_seconds_are_padded() {
+        assert_eq!(parse_timestamp("00:00:01.5"), Some(150));
+        assert_eq!(parse_timestamp("00:00:01.50"), Some(150));
+        assert_eq!(parse_timestamp("00:00:01.500"), Some(150));
+        assert_eq!(parse_timestamp("00:00:01,005"), Some(100));
+    }
 }
 
 #[cfg(test)]

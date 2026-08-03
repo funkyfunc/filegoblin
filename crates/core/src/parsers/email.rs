@@ -55,17 +55,25 @@ fn format_message(message: &Message) -> String {
     // Prefer a genuine text/plain part; otherwise convert the HTML body to
     // markdown through the DOM extractor. (mail-parser's `body_text` silently
     // down-converts HTML-only messages itself — we want our converter, not its.)
+    // The text part must be genuine *and non-empty*: marketing senders very
+    // commonly ship an empty (or "View this email in your browser") plain part
+    // alongside the real HTML, and merely checking that the part existed meant
+    // the message rendered as headers with no body at all.
     let has_real_text_part = message
         .text_part(0)
         .is_some_and(|p| matches!(&p.body, mail_parser::PartType::Text(_)));
-    let body = if has_real_text_part {
-        message.body_text(0).map(|c| c.into_owned())
+    let plain = if has_real_text_part {
+        message
+            .body_text(0)
+            .map(|c| c.into_owned())
+            .filter(|t| !t.trim().is_empty())
     } else {
         None
-    }
-    .or_else(|| message.body_html(0).map(|h| html_body_to_md(&h)))
-    .or_else(|| message.body_text(0).map(|c| c.into_owned()))
-    .unwrap_or_default();
+    };
+    let body = plain
+        .or_else(|| message.body_html(0).map(|h| html_body_to_md(&h)))
+        .or_else(|| message.body_text(0).map(|c| c.into_owned()))
+        .unwrap_or_default();
     out.push_str(body.trim());
 
     // List attachments by name so they're accounted for, even though their
@@ -138,11 +146,17 @@ fn parse_mbox(bytes: &[u8]) -> String {
     let mut count = 0;
     let mut current = String::new();
 
+    // A bare `starts_with("From ")` splits on any body line beginning "From "
+    // ("From the beginning, we…"), cutting a message in half and feeding the
+    // tail to the parser as a bogus extra message. A real envelope line follows
+    // a blank line and looks like `From <addr> <date>`.
+    let mut previous_blank = true;
     for line in text.split_inclusive('\n') {
-        if line.starts_with("From ") && !current.is_empty() {
+        if previous_blank && is_mbox_envelope(line) && !current.is_empty() {
             append_mbox_message(&mut out, &current, &mut count);
             current.clear();
         }
+        previous_blank = line.trim().is_empty();
         current.push_str(line);
     }
     if !current.is_empty() {
@@ -153,6 +167,22 @@ fn parse_mbox(bytes: &[u8]) -> String {
         return "No messages could be extracted from this mbox.".to_string();
     }
     out
+}
+
+/// True for an mbox envelope line: `From <sender> <date>`, where the sender
+/// carries no spaces. Deliberately strict — a false positive splits a message
+/// mid-body, and the cost of a false negative is only a missed boundary.
+fn is_mbox_envelope(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("From ") else {
+        return false;
+    };
+    let mut parts = rest.split_whitespace();
+    let Some(sender) = parts.next() else {
+        return false;
+    };
+    // `From ` at the start of a sentence is followed by an ordinary word; an
+    // envelope sender is an address or `MAILER-DAEMON`, and a date follows.
+    parts.next().is_some() && (sender.contains('@') || sender.chars().all(|c| !c.is_lowercase()))
 }
 
 fn append_mbox_message(out: &mut String, chunk: &str, count: &mut usize) {
@@ -168,6 +198,78 @@ fn append_mbox_message(out: &mut String, chunk: &str, count: &mut usize) {
             out.push_str("\n\n---\n\n");
         }
         out.push_str(&format_message(&message));
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    /// Regression: an empty text/plain part shadowed the real HTML body, so a
+    /// very common marketing email rendered as headers with no content.
+    #[test]
+    fn empty_plain_part_falls_through_to_html() {
+        let raw = "From: a@example.com\r\n\
+To: b@example.com\r\n\
+Subject: Newsletter\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/alternative; boundary=\"XX\"\r\n\
+\r\n\
+--XX\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+\r\n\
+   \r\n\
+--XX\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<html><body><p>The actual newsletter body.</p></body></html>\r\n\
+--XX--\r\n";
+        let msg = mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .unwrap();
+        let out = format_message(&msg);
+        assert!(
+            out.contains("The actual newsletter body."),
+            "HTML body must be used when the plain part is blank:\n{out}"
+        );
+    }
+
+    /// Regression: any body line starting "From " split the message.
+    #[test]
+    fn prose_starting_with_from_does_not_split_a_message() {
+        let mbox = "From alice@example.com Mon Jan  1 00:00:00 2024\r\n\
+From: alice@example.com\r\n\
+Subject: A story\r\n\
+\r\n\
+It begins here.\r\n\
+\r\n\
+From the beginning, we knew it would work.\r\n\
+\r\n\
+The end.\r\n";
+        let out = parse_mbox(mbox.as_bytes());
+        assert_eq!(
+            out.matches("# Email:").count(),
+            1,
+            "one message, not two:\n{out}"
+        );
+        assert!(out.contains("From the beginning"), "{out}");
+    }
+
+    #[test]
+    fn real_envelope_lines_still_split() {
+        let mbox = "From alice@example.com Mon Jan  1 00:00:00 2024\r\n\
+From: alice@example.com\r\n\
+Subject: One\r\n\
+\r\n\
+First body.\r\n\
+\r\n\
+From bob@example.com Tue Jan  2 00:00:00 2024\r\n\
+From: bob@example.com\r\n\
+Subject: Two\r\n\
+\r\n\
+Second body.\r\n";
+        let out = parse_mbox(mbox.as_bytes());
+        assert_eq!(out.matches("# Email:").count(), 2, "{out}");
     }
 }
 

@@ -223,6 +223,40 @@ impl PiiTrigger {
 /// only when the bridged gap contains no whitespace — windows are individually
 /// whitespace-free, and a merge across whitespace would weld separate tokens
 /// (separate lines!) into one span.
+/// Shortest surviving piece of a trimmed entropy span still worth redacting.
+/// Matches the entropy scanner's own window, so a fragment left between two
+/// rule matches is held to the same bar as a fresh detection.
+const MIN_ENTROPY_SPAN: usize = 16;
+
+/// `[start, end)` minus every span in `cuts`, as the ordered remaining gaps.
+fn subtract_spans(start: usize, end: usize, cuts: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut overlapping: Vec<(usize, usize)> = cuts
+        .iter()
+        .copied()
+        .filter(|(cs, ce)| *cs < end && start < *ce)
+        .collect();
+    if overlapping.is_empty() {
+        return vec![(start, end)];
+    }
+    overlapping.sort_unstable();
+
+    let mut gaps = Vec::new();
+    let mut cursor = start;
+    for (cs, ce) in overlapping {
+        if cs > cursor {
+            gaps.push((cursor, cs.min(end)));
+        }
+        cursor = cursor.max(ce);
+        if cursor >= end {
+            break;
+        }
+    }
+    if cursor < end {
+        gaps.push((cursor, end));
+    }
+    gaps
+}
+
 fn merge_within_token(
     windows: Vec<(usize, usize)>,
     input: &str,
@@ -286,9 +320,22 @@ fn default_rules() -> Result<Vec<RegexRule>> {
             r"\b\d(?:[ -]?\d){12,18}\b",
             Some(luhn_valid),
         )?,
+        // Requires punctuation, a `+`, or parentheses somewhere: an
+        // undelimited 11-13 digit run is far more often an epoch-millisecond
+        // timestamp, an order number, or a tracking ID than a phone number, and
+        // redacting those mangles ordinary technical documents.
         rule(
             PiiKind::PhoneNumber,
-            r"\b\+?[0-9]{1,3}[-. ]?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b",
+            concat!(
+                // +1 555 123 4567 / +44-20-1234-5678 (country code, separated)
+                r"\+[0-9]{1,3}[-. ]\(?[0-9]{2,4}\)?[-. ]?[0-9]{3,4}[-. ]?[0-9]{4}\b",
+                // (555) 123-4567
+                r"|\(\d{3}\)[ ]?\d{3}[-. ]?\d{4}\b",
+                // 555-123-4567 / 555.123.4567 — separators required
+                r"|\b\d{3}[-. ]\d{3}[-. ]\d{4}\b",
+                // E.164 compact: +15551234567
+                r"|\+[0-9]{10,15}\b",
+            ),
             None,
         )?,
         rule(
@@ -296,9 +343,13 @@ fn default_rules() -> Result<Vec<RegexRule>> {
             r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
             Some(ipv4_valid),
         )?,
+        // Spaced groups are the *conventional* way an IBAN is written
+        // ("DE44 5001 0517 5407 3249 31"), and the validator already strips
+        // whitespace — but the pattern didn't allow any, so the most common
+        // form never matched at all.
         rule(
             PiiKind::Iban,
-            r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b",
+            r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{2,4}){2,8}\b",
             Some(iban_valid),
         )?,
         // Secrets / tokens
@@ -319,7 +370,13 @@ fn default_rules() -> Result<Vec<RegexRule>> {
             r"\b[a-z]{2}_(?:live|test)_[0-9A-Za-z]{16,}\b",
             None,
         )?,
-        rule(PiiKind::OpenAiKey, r"\bsk-[A-Za-z0-9]{20,}\b", None)?,
+        // `sk-proj-…` (and other prefixed project keys) stop the old pattern at
+        // the second hyphen, leaving the rest to the entropy tier.
+        rule(
+            PiiKind::OpenAiKey,
+            r"\bsk-(?:[A-Za-z0-9]+-)?[A-Za-z0-9_-]{20,}\b",
+            None,
+        )?,
         rule(PiiKind::Jwt, r"\beyJ[A-Za-z0-9_/+=-]{10,}\b", None)?,
         rule(
             PiiKind::PrivateKeyBlock,
@@ -445,12 +502,24 @@ impl PrivacyShield {
         // giant span, which then dies wholesale on overlap with any rule match
         // (an email on the next line silently unprotected the AWS key above it).
         let entropy_spans = merge_within_token(self.trigger.scan(input), input, 8);
+        // An overlapping span is *trimmed*, not dropped. Dropping it whole
+        // leaked the uncovered remainder: the JWT rule excludes `.`, so it
+        // matches only the header and payload segments, the entropy span covers
+        // the entire token, and discarding that span emitted the signature in
+        // cleartext (`[JWT].[JWT].SflKxwRJSMeKKF2QT4…`).
+        let rule_spans: Vec<(usize, usize)> = matches.iter().map(|m| (m.start, m.end)).collect();
         for (s, e) in entropy_spans {
-            let overlaps_rule = matches.iter().any(|m| s < m.end && m.start < e);
-            if !overlaps_rule {
+            for (gs, ge) in subtract_spans(s, e, &rule_spans) {
+                // Leftovers shorter than the entropy window are noise, not keys.
+                if ge.saturating_sub(gs) < MIN_ENTROPY_SPAN
+                    || !input.is_char_boundary(gs)
+                    || !input.is_char_boundary(ge)
+                {
+                    continue;
+                }
                 matches.push(Match {
-                    start: s,
-                    end: e,
+                    start: gs,
+                    end: ge,
                     kind: PiiKind::Secret,
                 });
             }
@@ -538,6 +607,68 @@ mod tests {
 
     fn shield() -> PrivacyShield {
         PrivacyShield::init().unwrap()
+    }
+
+    /// Regression: an entropy span overlapping a rule match was dropped
+    /// *whole*, so the part no rule covered survived in cleartext. The JWT rule
+    /// excludes `.`, so it matched only the header and payload and the
+    /// signature was emitted verbatim.
+    #[test]
+    fn jwt_signature_is_not_left_in_cleartext() {
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.\
+eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.\
+SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+        let out = shield().redact(&format!("token: {jwt}"));
+        assert!(
+            !out.contains("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"),
+            "signature leaked: {out}"
+        );
+    }
+
+    #[test]
+    fn trimming_leaves_untouched_text_alone() {
+        // Subtracting nothing returns the whole span.
+        assert_eq!(subtract_spans(0, 10, &[]), vec![(0, 10)]);
+        // A cut in the middle yields both sides.
+        assert_eq!(subtract_spans(0, 10, &[(3, 6)]), vec![(0, 3), (6, 10)]);
+        // A cut covering everything yields nothing.
+        assert!(subtract_spans(2, 8, &[(0, 20)]).is_empty());
+        // Overlapping cuts merge.
+        assert_eq!(
+            subtract_spans(0, 10, &[(2, 5), (4, 7)]),
+            vec![(0, 2), (7, 10)]
+        );
+    }
+
+    /// Spaced groups are how IBANs are conventionally written, and the
+    /// validator already strips whitespace — but the pattern didn't allow it.
+    #[test]
+    fn spaced_iban_is_caught() {
+        let out = shield().redact("Pay to DE44 5001 0517 5407 3249 31 today");
+        assert!(out.contains("[IBAN]"), "got: {out}");
+    }
+
+    /// A 13-digit epoch-millisecond timestamp is not a phone number.
+    #[test]
+    fn epoch_millis_are_not_phone_numbers() {
+        let out = shield().redact("logged at 1722556800000 in the trace");
+        assert!(
+            out.contains("1722556800000"),
+            "timestamp must survive: {out}"
+        );
+        // A genuinely formatted number is still caught.
+        let out = shield().redact("call 555-123-4567 now");
+        assert!(out.contains("[PHONE"), "got: {out}");
+    }
+
+    /// Project-scoped OpenAI keys stop the old pattern at the second hyphen.
+    #[test]
+    fn project_scoped_openai_keys_are_typed() {
+        let out = shield().redact("key sk-proj-abcdefghijklmnopqrstuvwxyz0123456789 end");
+        assert!(
+            !out.contains("abcdefghijklmnopqrstuvwxyz0123456789"),
+            "got: {out}"
+        );
     }
 
     #[test]

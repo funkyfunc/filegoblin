@@ -46,8 +46,19 @@ mod imp {
     use crate::parsers::transcript::Segment;
 
     pub fn transcribe_file(path: &Path, per_segment: bool, quiet: bool) -> Result<String> {
-        // Transcripts are content-addressed: file hash + model identity.
-        let file_key = format!("{}:{}", hash_file(path)?, MODEL_FILE);
+        // Transcripts are content-addressed. The key must cover everything the
+        // *rendered* value depends on, not just the audio: it previously omitted
+        // `per_segment` and the model/language overrides, so running again with
+        // `--full` served the cached collapsed transcript and the flag silently
+        // did nothing, and swapping models returned the old model's text under
+        // the new model's name.
+        let file_key = format!(
+            "{}:{}:{}:per_segment={}",
+            hash_file(path)?,
+            model_file_name(),
+            std::env::var("FILEGOBLIN_WHISPER_LANG").unwrap_or_default(),
+            per_segment,
+        );
         let cache_key = crate::cache::key(file_key.as_bytes());
         if let Some(cached) = crate::cache::get_blob("transcript", &cache_key) {
             if !quiet {
@@ -286,6 +297,13 @@ mod imp {
         Ok((lang, segments))
     }
 
+    /// Identity of the model actually in use, for the transcript cache key.
+    /// Hardcoding `MODEL_FILE` meant an override served the other model's
+    /// transcripts.
+    fn model_file_name() -> String {
+        std::env::var("FILEGOBLIN_WHISPER_MODEL").unwrap_or_else(|_| MODEL_FILE.to_string())
+    }
+
     /// $FILEGOBLIN_WHISPER_MODEL → ~/.filegoblin/models/<default> → download.
     fn whisper_model_path() -> Result<PathBuf> {
         if let Ok(p) = std::env::var("FILEGOBLIN_WHISPER_MODEL") {
@@ -310,6 +328,12 @@ mod imp {
         Ok(model)
     }
 
+    /// Minimum plausible size of the model file. A download that ends early on
+    /// a response with no `content-length` (chunked, or a dropped connection)
+    /// otherwise installed a truncated file that then failed to load with an
+    /// opaque whisper error on *every* future run until deleted by hand.
+    const MIN_MODEL_BYTES: u64 = 100 * 1024 * 1024;
+
     /// One-time model download with atomic install (.part + rename).
     fn download_model(dest: &Path) -> Result<()> {
         use std::io::{Read, Write};
@@ -320,13 +344,19 @@ mod imp {
         if let Some(dir) = dest.parent() {
             std::fs::create_dir_all(dir).context("Failed to create models dir")?;
         }
-        let resp = ureq::get(MODEL_URL).call().with_context(|| {
-            format!(
-                "Model download failed. Manual path: curl -L {} -o {}",
-                MODEL_URL,
-                dest.display()
-            )
-        })?;
+        let resp = ureq::builder()
+            // Without a timeout a stalled connection hangs the process forever.
+            .timeout_connect(std::time::Duration::from_secs(30))
+            .build()
+            .get(MODEL_URL)
+            .call()
+            .with_context(|| {
+                format!(
+                    "Model download failed. Manual path: curl -L {} -o {}",
+                    MODEL_URL,
+                    dest.display()
+                )
+            })?;
         let total = resp
             .header("content-length")
             .and_then(|s| s.parse::<u64>().ok());
@@ -337,7 +367,15 @@ mod imp {
         let mut done: u64 = 0;
         let mut last_note = 0u64;
         loop {
-            let n = reader.read(&mut buf)?;
+            // A read error mid-download must not leave a half file behind.
+            let n = match reader.read(&mut buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    drop(out);
+                    let _ = std::fs::remove_file(&part);
+                    return Err(anyhow::anyhow!("Model download failed mid-transfer: {}", e));
+                }
+            };
             if n == 0 {
                 break;
             }
@@ -351,11 +389,24 @@ mod imp {
                 }
             }
         }
+        drop(out);
         if let Some(t) = total
             && done != t
         {
             let _ = std::fs::remove_file(&part);
             anyhow::bail!("Model download truncated ({done} of {t} bytes)");
+        }
+        // No declared length (chunked response): fall back to a sanity floor
+        // rather than installing whatever arrived.
+        if total.is_none() && done < MIN_MODEL_BYTES {
+            let _ = std::fs::remove_file(&part);
+            anyhow::bail!(
+                "Model download looks truncated ({} MB received, expected ~574 MB). \
+                 Manual path: curl -L {} -o {}",
+                done >> 20,
+                MODEL_URL,
+                dest.display()
+            );
         }
         std::fs::rename(&part, dest).context("Failed to finalize model file")?;
         eprintln!("   Brains installed.");

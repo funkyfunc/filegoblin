@@ -82,13 +82,50 @@ fn parse_feed(xml: &str) -> Result<Feed> {
 
     let mut feed = Feed::default();
     let mut entry: Option<Entry> = None;
-    let mut tag = String::new();
     let mut buf = String::new();
+    // Depth-tracked capture. The old walker kept a single `tag` and cleared the
+    // buffer on *every* Start, so any field with child elements — an Atom
+    // `<content type="xhtml"><div><p>…` — lost its text entirely and the entry
+    // came back empty with no error. Nested markup is now re-serialized into
+    // the buffer, which is what the downstream HTML extractor wants anyway.
+    let mut depth = 0usize;
+    let mut capture: Option<(String, usize)> = None;
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+        let event = reader.read_event().map_err(|e| {
+            anyhow::anyhow!(
+                "Malformed feed XML at byte {}: {}",
+                reader.buffer_position(),
+                e
+            )
+        })?;
+        let is_empty = matches!(event, Event::Empty(_));
+        match event {
+            Event::Start(ref e) | Event::Empty(ref e) => {
                 let name = local_name(e.name().as_ref());
+                if !is_empty {
+                    depth += 1;
+                }
+
+                // Inside a captured field, child elements are content: keep
+                // them verbatim so XHTML bodies survive.
+                if capture.is_some() {
+                    buf.push('<');
+                    buf.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+                    for attr in e.attributes().flatten() {
+                        buf.push_str(&format!(
+                            " {}=\"{}\"",
+                            String::from_utf8_lossy(attr.key.as_ref()),
+                            attr.unescape_value().unwrap_or_default()
+                        ));
+                    }
+                    if is_empty {
+                        buf.push('/');
+                    }
+                    buf.push('>');
+                    continue;
+                }
+
                 match name.as_str() {
                     "item" | "entry" => entry = Some(Entry::default()),
                     // Atom carries the link in an href attribute; prefer
@@ -125,65 +162,130 @@ fn parse_feed(xml: &str) -> Result<Feed> {
                     }
                     _ => {}
                 }
-                tag = name;
-                buf.clear();
+
+                if !is_empty && is_capturable_field(&name) {
+                    capture = Some((name, depth));
+                    buf.clear();
+                }
             }
-            Ok(Event::Text(e)) => {
+            Event::Text(ref e) => {
                 if let Ok(t) = std::str::from_utf8(e.as_ref())
                     && let Ok(decoded) = quick_xml::escape::unescape(t)
                 {
                     buf.push_str(&decoded);
                 }
             }
-            Ok(Event::CData(e)) => {
+            Event::CData(ref e) => {
                 buf.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
             // Escaped entities arrive as their own events in quick-xml 0.39;
             // without this every `<`/`&` in an escaped HTML body vanishes.
-            Ok(Event::GeneralRef(e)) => {
-                if let Some(s) = crate::parsers::resolve_xml_entity(&e) {
+            Event::GeneralRef(ref e) => {
+                if let Some(s) = crate::parsers::resolve_xml_entity(e) {
                     buf.push_str(&s);
                 }
             }
-            Ok(Event::End(ref e)) => {
+            Event::End(ref e) => {
                 let name = local_name(e.name().as_ref());
-                let text = std::mem::take(&mut buf).trim().to_string();
-                if name == "item" || name == "entry" {
-                    if let Some(done) = entry.take() {
-                        feed.entries.push(done);
+                match &capture {
+                    // Closing the element we are capturing: assign it.
+                    Some((field, at_depth)) if *at_depth == depth && *field == name => {
+                        let text = std::mem::take(&mut buf).trim().to_string();
+                        if !text.is_empty() {
+                            assign(&mut feed, &mut entry, &name, text);
+                        }
+                        capture = None;
                     }
-                } else if name == tag && !text.is_empty() {
-                    assign(&mut feed, &mut entry, &name, text);
+                    // A child element inside the captured field.
+                    Some(_) => {
+                        buf.push_str(&format!(
+                            "</{}>",
+                            String::from_utf8_lossy(e.name().as_ref())
+                        ));
+                    }
+                    None => {
+                        if (name == "item" || name == "entry")
+                            && let Some(done) = entry.take()
+                        {
+                            feed.entries.push(done);
+                        }
+                        buf.clear();
+                    }
                 }
-                tag.clear();
+                depth = depth.saturating_sub(1);
             }
-            Ok(Event::Eof) => break,
-            Err(_) => break, // tolerate malformed tails; emit what we parsed
+            Event::Eof => break,
             _ => {}
         }
     }
     Ok(feed)
 }
 
+/// Element names whose text (or nested markup) we care about.
+fn is_capturable_field(name: &str) -> bool {
+    matches!(
+        name,
+        "title"
+            | "link"
+            | "id"
+            | "pubdate"
+            | "published"
+            | "updated"
+            | "date"
+            | "creator"
+            | "author"
+            | "name"
+            | "description"
+            | "summary"
+            | "subtitle"
+            | "encoded"
+            | "content"
+    )
+}
+
 /// Routes a completed element's text to the feed or the current entry.
+///
+/// Body fields (`summary`/`content`) keep any nested markup — it goes through
+/// the DOM extractor later. Everything else is plain metadata, so an Atom
+/// `<author><name>Alice</name></author>` is flattened to `Alice` rather than
+/// carrying tags into a heading.
 fn assign(feed: &mut Feed, entry: &mut Option<Entry>, name: &str, text: String) {
+    let flat = || strip_tags(&text);
     match entry {
         Some(e) => match name {
-            "title" if e.title.is_empty() => e.title = text,
-            "link" | "id" if e.link.is_empty() && text.starts_with("http") => e.link = text,
-            "pubdate" | "published" | "updated" | "date" if e.date.is_empty() => e.date = text,
-            "creator" | "author" | "name" if e.author.is_empty() => e.author = text,
+            "title" if e.title.is_empty() => e.title = flat(),
+            "link" | "id" if e.link.is_empty() && text.starts_with("http") => e.link = flat(),
+            "pubdate" | "published" | "updated" | "date" if e.date.is_empty() => e.date = flat(),
+            "creator" | "author" | "name" if e.author.is_empty() => e.author = flat(),
             "description" | "summary" if e.summary.is_empty() => e.summary = text,
             "encoded" | "content" if e.content.is_empty() => e.content = text,
             _ => {}
         },
         None => match name {
-            "title" if feed.title.is_empty() => feed.title = text,
+            "title" if feed.title.is_empty() => feed.title = flat(),
             "description" | "subtitle" if feed.description.is_empty() => feed.description = text,
-            "link" if feed.link.is_empty() && text.starts_with("http") => feed.link = text,
+            "link" if feed.link.is_empty() && text.starts_with("http") => feed.link = flat(),
             _ => {}
         },
     }
+}
+
+/// Flattens any markup a captured metadata field picked up.
+fn strip_tags(s: &str) -> String {
+    if !s.contains('<') {
+        return s.trim().to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Strips any namespace prefix: `dc:creator` → `creator`, lower-cased.
@@ -254,6 +356,78 @@ fn render(feed: &Feed, full: bool) -> String {
         }
     }
     out.trim_end().to_string()
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    /// Regression: every `Start` cleared the buffer, so an Atom
+    /// `<content type="xhtml">` with nested elements produced an entry with no
+    /// body at all — a silent empty success.
+    #[test]
+    fn xhtml_content_with_nested_elements_survives() {
+        let xml = r#"<?xml version="1.0"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+            <title>Test feed</title>
+            <entry>
+                <title>Nested body</title>
+                <content type="xhtml">
+                    <div xmlns="http://www.w3.org/1999/xhtml">
+                        <p>Hello xhtml body</p>
+                        <p>Second paragraph</p>
+                    </div>
+                </content>
+            </entry>
+        </feed>"#;
+        let feed = parse_feed(xml).unwrap();
+        assert_eq!(feed.entries.len(), 1);
+        let body = &feed.entries[0].content;
+        assert!(body.contains("Hello xhtml body"), "got: {body}");
+        assert!(body.contains("Second paragraph"), "got: {body}");
+    }
+
+    /// Atom nests the author name; it must not arrive as markup.
+    #[test]
+    fn nested_author_name_is_flattened() {
+        let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+            <entry>
+                <title>T</title>
+                <author><name>Alice Goblin</name></author>
+                <summary>Body</summary>
+            </entry>
+        </feed>"#;
+        let feed = parse_feed(xml).unwrap();
+        assert_eq!(feed.entries[0].author, "Alice Goblin");
+    }
+
+    /// `<feedback>` is not a feed root.
+    #[test]
+    fn feed_sniffing_requires_a_real_element_boundary() {
+        assert!(!looks_like_feed("<feedback><title>hi</title></feedback>"));
+        assert!(looks_like_feed(
+            "<feed xmlns=\"http://www.w3.org/2005/Atom\">"
+        ));
+        assert!(looks_like_feed("<rss version=\"2.0\">"));
+        assert!(looks_like_feed("<rss>"));
+    }
+
+    /// Sniffing a long non-ASCII page must not panic on a split character.
+    #[test]
+    fn sniffing_long_multibyte_text_does_not_panic() {
+        let text = format!("{}é{}", "あ".repeat(400), "b".repeat(400));
+        assert!(!looks_like_feed(&text));
+    }
+
+    /// Malformed XML is an error, not a partial feed reported as success.
+    #[test]
+    fn malformed_feed_xml_fails_loudly() {
+        let xml = "<rss><channel><title>Good</title><item><<<";
+        let Err(err) = parse_feed(xml) else {
+            panic!("malformed XML must not parse as a feed");
+        };
+        assert!(err.to_string().contains("Malformed feed XML"), "got: {err}");
+    }
 }
 
 #[cfg(test)]

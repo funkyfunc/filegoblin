@@ -10,8 +10,13 @@ impl Gobble for OcrGobbler {
     fn gobble(&self, path: &Path, _opts: &ParseOptions) -> Result<String> {
         let bytes = std::fs::read(path).context("Failed to open image file for OCR")?;
         let text = ocr_image_bytes(&bytes)?;
+        // An error, not a sentence that looks like document content: a caller
+        // reading `--json` (or a model reading an MCP result) cannot tell the
+        // string "No text could be extracted…" from real extracted text.
         if text.trim().is_empty() {
-            return Ok("No text could be extracted from this image.".to_string());
+            anyhow::bail!(
+                "No text could be extracted from this image (no readable text, or too low-resolution)"
+            );
         }
         Ok(format!(
             "## Image Text: {}\n\n{}",

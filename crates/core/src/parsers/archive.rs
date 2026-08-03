@@ -61,7 +61,7 @@ impl ArchiveGobbler {
 
         match ext.as_str() {
             "zip" => extract_zip(path, temp_dir.path())?,
-            "gz" | "tgz" => extract_tar_gz(path, temp_dir.path())?,
+            "gz" | "tgz" => extract_gzip(path, temp_dir.path())?,
             other => anyhow::bail!("Unsupported archive format: {}", other),
         }
 
@@ -151,6 +151,53 @@ fn extract_zip_capped(path: &Path, dest: &Path, cap: u64) -> Result<()> {
     Ok(())
 }
 
+/// Handles both shapes a `.gz` can take: a gzipped **tar**, and a single
+/// gzipped **file** (`access.log.gz`), which is extremely common and used to
+/// hit the tar reader and fail with a misleading "Corrupt tar entry".
+fn extract_gzip(path: &Path, dest: &Path) -> Result<()> {
+    match extract_tar_gz(path, dest) {
+        Ok(()) => Ok(()),
+        Err(tar_err) => match extract_single_gz(path, dest) {
+            Ok(()) => Ok(()),
+            // Report the tar failure: if it is neither, "corrupt tar" is the
+            // more informative of the two for a `.tgz`.
+            Err(_) => Err(tar_err),
+        },
+    }
+}
+
+/// Inflates a single-member gzip to `dest/<stem>`, bounded by the same cap.
+fn extract_single_gz(path: &Path, dest: &Path) -> Result<()> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).context("Failed to open gzip file")?;
+    let mut decoder = flate2::read::GzDecoder::new(file);
+
+    // Strip the .gz: access.log.gz -> access.log
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "decompressed".to_string());
+
+    let mut buf = Vec::new();
+    decoder
+        .by_ref()
+        .take(MAX_TOTAL_UNCOMPRESSED + 1)
+        .read_to_end(&mut buf)
+        .context("Failed to inflate gzip file")?;
+    if buf.len() as u64 > MAX_TOTAL_UNCOMPRESSED {
+        anyhow::bail!(
+            "Gzip inflates past the {} GiB uncompressed limit (bomb guard)",
+            MAX_TOTAL_UNCOMPRESSED / (1024 * 1024 * 1024)
+        );
+    }
+    if buf.is_empty() {
+        anyhow::bail!("Gzip file decompressed to nothing");
+    }
+    std::fs::write(dest.join(stem), buf).context("Failed to write decompressed file")?;
+    Ok(())
+}
+
 /// Extracts a gzipped tar with a total-size cap. `tar`'s `unpack` handles `..`
 /// and absolute-path traversal internally; we bound the decompressed volume.
 fn extract_tar_gz(path: &Path, dest: &Path) -> Result<()> {
@@ -179,10 +226,20 @@ fn extract_tar_gz(path: &Path, dest: &Path) -> Result<()> {
                 MAX_TOTAL_UNCOMPRESSED / (1024 * 1024 * 1024)
             );
         }
-        // `unpack_in` refuses paths that escape `dest` (returns Ok(false)).
-        entry
+        // `unpack_in` returns Ok(false) for a path that escapes `dest`. That
+        // return value used to be discarded, so a hostile tar produced an
+        // archive quietly missing files — while zip loudly bails on exactly the
+        // same condition. Match the zip behaviour.
+        let entry_path = entry
+            .path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unreadable>".to_string());
+        if !entry
             .unpack_in(dest)
-            .context("Failed to unpack tar entry")?;
+            .context("Failed to unpack tar entry")?
+        {
+            anyhow::bail!("Refusing tar entry with unsafe path: {}", entry_path);
+        }
     }
     Ok(())
 }
