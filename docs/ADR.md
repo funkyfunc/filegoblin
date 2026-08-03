@@ -277,3 +277,63 @@ because the `tui` feature never propagated `filegoblin-tui/web`, and it
 hex-dumped the formats the README advertises. Re-integration notes are in its
 Cargo.toml. Deferred: `--browser` inside `--horde` (still unwired, now with a
 runtime note), DNS-rebinding protection, and a resolver-level SSRF hook.
+
+## 2026-08-02: Audit follow-through — the deeper items
+
+**Context:** After the pre-publish batch above, the remaining audit findings
+were the ones that needed real work rather than a targeted fix: duplicated
+output framing, quadratic HTML scoring, an untested crawler, and a set of
+smaller correctness bugs.
+
+**Decision:**
+
+*One output framing.* `FILE_START` had five implementations across
+`formatters.rs` and `lib.rs`, differing in trailing newlines and in whether they
+carried the relevance score, so a format change had to be made in five places
+and a miss would surface as two output modes disagreeing. Now one
+`formatters::render_block`. Golden snapshots are byte-identical across the
+change, which is the evidence it was a pure refactor.
+
+*HTML scoring is one pass.* Content selection and link-farm removal each
+measured every candidate independently, and since every ancestor `div` contains
+its descendants' text, the work multiplied out on nested markup — a 35 KB page
+of 3000 nested divs took 4.29s, and 3.5s of that was ours. Both now read from a
+single bottom-up O(nodes) accumulation (`accumulate_text_sizes`), bringing it to
+0.66s.
+Honest finding: that did **not** make it linear. Timing `--full`, which skips
+both functions, shows the same ~4×-for-2× curve, so the residual is inside
+html5ever/html2md. Rather than claim the problem solved, documents nesting past
+1000 levels are refused outright — real pages nest a few dozen, and `--horde`
+fetches from arbitrary sites, so an unbounded parse is a genuine DoS vector.
+
+*Crawler scoping, now tested.* The page budget compared `MAX_PAGES` against
+`visited`, which counts *discovered* URLs, so one page linking to 600 others
+exhausted the crawl before a second page was fetched. The same-origin check
+compared `host_str()` alone, so a crawl of a web site would follow links to
+other services on the same host (`:8443`, `:22`). Scoping is extracted into
+`normalize_link` and covered by the crawler's first tests.
+
+*Spreadsheets say what the sheet says.* `Data::Float` printed the stored binary
+value (`0.30000000000000004` for a cell showing `0.3`) and `Data::DateTime`
+printed its serial number (`45292.5`). Floats round to the 15 significant digits
+Excel itself guarantees; serials convert to `YYYY-MM-DD [HH:MM:SS]` by hand
+rather than adding chrono, since calamine only exposes that behind a feature.
+Excel's phantom 1900-02-29 is handled.
+
+*Scrubbing keeps its context.* The generic assignment rule matched the key name
+along with the value, so `api_key = sk_live_…` became a bare `[SECRET]` and the
+line lost the one thing that said what was removed. The name and separator are
+preserved now.
+
+*Nested structures stopped corrupting their hosts.* A table inside a docx cell
+was rendered as a pipe table and then newline-flattened by the parent into
+`| a | b |---|---| c |`; it flattens to readable text instead. An ODF footnote
+nests a whole `text:p` inside the citing paragraph, and treating that inner
+close as the paragraph's end split the sentence and spliced the note into the
+remainder; paragraph depth is tracked and note bodies are emitted after the
+paragraph.
+
+**Status:** Accepted. Still open and deliberately so: the html5ever/html2md
+nesting cost (mitigated by the depth cap, not fixed); MCP is still sequential
+with no cancellation, so a slow conversion blocks `ping`; DNS rebinding remains
+possible between `guard_url`'s resolution and the connection.

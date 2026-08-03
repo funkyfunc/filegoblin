@@ -40,8 +40,19 @@ impl Gobble for FeedGobbler {
 
     fn gobble_str(&self, content: &str, opts: &ParseOptions) -> Result<String> {
         let feed = parse_feed(content)?;
-        if feed.entries.is_empty() && feed.title.is_empty() {
-            anyhow::bail!("No feed entries found (is this really an RSS/Atom document?)");
+        // A feed with no entries is not a feed worth emitting. The old check
+        // also accepted `title.is_empty() == false`, so any XML that happened
+        // to contain a `<title>` — an XHTML document misnamed `.atom`, say —
+        // "converted" to a header and `Entries: 0`.
+        if feed.entries.is_empty() {
+            anyhow::bail!(
+                "No feed entries found{} — is this really an RSS/Atom document?",
+                if feed.title.is_empty() {
+                    String::new()
+                } else {
+                    format!(" in \"{}\"", feed.title)
+                }
+            );
         }
         Ok(render(&feed, opts.full))
     }

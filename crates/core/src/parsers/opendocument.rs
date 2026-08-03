@@ -54,6 +54,16 @@ fn content_xml_to_md(xml: &str) -> Result<String> {
     let mut cell_text = String::new();
     let mut cell_repeat = 1usize;
 
+    // Footnotes and annotations nest a whole `<text:p>` inside the paragraph
+    // that cites them. Treating that inner close as the end of the outer
+    // paragraph flushed half a sentence and then spliced the note's text into
+    // the remainder. Paragraph depth keeps the host paragraph intact; note
+    // bodies are collected separately and emitted after it.
+    let mut para_depth = 0usize;
+    let mut note_depth = 0usize;
+    let mut notes: Vec<String> = Vec::new();
+    let mut note_text = String::new();
+
     let flush_block = |out: &mut String,
                        line: &mut String,
                        heading_level: &mut Option<usize>,
@@ -107,7 +117,17 @@ fn content_xml_to_md(xml: &str) -> Result<String> {
                         .unwrap_or(1)
                         .clamp(1, 6);
                     heading_level = Some(level);
+                    if !in_table && !is_empty {
+                        para_depth += 1;
+                    }
                 }
+                b"text:note" | b"office:annotation" => {
+                    if !is_empty {
+                        note_depth += 1;
+                        note_text.clear();
+                    }
+                }
+                b"text:p" if !in_table && !is_empty => para_depth += 1,
                 b"text:list" => list_depth += 1,
                 b"draw:page" => {
                     slide_count += 1;
@@ -141,7 +161,9 @@ fn content_xml_to_md(xml: &str) -> Result<String> {
                 if let Ok(text) = std::str::from_utf8(e.as_ref())
                     && let Ok(decoded) = quick_xml::escape::unescape(text)
                 {
-                    if in_table {
+                    if note_depth > 0 {
+                        note_text.push_str(&decoded);
+                    } else if in_table {
                         cell_text.push_str(&decoded);
                     } else {
                         line.push_str(&decoded);
@@ -150,7 +172,9 @@ fn content_xml_to_md(xml: &str) -> Result<String> {
             }
             Event::GeneralRef(ref e) => {
                 if let Some(s) = crate::parsers::resolve_xml_entity(e) {
-                    if in_table {
+                    if note_depth > 0 {
+                        note_text.push_str(&s);
+                    } else if in_table {
                         cell_text.push_str(&s);
                     } else {
                         line.push_str(&s);
@@ -158,8 +182,23 @@ fn content_xml_to_md(xml: &str) -> Result<String> {
                 }
             }
             Event::End(ref e) => match e.name().as_ref() {
+                b"text:note" | b"office:annotation" => {
+                    note_depth = note_depth.saturating_sub(1);
+                    let text = std::mem::take(&mut note_text).trim().to_string();
+                    if !text.is_empty() {
+                        notes.push(text);
+                    }
+                }
+                // Only the *outermost* paragraph ends a block: a footnote body
+                // nests a whole `text:p` inside the citing paragraph.
                 b"text:h" | b"text:p" if !in_table => {
-                    flush_block(&mut out, &mut line, &mut heading_level, list_depth);
+                    para_depth = para_depth.saturating_sub(1);
+                    if para_depth == 0 && note_depth == 0 {
+                        flush_block(&mut out, &mut line, &mut heading_level, list_depth);
+                        for note in notes.drain(..) {
+                            out.push_str(&format!("> {}\n\n", note));
+                        }
+                    }
                 }
                 b"text:p" if in_table => cell_text.push(' '),
                 b"text:list" => list_depth = list_depth.saturating_sub(1),
@@ -362,6 +401,32 @@ mod tests {
             .gobble(file.path(), &ParseOptions::default())
             .unwrap();
         assert!(result.contains("| only |  |  |"), "got: {result}");
+    }
+
+    /// Regression: a footnote nests a whole `text:p` inside the citing
+    /// paragraph, and treating that inner close as the paragraph's end split
+    /// the sentence in half and spliced the note's text into the remainder.
+    #[test]
+    fn footnotes_do_not_split_the_citing_paragraph() {
+        let xml = r#"<office:document-content><office:body><office:text>
+            <text:p>The goblin hoards documents<text:note text:note-class="footnote">
+                <text:note-citation>1</text:note-citation>
+                <text:note-body><text:p>Especially the crunchy ones.</text:p></text:note-body>
+            </text:note> and refuses to share them.</text:p>
+        </office:text></office:body></office:document-content>"#;
+        let file = make_od(xml, "odt");
+        let result = OpenDocGobbler
+            .gobble(file.path(), &ParseOptions::default())
+            .unwrap();
+
+        assert!(
+            result.contains("The goblin hoards documents and refuses to share them."),
+            "the citing paragraph must stay whole, got: {result}"
+        );
+        assert!(
+            result.contains("Especially the crunchy ones."),
+            "the note text must still appear, got: {result}"
+        );
     }
 
     /// Malformed XML is an error, not a half-document returned as success.

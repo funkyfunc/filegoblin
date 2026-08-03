@@ -169,16 +169,35 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
     .arg(format!("--user-data-dir={}", profile.path().display()))
     .arg(format!("--user-agent={}", crate::net::user_agent()))
     .arg(format!("--timeout={}", LOAD_TIMEOUT_MS))
-    .arg(format!("--virtual-time-budget={}", SETTLE_BUDGET_MS))
-    .arg("--dump-dom")
-    .arg(url.as_str())
-    .stdin(Stdio::null())
-    .stdout(Stdio::piped())
-    // Captured, not discarded: with stderr thrown away, a missing shared
-    // library, a refusal to start as root without --no-sandbox (the normal
-    // Docker/CI case), and a wrong binary all collapsed into the same
-    // "page may block headless rendering", which blames the page.
-    .stderr(Stdio::piped());
+    .arg(format!("--virtual-time-budget={}", SETTLE_BUDGET_MS));
+
+    // Chrome does not read HTTP_PROXY/HTTPS_PROXY on macOS or Windows, so
+    // behind a corporate proxy the static fetch worked and `--browser` failed
+    // — reported, unhelpfully, as the page blocking headless rendering.
+    if let Some(proxy) = std::env::var("HTTPS_PROXY")
+        .or_else(|_| std::env::var("https_proxy"))
+        .or_else(|_| std::env::var("HTTP_PROXY"))
+        .or_else(|_| std::env::var("http_proxy"))
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+    {
+        cmd.arg(format!("--proxy-server={}", proxy.trim()));
+        if let Ok(no_proxy) = std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy"))
+            && !no_proxy.trim().is_empty()
+        {
+            cmd.arg(format!("--proxy-bypass-list={}", no_proxy.trim()));
+        }
+    }
+
+    cmd.arg("--dump-dom")
+        .arg(url.as_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        // Captured, not discarded: with stderr thrown away, a missing shared
+        // library, a refusal to start as root without --no-sandbox (the normal
+        // Docker/CI case), and a wrong binary all collapsed into the same
+        // "page may block headless rendering", which blames the page.
+        .stderr(Stdio::piped());
 
     // NOTE: do NOT setpgid/process_group Chrome on macOS — detaching it from
     // the session breaks its helper-process handshake and it never exits.
