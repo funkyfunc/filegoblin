@@ -14,6 +14,63 @@ use tokio::sync::mpsc;
 /// Maximum number of pages a single crawl will fetch.
 const MAX_PAGES: usize = 500;
 
+/// What a crawl is allowed to reach.
+///
+/// `--depth` and `--include`/`--exclude` were applied only by the *local* file
+/// walker; the crawler never read them, so `--horde --depth 1` against a URL
+/// silently crawled an entire site. There was no way at all to scope a web
+/// crawl, which is the whole reason pointing filegoblin at a docs site returned
+/// the changelog and the 2019 blog archive along with the four pages you wanted.
+///
+/// Both prune the frontier rather than filtering the output: a section that is
+/// out of scope is never fetched, so scoping saves requests and time instead of
+/// just trimming what gets printed. The seed is always fetched — otherwise
+/// `--include "/guide/*"` starting at `/` would match nothing and crawl nothing.
+pub(crate) struct CrawlScope {
+    max_depth: Option<usize>,
+    include: Option<globset::GlobSet>,
+    exclude: Option<globset::GlobSet>,
+}
+
+impl CrawlScope {
+    pub(crate) fn from_args(args: &crate::cli::Cli) -> Result<Self> {
+        let build = |pats: &[String]| -> Result<Option<globset::GlobSet>> {
+            if pats.is_empty() {
+                Ok(None)
+            } else {
+                crate::walk::build_globset(pats).map(Some)
+            }
+        };
+        Ok(Self {
+            max_depth: args.depth,
+            include: build(&args.include)?,
+            exclude: build(&args.exclude)?,
+        })
+    }
+
+    /// Whether a link discovered at `depth` (the seed is 0) may be fetched.
+    ///
+    /// Patterns match the URL **path**, so `--include "/guide/*"` and the
+    /// shorthand `--include guide` both scope a crawl to that section.
+    pub(crate) fn allows(&self, url: &Url, depth: usize) -> bool {
+        if let Some(max) = self.max_depth
+            && depth > max
+        {
+            return false;
+        }
+        let path = url.path();
+        if let Some(ex) = &self.exclude
+            && ex.is_match(path)
+        {
+            return false;
+        }
+        match &self.include {
+            Some(inc) => inc.is_match(path),
+            None => true,
+        }
+    }
+}
+
 /// Decides whether a discovered `href` should join the crawl frontier, and
 /// returns it normalized (fragment stripped).
 ///
@@ -120,11 +177,14 @@ impl GoblinCrawler {
         results.push(("_tree.md".to_string(), tree_out));
 
         self.visited.insert(seed_url.to_string());
-        tx.send(seed_url.clone())?;
+        // The frontier carries depth, so `--depth` can bound how far from the
+        // seed a crawl wanders. The seed itself is depth 0.
+        tx.send((seed_url.clone(), 0usize))?;
 
         let active_tasks = Arc::new(tokio::sync::Semaphore::new(10));
         let target_domain = Arc::new(self.seed_domain.clone());
         let shared_args = Arc::new(args.clone());
+        let scope = Arc::new(CrawlScope::from_args(args)?);
 
         let mut join_set = tokio::task::JoinSet::new();
         let in_flight = Arc::new(AtomicUsize::new(1));
@@ -140,7 +200,7 @@ impl GoblinCrawler {
             }
 
             tokio::select! {
-                Some(current_url) = rx.recv() => {
+                Some((current_url, depth)) = rx.recv() => {
                     // Stop fetching once we hit the page budget.
                     if fetched.load(Ordering::SeqCst) >= MAX_PAGES {
                         in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -167,6 +227,7 @@ impl GoblinCrawler {
                     let in_flight_clone = in_flight.clone();
                     let flags_clone = shared_args.clone();
                     let client = self.client.clone();
+                    let scope = scope.clone();
 
                     join_set.spawn(async move {
                         rate_limiter.until_key_ready(&target_domain_clone).await;
@@ -211,6 +272,9 @@ impl GoblinCrawler {
                                             for element in document.select(&selector) {
                                                 if let Some(href) = element.value().attr("href")
                                                     && let Some(clean_url) = normalize_link(&current_url, href, &target_domain_clone, seed_port)
+                                                    // Out-of-scope links are dropped here, so a
+                                                    // pruned section is never fetched at all.
+                                                    && scope.allows(&clean_url, depth + 1)
                                                     && visited_clone.insert(clean_url.to_string())
                                                 {
                                                     new_links.push(clean_url);
@@ -220,7 +284,7 @@ impl GoblinCrawler {
 
                                         // Send links
                                         for link in new_links {
-                                            if tx_clone.send(link).is_ok() {
+                                            if tx_clone.send((link, depth + 1)).is_ok() {
                                                 in_flight_clone.fetch_add(1, Ordering::SeqCst);
                                             }
                                         }
@@ -352,5 +416,88 @@ mod tests {
         assert!(normalize_link(&base, "", "example.com", Some(443)).is_some()); // self-link
         assert!(normalize_link(&base, "http://", "example.com", Some(443)).is_none());
         assert!(normalize_link(&base, "///", "example.com", Some(443)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn scope(extra: &[&str]) -> CrawlScope {
+        let mut argv = vec!["filegoblin", "https://example.com", "--horde"];
+        argv.extend_from_slice(extra);
+        CrawlScope::from_args(&crate::cli::Cli::parse_from(argv)).unwrap()
+    }
+
+    fn url(path: &str) -> Url {
+        Url::parse(&format!("https://example.com{path}")).unwrap()
+    }
+
+    #[test]
+    fn no_flags_allows_everything() {
+        let s = scope(&[]);
+        assert!(s.allows(&url("/"), 0));
+        assert!(s.allows(&url("/blog/2019"), 9));
+    }
+
+    /// Regression: `--depth` was read by the local walker and ignored by the
+    /// crawler, so this silently crawled an entire site.
+    #[test]
+    fn depth_bounds_how_far_from_the_seed_a_crawl_goes() {
+        let s = scope(&["--depth", "1"]);
+        assert!(s.allows(&url("/"), 0), "the seed");
+        assert!(s.allows(&url("/guide"), 1), "one hop out");
+        assert!(!s.allows(&url("/guide/deep"), 2), "two hops is too far");
+    }
+
+    /// Regression: `--include`/`--exclude` were likewise ignored for crawls.
+    #[test]
+    fn include_scopes_a_crawl_to_a_section() {
+        let s = scope(&["--include", "/guide/*"]);
+        assert!(s.allows(&url("/guide/start.html"), 1));
+        assert!(!s.allows(&url("/blog/old.html"), 1));
+    }
+
+    /// The bare-word shorthand has to work on URL paths, not just filenames —
+    /// `*guide*` must match across `/` separators.
+    #[test]
+    fn a_bare_word_matches_anywhere_in_the_path() {
+        let s = scope(&["--include", "guide"]);
+        assert!(s.allows(&url("/docs/guide/start.html"), 1));
+        assert!(!s.allows(&url("/docs/blog/old.html"), 1));
+    }
+
+    #[test]
+    fn exclude_prunes_and_beats_include() {
+        let s = scope(&["--exclude", "*changelog*"]);
+        assert!(s.allows(&url("/guide/start"), 1));
+        assert!(!s.allows(&url("/docs/changelog/v2"), 1));
+
+        // A page matching both is excluded: the narrower intent wins.
+        let s = scope(&["--include", "docs", "--exclude", "*changelog*"]);
+        assert!(s.allows(&url("/docs/guide"), 1));
+        assert!(!s.allows(&url("/docs/changelog"), 1));
+    }
+
+    #[test]
+    fn filters_and_depth_compose() {
+        let s = scope(&["--depth", "2", "--include", "guide"]);
+        assert!(s.allows(&url("/guide/a"), 1));
+        assert!(s.allows(&url("/guide/a/b"), 2));
+        assert!(!s.allows(&url("/guide/a/b/c"), 3), "depth still applies");
+        assert!(!s.allows(&url("/blog/a"), 1), "include still applies");
+    }
+
+    #[test]
+    fn an_invalid_pattern_is_an_error_not_a_silent_empty_scope() {
+        let args = crate::cli::Cli::parse_from([
+            "filegoblin",
+            "https://example.com",
+            "--horde",
+            "--include",
+            "[unclosed",
+        ]);
+        assert!(CrawlScope::from_args(&args).is_err());
     }
 }

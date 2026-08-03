@@ -457,10 +457,54 @@ fn is_heading_text(line: &str) -> bool {
 
 /// Extracts a double-quoted attribute value out of a raw HTML tag string.
 fn html_attr(tag: &str, name: &str) -> Option<String> {
-    let marker = format!("{}=\"", name);
-    let start = tag.find(&marker)? + marker.len();
-    let end = tag[start..].find('"')?;
-    Some(tag[start..start + end].to_string())
+    // Single quotes are as legal as double in HTML, and entities appear
+    // routinely in real `src`/`alt` values (`?a=1&amp;b=2`). Handling only
+    // `name="…"` and returning it raw meant single-quoted attributes were
+    // invisible and doubly-escaped ones came through as literal `&amp;`.
+    for quote in ['"', '\''] {
+        let marker = format!("{}={}", name, quote);
+        if let Some(at) = tag.find(&marker) {
+            let start = at + marker.len();
+            if let Some(end) = tag[start..].find(quote) {
+                return Some(decode_entities(&tag[start..start + end]));
+            }
+        }
+    }
+    None
+}
+
+/// Decodes the entities that show up in HTML attribute values.
+fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    // `&amp;` last would re-expand what the earlier replacements wrote, so this
+    // is a single left-to-right pass.
+    const ENTITIES: &[(&str, &str)] = &[
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&apos;", "'"),
+        ("&nbsp;", " "),
+    ];
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    'outer: while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        for (entity, replacement) in ENTITIES {
+            if rest[amp..].starts_with(entity) {
+                out.push_str(replacement);
+                rest = &rest[amp + entity.len()..];
+                continue 'outer;
+            }
+        }
+        out.push('&');
+        rest = &rest[amp + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Collapses runs of 2+ spaces into one.
@@ -668,6 +712,37 @@ mod regression_tests {
                 .gobble_str(&normal, &ParseOptions::default())
                 .is_ok()
         );
+    }
+
+    /// Regression: only `name="…"` was recognised, and the value came back
+    /// raw — so single-quoted attributes were invisible and an escaped query
+    /// string kept its `&amp;`.
+    #[test]
+    fn attributes_handle_both_quote_styles_and_entities() {
+        assert_eq!(
+            html_attr(r#"<img src="/a.png" alt="Hi">"#, "src").as_deref(),
+            Some("/a.png")
+        );
+        assert_eq!(
+            html_attr(r#"<img src='/b.png'>"#, "src").as_deref(),
+            Some("/b.png"),
+            "single quotes are as legal as double"
+        );
+        assert_eq!(
+            html_attr(r#"<img src="/c?a=1&amp;b=2">"#, "src").as_deref(),
+            Some("/c?a=1&b=2"),
+            "entities decode"
+        );
+        assert_eq!(html_attr(r#"<img alt="x">"#, "src"), None);
+    }
+
+    #[test]
+    fn entity_decoding_is_a_single_pass() {
+        // `&amp;lt;` must stay `&lt;`, not become `<`.
+        assert_eq!(decode_entities("&amp;lt;"), "&lt;");
+        assert_eq!(decode_entities("a &amp; b"), "a & b");
+        assert_eq!(decode_entities("no entities"), "no entities");
+        assert_eq!(decode_entities("&unknown;"), "&unknown;");
     }
 
     /// An HTML file with no readable text and no scripts is an error, not an

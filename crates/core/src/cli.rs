@@ -103,11 +103,21 @@ pub struct Cli {
     #[arg(short = 'H', long, help_heading = "Crawling & Ingestion")]
     pub horde: bool,
 
-    /// Filter horde ingestion to only include files matching glob patterns (repeatable, e.g. --include "*.rs" --include "*.toml")
+    /// Only ingest paths matching these glob patterns (repeatable, e.g. --include "*.rs")
+    ///
+    /// Applies to both halves of `--horde`: file paths locally, and the URL
+    /// *path* when crawling, so `--include "/guide/*"` (or just `--include
+    /// guide`) scopes a crawl to that section. Out-of-scope pages are never
+    /// fetched, not merely dropped from the output. The seed URL is always
+    /// fetched regardless.
     #[arg(short = 'I', long, help_heading = "Crawling & Ingestion")]
     pub include: Vec<String>,
 
-    /// Exclude files matching glob patterns from horde ingestion (repeatable, e.g. --exclude "*test*" --exclude "*.lock")
+    /// Exclude paths matching these glob patterns (repeatable, e.g. --exclude "*test*")
+    ///
+    /// Like `--include`, this covers local paths and crawled URL paths, and
+    /// prunes the crawl rather than the output — `--exclude "*/changelog/*"`
+    /// means those pages are never requested.
     #[arg(short = 'E', long, help_heading = "Crawling & Ingestion")]
     pub exclude: Vec<String>,
 
@@ -123,7 +133,11 @@ pub struct Cli {
     #[arg(long, help_heading = "Crawling & Ingestion", conflicts_with_all = ["mcp", "clipboard"])]
     pub walk: bool,
 
-    /// Limit recursion depth for --horde crawling (e.g. --depth 1 for top-level only)
+    /// Limit recursion depth for --horde (e.g. --depth 1 for top-level only)
+    ///
+    /// Local: directory levels below the target. Web: link hops from the seed
+    /// page, which is depth 0 — so `--depth 1` fetches the seed and the pages
+    /// it links to directly, and nothing further.
     #[arg(long, help_heading = "Crawling & Ingestion")]
     pub depth: Option<usize>,
 

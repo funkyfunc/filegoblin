@@ -433,3 +433,46 @@ of the output and stdout carried only markdown.
 unwired for crawls — `--walk` sidesteps that rather than fixing it, and the
 cheap non-interactive scoping is still missing. Also deferred: search/filter
 within the picker, and multi-select across a whole subtree at once.
+
+## 2026-08-03: Crawl scoping — wiring up flags that were silently ignored
+
+**Context:** `--depth`, `--include` and `--exclude` were applied by the local
+file walker and never read by the crawler, so `--horde --depth 1` against a URL
+crawled the entire site. Every documented way to scope a crawl was a no-op, and
+`--walk` (added just before this) routed around the problem rather than fixing
+it — which left scripts, agents and the MCP server with nothing.
+
+**Decision:** One `CrawlScope`, built once from the args, consulted when a link
+is discovered. Two choices worth recording:
+
+*Prune the frontier, not the output.* An out-of-scope page is never fetched, so
+scoping saves requests and time instead of downloading everything and printing
+less. The alternative — traverse everything, filter what is kept — would leave
+`--include "/guide/*"` still crawling the whole site, which is the opposite of
+the point. The cost is that a wanted page reachable only *through* an excluded
+one becomes unreachable; that is the right default for a tool whose failure mode
+is grabbing too much, and `--walk` covers the case where you need to see the
+route.
+
+*Patterns match the URL path, reusing the existing glob flags* rather than
+adding `--url-include`/`--url-exclude`. `--horde` already means "local or web",
+so its filters should too. globset's default (`literal_separator = false`) makes
+`*` cross `/`, so the bare-word shorthand — `--include guide` becoming
+`*guide*` — matches `/docs/guide/start.html` as a user would expect; there is a
+test pinning that, because the opposite default would silently match nothing.
+
+The seed is always fetched regardless of `--include`, or scoping a crawl to a
+subsection from the site root would match nothing and crawl nothing.
+
+Verified against a served local site: unscoped reaches 5 pages; `--depth 1`
+fetches 4 and excludes the depth-2 page; `--depth 2` reaches it again;
+`--exclude blog` and `--include guide` each drop the right page.
+
+**Also in this pass:** `html_attr` recognised only `name="…"` and returned the
+value raw, so single-quoted attributes were invisible and `?a=1&amp;b=2` kept
+its entity. PDF scanned-page OCR read only the *largest* embedded image, so a
+book spread scanned as two halves silently lost one — it now reads every image
+within an eighth of the largest, capped at 8 per page since OCR is the slowest
+thing here.
+
+**Status:** Accepted.

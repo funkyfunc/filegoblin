@@ -125,25 +125,59 @@ fn failed_page_marker(display_page: usize, err: &str) -> String {
     )
 }
 
-/// OCRs a scanned page by pulling its **largest embedded image** (the scan
-/// itself) rather than rasterizing — faster and full fidelity. Returns `None`
-/// when OCR isn't available in this build or the page has no usable image.
+/// OCRs a scanned page from its **embedded images** rather than rasterizing —
+/// faster and full fidelity. Returns `None` when OCR isn't available in this
+/// build or the page has no usable image.
+///
+/// Reads every substantial image on the page, not just the largest one: a book
+/// spread scanned as two halves, or a page with a scanned figure beside the
+/// body, would otherwise lose everything except the biggest piece — silently,
+/// since the page still produced text.
 fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
     if !crate::parsers::ocr::ocr_available() {
         return None;
     }
-    let images = doc.extract_images(page).ok()?;
-    let largest = images
-        .into_iter()
-        .max_by_key(|img| u64::from(img.width()) * u64::from(img.height()))?;
-    let dynamic = largest.to_dynamic_image().ok()?;
+    let mut images = doc.extract_images(page).ok()?;
+    if images.is_empty() {
+        return None;
+    }
+    // Largest first, so the main scan leads and the reading order stays sane.
+    images.sort_by_key(|img| std::cmp::Reverse(u64::from(img.width()) * u64::from(img.height())));
 
-    let mut png: Vec<u8> = Vec::new();
-    dynamic
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
-    crate::parsers::ocr::ocr_image_bytes(&png).ok()
+    // Anything much smaller than the largest image is a logo, icon, or rule —
+    // OCRing it costs time and contributes noise. A half of a spread is
+    // comfortably above this bar.
+    let biggest = u64::from(images[0].width()) * u64::from(images[0].height());
+    let floor = biggest / 8;
+
+    let mut parts: Vec<String> = Vec::new();
+    for img in images.iter().take(MAX_OCR_IMAGES_PER_PAGE) {
+        if u64::from(img.width()) * u64::from(img.height()) < floor {
+            break; // sorted, so everything after this is smaller too
+        }
+        let Ok(dynamic) = img.to_dynamic_image() else {
+            continue;
+        };
+        let mut png: Vec<u8> = Vec::new();
+        if dynamic
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .is_err()
+        {
+            continue;
+        }
+        if let Ok(text) = crate::parsers::ocr::ocr_image_bytes(&png)
+            && !text.trim().is_empty()
+        {
+            parts.push(text.trim().to_string());
+        }
+    }
+
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
+
+/// Bound on how many images one page will OCR. A pathological PDF can embed
+/// hundreds of similarly-sized tiles; OCR is the slowest thing this tool does.
+const MAX_OCR_IMAGES_PER_PAGE: usize = 8;
 
 #[cfg(test)]
 mod tests {

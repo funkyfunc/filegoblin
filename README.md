@@ -288,6 +288,26 @@ filegoblin . --horde --git-diff HEAD~1
 filegoblin . --horde --git-diff HEAD~1 --diff-format
 ```
 
+**Scoping a crawl (`--depth`, `--include`, `--exclude`):**
+
+These apply to both halves of `--horde` — local file paths, and the URL *path*
+when crawling. Out-of-scope pages are never fetched, so scoping saves requests
+rather than just trimming the output.
+
+```bash
+# Only the guide section, and never the changelog
+filegoblin https://docs.example.com --horde --include "/guide/*" --exclude "*changelog*"
+
+# The seed page and whatever it links to directly — nothing further
+filegoblin https://docs.example.com --horde --depth 1
+
+# Shorthand: a bare word matches anywhere in the path
+filegoblin https://docs.example.com --horde --include guide
+```
+
+The seed URL is always fetched, so `--include "/guide/*"` starting at `/` still
+works. `--depth 0` is the seed alone.
+
 **Walk and pick (`--walk`) — for when you don't want the whole site:**
 
 Pointing `--horde` at a website converts everything it can reach: the changelog,
