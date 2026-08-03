@@ -43,7 +43,6 @@ static SEL_OG_TITLE: LazyLock<Selector> =
 static SEL_BODY: LazyLock<Selector> = LazyLock::new(|| Selector::parse("body").unwrap());
 static SEL_MAIN: LazyLock<Selector> = LazyLock::new(|| Selector::parse("main").unwrap());
 static SEL_ARTICLE: LazyLock<Selector> = LazyLock::new(|| Selector::parse("article").unwrap());
-static SEL_ANCHOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("a").unwrap());
 static SEL_CANDIDATE: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("div, section, td").unwrap());
 /// Blocks that can be pure link farms (language pickers, tag clouds, "related
@@ -72,6 +71,20 @@ impl Gobble for HtmlGobbler {
     fn gobble_str(&self, content: &str, opts: &ParseOptions) -> Result<String> {
         let full = self.extract_full || opts.full;
         let doc = Html::parse_document(content);
+
+        // html5ever and html2md both cost more than linearly in nesting depth
+        // — measured at ~4x for 2x depth, in the dependencies rather than here
+        // — so a page of a million nested divs would pin a CPU for a very long
+        // time. Real documents nest tens of levels; browsers themselves give up
+        // far below this. Refuse rather than hang.
+        if let Some(depth) = max_depth_exceeding(&doc, MAX_DOM_DEPTH) {
+            anyhow::bail!(
+                "HTML nests more than {} levels deep ({}+ found) — refusing to convert it, \
+                 as this is far past anything a real document does",
+                MAX_DOM_DEPTH,
+                depth
+            );
+        }
 
         // Checked before noise removal (the removal detaches every <script>).
         let has_scripts = doc.select(&SEL_SCRIPT).next().is_some();
@@ -200,15 +213,16 @@ fn remove_matching(doc: &mut Html, selector: &Selector) {
 /// boxes); prose blocks never come close to this density, so this only ever
 /// removes navigation-shaped noise.
 fn remove_link_farms(doc: &mut Html) {
+    // Sizes for the whole document in one pass. Measuring each candidate on its
+    // own re-walked its entire subtree, and since every ancestor div contains
+    // its descendants' text, deeply nested markup made the work multiply out —
+    // 3.5s of a 4.3s conversion on a 35 KB page of nested divs.
+    let sizes = accumulate_text_sizes(&doc.root_element());
     let ids: Vec<_> = doc
         .select(&SEL_LINK_FARM)
         .filter(|el| {
-            let text = text_len(el);
-            if text < 60 {
-                return false;
-            }
-            let link_text: usize = el.select(&SEL_ANCHOR).map(|a| text_len(&a)).sum();
-            link_text * 100 >= text * 85
+            let (text, link_text) = sizes.get(&el.id()).copied().unwrap_or((0, 0));
+            text >= 60 && link_text * 100 >= text * 85
         })
         .map(|el| el.id())
         .collect();
@@ -244,18 +258,6 @@ fn text_len(el: &ElementRef) -> usize {
         .sum()
 }
 
-/// Readability-style score: text volume damped by link density, so navigation
-/// clusters (lots of text, nearly all of it inside `<a>`) score near zero.
-fn content_score(el: &ElementRef) -> f64 {
-    let text = text_len(el) as f64;
-    if text == 0.0 {
-        return 0.0;
-    }
-    let link_text: usize = el.select(&SEL_ANCHOR).map(|a| text_len(&a)).sum();
-    let link_density = (link_text as f64 / text).min(1.0);
-    text * (1.0 - link_density)
-}
-
 /// Picks the content root(s) after noise removal:
 /// 1. every `<main>` with text, else
 /// 2. every `<article>` with text (ALL of them — a blog index or forum thread
@@ -277,17 +279,105 @@ fn select_content_roots(doc: &Html) -> Vec<String> {
     let Some(body) = doc.select(&SEL_BODY).next() else {
         return vec![doc.root_element().inner_html()];
     };
-    let body_text = text_len(&body);
+
+    // One bottom-up pass for every node's text and link-text totals.
+    //
+    // Scoring each candidate independently re-walked its whole subtree, and on
+    // nested div-soup every candidate contains all the others' text — so the
+    // work multiplied out. A 35 KB page of 3000 nested divs took 4.3 seconds;
+    // this pass makes it instant, and it is trivially craftable input.
+    let sizes = accumulate_text_sizes(&body);
+    let size_of = |el: &ElementRef| sizes.get(&el.id()).copied().unwrap_or((0, 0));
+    let body_text = size_of(&body).0;
 
     let best = body
         .select(&SEL_CANDIDATE)
-        .filter(|el| text_len(el) >= 100)
-        .max_by(|a, b| content_score(a).total_cmp(&content_score(b)));
+        .map(|el| (score_from(size_of(&el)), el))
+        .filter(|(_, el)| size_of(el).0 >= 100)
+        .max_by(|(a, _), (b, _)| a.total_cmp(b))
+        .map(|(_, el)| el);
 
     match best {
-        Some(el) if text_len(&el) * 10 >= body_text * 6 => vec![el.inner_html()],
+        Some(el) if size_of(&el).0 * 10 >= body_text * 6 => vec![el.inner_html()],
         _ => vec![body.inner_html()],
     }
+}
+
+/// Deepest nesting we will convert. Chosen far above any real document (typical
+/// pages nest a few dozen levels) and far below where the HTML dependencies
+/// become pathologically slow.
+const MAX_DOM_DEPTH: usize = 1_000;
+
+/// `Some(depth)` when the document nests deeper than `limit`, else `None`.
+/// Single pre-order pass: a parent always precedes its children, so each node's
+/// depth is its parent's plus one.
+fn max_depth_exceeding(doc: &Html, limit: usize) -> Option<usize> {
+    let mut depths: std::collections::HashMap<ego_tree::NodeId, usize> =
+        std::collections::HashMap::new();
+    for node in doc.root_element().descendants() {
+        let depth = node
+            .parent()
+            .and_then(|p| depths.get(&p.id()).copied())
+            .map(|d| d + 1)
+            .unwrap_or(0);
+        if depth > limit {
+            return Some(depth);
+        }
+        depths.insert(node.id(), depth);
+    }
+    None
+}
+
+/// `(text_len, link_text_len)` for every node under `root`, in a single O(nodes)
+/// pass.
+///
+/// `descendants()` yields pre-order, so walking it in reverse visits every
+/// child before its parent — each node adds its finished totals to its parent
+/// exactly once.
+fn accumulate_text_sizes(
+    root: &ElementRef,
+) -> std::collections::HashMap<ego_tree::NodeId, (usize, usize)> {
+    let mut sizes: std::collections::HashMap<ego_tree::NodeId, (usize, usize)> =
+        std::collections::HashMap::new();
+    let nodes: Vec<_> = root.descendants().collect();
+
+    for node in nodes.into_iter().rev() {
+        let id = node.id();
+        let own_text: usize = node
+            .value()
+            .as_text()
+            .map(|t| t.split_whitespace().map(str::len).sum())
+            .unwrap_or(0);
+
+        let entry = sizes.entry(id).or_insert((0, 0));
+        entry.0 += own_text;
+        let (text, link) = *entry;
+
+        // An `<a>` contributes all of its text as link text to its ancestors.
+        let is_anchor = node
+            .value()
+            .as_element()
+            .is_some_and(|e| e.name().eq_ignore_ascii_case("a"));
+        let link = if is_anchor { text } else { link };
+        sizes.insert(id, (text, link));
+
+        if let Some(parent) = node.parent() {
+            let p = sizes.entry(parent.id()).or_insert((0, 0));
+            p.0 += text;
+            p.1 += link;
+        }
+    }
+    sizes
+}
+
+/// Readability-style score from precomputed sizes: text volume damped by link
+/// density, so navigation clusters score near zero.
+fn score_from((text, link): (usize, usize)) -> f64 {
+    if text == 0 {
+        return 0.0;
+    }
+    let density = (link as f64 / text as f64).min(1.0);
+    text as f64 * (1.0 - density)
 }
 
 /// html2md conversion hardened against panics: its handlers unwrap on some
@@ -549,6 +639,34 @@ mod regression_tests {
         assert!(
             out.contains("[c](https://example.com/docs/d)"),
             "got: {out}"
+        );
+    }
+
+    /// Pathologically nested markup is refused rather than converted: the HTML
+    /// dependencies cost more than linearly in depth, so a hostile page could
+    /// otherwise pin a CPU for a very long time.
+    #[test]
+    fn absurdly_nested_html_is_refused() {
+        let deep = format!(
+            "<html><body>{}<p>text</p>{}</body></html>",
+            "<div>".repeat(2_000),
+            "</div>".repeat(2_000)
+        );
+        let err = HtmlGobbler::default()
+            .gobble_str(&deep, &ParseOptions::default())
+            .unwrap_err();
+        assert!(err.to_string().contains("nests more than"), "got: {err}");
+
+        // Ordinary nesting is unaffected.
+        let normal = format!(
+            "<html><body>{}<p>Plenty of real article text right here.</p>{}</body></html>",
+            "<div>".repeat(40),
+            "</div>".repeat(40)
+        );
+        assert!(
+            HtmlGobbler::default()
+                .gobble_str(&normal, &ParseOptions::default())
+                .is_ok()
         );
     }
 

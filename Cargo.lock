@@ -1654,6 +1654,7 @@ dependencies = [
  "csv",
  "dashmap 6.1.0",
  "docx-rs",
+ "ego-tree",
  "encoding_rs",
  "flate2",
  "git2",

@@ -3,6 +3,27 @@ use anyhow::Result;
 use colored::Colorize;
 use url::Url;
 
+/// Renders one document as an output block: the tree map bare, everything else
+/// behind a `FILE_START` breadcrumb.
+///
+/// This framing is the shape every downstream consumer parses, and it had grown
+/// five separate implementations across this file and `lib.rs` — differing in
+/// trailing newlines and in whether they carried the relevance score. Any change
+/// to the format had to be made in all five, and a miss would have gone
+/// unnoticed until someone diffed two output modes.
+pub(crate) fn render_block(doc: &GobbleDocument) -> String {
+    if doc.path == "_tree.md" {
+        return doc.content.clone();
+    }
+    match doc.relevance_score {
+        Some(score) => format!(
+            "// --- FILE_START: {} --- (relevance: {:.2})\n{}\n\n",
+            doc.path, score, doc.content
+        ),
+        None => format!("// --- FILE_START: {} ---\n{}\n\n", doc.path, doc.content),
+    }
+}
+
 /// The format label for a document in the `--json` contract: the format detected
 /// at extraction time, or a magic/extension re-detection as a fallback.
 fn format_label(doc: &GobbleDocument) -> String {
@@ -428,16 +449,10 @@ pub fn format_and_output(
                 }
 
                 // Append current file to the chunk
-                if doc.path == "_tree.md" {
-                    current_combined.push_str(&doc.content);
-                } else {
-                    if i == 0 {
-                        current_combined.push_str(&preamble);
-                    }
-                    current_combined.push_str(&format!("// --- FILE_START: {} ---\n", doc.path));
-                    current_combined.push_str(&doc.content);
-                    current_combined.push_str("\n\n");
+                if doc.path != "_tree.md" && i == 0 {
+                    current_combined.push_str(&preamble);
                 }
+                current_combined.push_str(&render_block(&doc));
                 current_tokens += file_tokens;
 
                 // If it's the last file, flush the remaining chunk
@@ -531,20 +546,7 @@ pub fn format_and_output(
         combined.push_str(&preamble);
 
         for doc in compressed_docs {
-            if doc.path == "_tree.md" {
-                combined.push_str(&doc.content);
-            } else {
-                if let Some(score) = doc.relevance_score {
-                    combined.push_str(&format!(
-                        "// --- FILE_START: {} --- (relevance: {:.2})\n",
-                        doc.path, score
-                    ));
-                } else {
-                    combined.push_str(&format!("// --- FILE_START: {} ---\n", doc.path));
-                }
-                combined.push_str(&doc.content);
-                combined.push_str("\n\n");
-            }
+            combined.push_str(&render_block(&doc));
         }
 
         let output = format!("{}\n", combined.trim());
@@ -775,42 +777,10 @@ pub fn stream_and_output(
                     chunk_tokens = file_tokens; // this file opens the next chunk
                 }
 
-                if doc.path == "_tree.md" {
-                    current_combined.push_str(&doc.content);
-                } else {
-                    current_combined.push_str(&format!(
-                        "// --- FILE_START: {} ---
-",
-                        doc.path
-                    ));
-                    current_combined.push_str(&doc.content);
-                    current_combined.push_str(
-                        "
-
-",
-                    );
-                }
-            } else {
+                current_combined.push_str(&render_block(&doc));
+            } else if let Some(writer) = &mut stream_writer {
                 // Streaming immediately
-                let mut block = String::new();
-                if doc.path == "_tree.md" {
-                    block.push_str(&doc.content);
-                } else {
-                    block.push_str(&format!(
-                        "// --- FILE_START: {} ---
-",
-                        doc.path
-                    ));
-                    block.push_str(&doc.content);
-                    block.push_str(
-                        "
-
-",
-                    );
-                }
-                if let Some(writer) = &mut stream_writer {
-                    write!(writer, "{}", block)?;
-                }
+                write!(writer, "{}", render_block(&doc))?;
             }
         }
 

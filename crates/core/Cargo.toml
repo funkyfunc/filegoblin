@@ -34,6 +34,9 @@ clap = { version = "4.5.60", features = ["derive", "env"] }
 colored = "3.1.1"
 csv = "1.4.0"
 dashmap = "6.1.0"
+# Already in the tree via scraper, whose public API hands out its node types;
+# named directly so the HTML extractor can key its one-pass scoring by NodeId.
+ego-tree = "0.10.0"
 docx-rs = "0.4.19"
 git2 = "0.20.4"
 globset = "0.4.18"

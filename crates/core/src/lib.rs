@@ -188,15 +188,10 @@ pub fn gobble_to_string(targets: &[String], args: &crate::cli::Cli) -> Result<St
     let single = content.len() == 1;
     let mut out = String::new();
     for doc in content {
-        if doc.path == "_tree.md" {
-            out.push_str(&doc.content);
-        } else if single {
+        if single && doc.path != "_tree.md" {
             out.push_str(doc.content.trim());
         } else {
-            out.push_str(&format!(
-                "// --- FILE_START: {} ---\n{}\n\n",
-                doc.path, doc.content
-            ));
+            out.push_str(&crate::formatters::render_block(doc));
         }
     }
 
