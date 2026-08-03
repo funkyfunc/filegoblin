@@ -63,8 +63,11 @@ impl GoblinCrawler {
         robots_url.set_path("/robots.txt");
         robots_url.set_query(None);
 
+        // A robots.txt is a small text file; cap it so a hostile endpoint
+        // cannot stream gigabytes into memory before the crawl even starts.
+        const MAX_ROBOTS_BYTES: u64 = 512 * 1024;
         if let Ok(resp) = client.get(robots_url).send().await
-            && let Ok(bytes) = resp.bytes().await
+            && let Ok(bytes) = crate::net::read_body_capped(resp, MAX_ROBOTS_BYTES).await
         {
             return Some(robotxt::Robots::from_bytes(&bytes, "filegoblin"));
         }
@@ -134,7 +137,11 @@ impl GoblinCrawler {
                         let permit = active_tasks.acquire_owned().await.unwrap();
 
                         let display_url = current_url.to_string();
-                        let output_chunk = match client.get(current_url.clone()).send().await {
+                        // Every hop is guarded, not just the seed: a crawl can
+                        // follow a link to any host-shaped target.
+                        let guarded = crate::net::guard_url(&current_url);
+                        let output_chunk = match guarded.map(|_| client.get(current_url.clone()).send()) {
+                            Ok(pending) => match pending.await {
                             Ok(resp) => {
                                 let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE)
                                     .and_then(|v| v.to_str().ok())
@@ -147,7 +154,12 @@ impl GoblinCrawler {
                                 if too_large {
                                     "".to_string()
                                 } else if content_type.starts_with("text/html") || content_type.starts_with("text/plain") {
-                                    if let Ok(html) = resp.text().await {
+                                    // Capped read: `content_length()` is None
+                                    // for chunked responses, so the check above
+                                    // is not on its own a bound.
+                                    if let Ok(html) = crate::net::read_body_capped(resp, crate::net::MAX_RESPONSE_BYTES)
+                                        .await
+                                        .map(|b| String::from_utf8_lossy(&b).into_owned()) {
                                         // Run the HTML→markdown engine on this page
                                         let gobbler = HtmlGobbler {
                                             extract_full,
@@ -196,6 +208,8 @@ impl GoblinCrawler {
                                 } else {
                                     "".to_string() // Skip non-text content (images, PDFs, binaries, etc)
                                 }
+                            },
+                            Err(_) => "".to_string()
                             },
                             Err(_) => "".to_string()
                         };

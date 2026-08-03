@@ -51,15 +51,23 @@ fn normalize_pattern(pattern: &str) -> String {
     }
 }
 
-/// Builds a `GlobSet` from user patterns; unparseable patterns are skipped.
-pub fn build_globset(patterns: &[String]) -> GlobSet {
+/// Builds a `GlobSet` from user patterns.
+///
+/// An unparseable pattern is an error, not a skip: silently dropping `--include
+/// "[bad"` left an empty set that matched nothing, so the run ended in a
+/// confusing "nothing extracted" with no hint the pattern was at fault.
+pub fn build_globset(patterns: &[String]) -> anyhow::Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for p in patterns {
-        if let Ok(glob) = Glob::new(&normalize_pattern(p)) {
-            builder.add(glob);
-        }
+        let normalized = normalize_pattern(p);
+        let glob = Glob::new(&normalized).map_err(|e| {
+            anyhow::anyhow!("Invalid pattern `{}` (as glob `{}`): {}", p, normalized, e)
+        })?;
+        builder.add(glob);
     }
-    builder.build().unwrap_or_else(|_| GlobSet::empty())
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("Could not build the pattern set: {}", e))
 }
 
 /// Returns true if the file name (or its full path, for `/`-bearing patterns)
@@ -75,9 +83,9 @@ pub fn apply_glob_filters(
     include: &[String],
     exclude: &[String],
     quiet: bool,
-) {
+) -> anyhow::Result<()> {
     if !include.is_empty() {
-        let set = build_globset(include);
+        let set = build_globset(include)?;
         let before = files.len();
         files.retain(|p| matches_globset(&set, p));
         if !quiet {
@@ -95,7 +103,7 @@ pub fn apply_glob_filters(
     }
 
     if !exclude.is_empty() {
-        let set = build_globset(exclude);
+        let set = build_globset(exclude)?;
         let before = files.len();
         files.retain(|p| !matches_globset(&set, p));
         if !quiet {
@@ -110,6 +118,7 @@ pub fn apply_glob_filters(
             );
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -118,7 +127,7 @@ mod tests {
 
     #[test]
     fn glob_patterns_match_expected() {
-        let set = build_globset(&["*.rs".to_string(), ".toml".to_string()]);
+        let set = build_globset(&["*.rs".to_string(), ".toml".to_string()]).unwrap();
         assert!(matches_globset(&set, Path::new("src/main.rs")));
         assert!(matches_globset(&set, Path::new("Cargo.toml")));
         assert!(!matches_globset(&set, Path::new("readme.md")));
@@ -126,8 +135,17 @@ mod tests {
 
     #[test]
     fn bare_word_is_substring() {
-        let set = build_globset(&["test".to_string()]);
+        let set = build_globset(&["test".to_string()]).unwrap();
         assert!(matches_globset(&set, Path::new("my_test_file.rs")));
         assert!(!matches_globset(&set, Path::new("main.rs")));
+    }
+
+    /// Regression: an unparseable pattern used to be skipped, leaving an empty
+    /// set that matched nothing — the user saw "nothing extracted" with no clue
+    /// their pattern was at fault.
+    #[test]
+    fn invalid_pattern_is_an_error_not_an_empty_set() {
+        let err = build_globset(&["[unclosed".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("[unclosed"), "got: {err}");
     }
 }

@@ -12,17 +12,36 @@ use serde_json::{Value, json};
 /// Protocol revisions we can speak, newest first. If the client requests one of
 /// these we echo it; otherwise we answer with our newest and let the client
 /// decide (per spec, it disconnects only if it can't accept that).
-const SUPPORTED_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/// `2025-03-26` is deliberately absent: that revision made JSON-RPC batching
+/// mandatory, and we reject batches. Advertising it would promise something we
+/// do not implement.
+const SUPPORTED_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2024-11-05"];
+
+/// Ceiling on a single tool result. Conversions land straight in a model's
+/// context window, and `convert` on a large repository can otherwise return
+/// tens of megabytes.
+const MAX_TOOL_RESULT_BYTES: usize = 1024 * 1024;
 
 /// Runs the server until stdin closes. A broken stdout pipe (client died) is a
 /// clean exit, not an error.
 pub fn serve() -> Result<()> {
     use std::io::{BufRead, Write};
     let stdin = std::io::stdin();
+    let mut stdin = stdin.lock();
     let mut stdout = std::io::stdout();
 
-    for line in stdin.lock().lines() {
-        let line = line?;
+    // Read raw bytes, not `lines()`: one invalid UTF-8 byte from a buggy client
+    // used to end the whole session with "stream did not contain valid UTF-8".
+    // A bad line deserves -32700, not a dead transport.
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        match stdin.read_until(b'\n', &mut buf) {
+            Ok(0) => return Ok(()), // EOF
+            Ok(_) => {}
+            Err(e) => return Err(e.into()),
+        }
+        let line = String::from_utf8_lossy(&buf);
         if line.trim().is_empty() {
             continue;
         }
@@ -36,7 +55,6 @@ pub fn serve() -> Result<()> {
             }
         }
     }
-    Ok(())
 }
 
 /// Dispatches one wire line. `None` means no reply (notifications, or replies
@@ -51,7 +69,11 @@ fn handle_line(line: &str) -> Option<Value> {
         return Some(rpc_error(&Value::Null, -32600, "Batching is not supported"));
     }
 
-    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    // No `method` means this is a *response* (a peer answering us), not a
+    // request. We never send requests, so this should not arrive — but
+    // answering it with -32601 would be us replying to a reply, which the spec
+    // forbids outright.
+    let method = msg.get("method").and_then(Value::as_str)?;
     let id = msg.get("id").cloned();
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
@@ -134,7 +156,7 @@ fn handle_tools_call(id: &Value, params: &Value) -> Value {
     match convert_source(source) {
         Ok(markdown) => rpc_result(
             id,
-            json!({ "content": [{ "type": "text", "text": markdown }], "isError": false }),
+            json!({ "content": [{ "type": "text", "text": truncate_result(markdown) }], "isError": false }),
         ),
         Err(e) => rpc_result(
             id,
@@ -143,11 +165,55 @@ fn handle_tools_call(id: &Value, params: &Value) -> Value {
     }
 }
 
+/// Bounds a tool result, marking the cut so the model knows it is partial.
+fn truncate_result(mut markdown: String) -> String {
+    if markdown.len() <= MAX_TOOL_RESULT_BYTES {
+        return markdown;
+    }
+    let cut = crate::parsers::str_prefix(&markdown, MAX_TOOL_RESULT_BYTES).len();
+    markdown.truncate(cut);
+    markdown.push_str(&format!(
+        "\n\n> [Output truncated at {} MiB. Convert a narrower target, or run the \
+         filegoblin CLI directly with --split to get the whole thing.]",
+        MAX_TOOL_RESULT_BYTES / (1024 * 1024)
+    ));
+    markdown
+}
+
+/// Rejects sources that must never reach the argument parser.
+///
+/// `source` is model-supplied. Splicing it in as bare argv let a value of
+/// `--help` print clap's help text to **stdout** — corrupting the JSON-RPC
+/// stream — and then `exit(0)` mid-request, and a value of `-` made the server
+/// read its own protocol stdin to EOF and deadlock.
+fn validate_source(source: &str) -> Result<()> {
+    if source.trim().is_empty() {
+        anyhow::bail!("`source` is empty");
+    }
+    if source == "-" {
+        anyhow::bail!("`-` (stdin) is not a valid source for the MCP server");
+    }
+    if source.starts_with('-') {
+        anyhow::bail!(
+            "`source` must be a file path, directory, or http(s) URL — got something that \
+             looks like a flag: {source}"
+        );
+    }
+    if source.contains('\0') {
+        anyhow::bail!("`source` contains a NUL byte");
+    }
+    Ok(())
+}
+
 /// Runs one conversion with quiet defaults. Directories get horde mode; URLs
 /// never do (an unbounded crawl inside a tool call would run forever).
 fn convert_source(source: &str) -> Result<String> {
     use clap::Parser;
-    let mut args = crate::cli::Cli::parse_from(["filegoblin", "--quiet", source]);
+    validate_source(source)?;
+    // `--` so a source is always positional, and `try_parse_from` so a parse
+    // failure is a returned error rather than clap calling `exit()` on us.
+    let mut args = crate::cli::Cli::try_parse_from(["filegoblin", "--quiet", "--", source])
+        .map_err(|e| anyhow::anyhow!("Could not accept that source: {}", e.kind()))?;
     if std::path::Path::new(source).is_dir() {
         args.horde = true;
     }
@@ -209,5 +275,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    /// Regression: a `source` starting with `-` was spliced into argv, so
+    /// `--help` printed to stdout (corrupting the protocol stream) and exited
+    /// the process, and `-` made the server eat its own stdin.
+    #[test]
+    fn flag_like_sources_are_refused_in_band() {
+        for source in ["--help", "--version", "-x", "-", ""] {
+            let line = json!({
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": { "name": "convert", "arguments": { "source": source } }
+            })
+            .to_string();
+            let resp = handle_line(&line).expect("must answer, not exit");
+            assert_eq!(resp["id"], 9, "source {source:?}");
+            assert_eq!(
+                resp["result"]["isError"], true,
+                "source {source:?} must be an in-band tool error, got: {resp}"
+            );
+        }
+    }
+
+    /// A peer's *response* (no `method`) must never be answered.
+    #[test]
+    fn responses_are_never_answered() {
+        assert!(handle_line(r#"{"jsonrpc":"2.0","id":6,"result":{"ok":true}}"#).is_none());
+        assert!(
+            handle_line(r#"{"jsonrpc":"2.0","id":6,"error":{"code":-1,"message":"x"}}"#).is_none()
+        );
+    }
+
+    /// We must not advertise a revision whose semantics we do not implement.
+    #[test]
+    fn batching_revision_is_not_advertised() {
+        assert!(
+            !SUPPORTED_VERSIONS.contains(&"2025-03-26"),
+            "2025-03-26 made batching mandatory and we reject batches"
+        );
+    }
+
+    #[test]
+    fn oversized_results_are_truncated_with_a_marker() {
+        let big = "x".repeat(MAX_TOOL_RESULT_BYTES + 5000);
+        let out = truncate_result(big);
+        assert!(out.len() < MAX_TOOL_RESULT_BYTES + 500);
+        assert!(
+            out.contains("Output truncated"),
+            "got tail: {}",
+            &out[out.len() - 200..]
+        );
     }
 }

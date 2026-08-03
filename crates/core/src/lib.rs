@@ -125,9 +125,16 @@ pub fn gobble_app(targets: &[String], args: &crate::cli::Cli) -> Result<GobbleOu
 
 /// Runs the full ingest pipeline for the given targets and returns the combined
 /// markdown as a String instead of writing to stdout. Used by the MCP server
-/// (whose stdout carries only protocol messages). Failed extractions are
-/// dropped; if nothing at all was extracted the first error (or a generic
-/// message) is returned so a no-op can't look like success.
+/// (whose stdout carries only protocol messages).
+///
+/// Runs the **same** curation → privacy → compression stages as [`gobble_app`].
+/// It previously took `&Cli` and honoured none of them, so `--scrub` over MCP
+/// returned unredacted PII with no error — the one path where the caller is a
+/// model rather than a human who might notice.
+///
+/// If nothing at all was extracted the first error (or a generic message) is
+/// returned so a no-op can't look like success; partial failures are appended
+/// as a visible note rather than dropped.
 pub fn gobble_to_string(targets: &[String], args: &crate::cli::Cli) -> Result<String> {
     if targets.is_empty() {
         anyhow::bail!("No targets to gobble");
@@ -142,19 +149,41 @@ pub fn gobble_to_string(targets: &[String], args: &crate::cli::Cli) -> Result<St
         .join()
         .map_err(|_| anyhow::anyhow!("The ingestion thread panicked"))??;
 
-    let content: Vec<&crate::pipeline::GobbleDocument> = docs
+    // Record failures before the stages run so they can be reported in-band.
+    let failures: Vec<String> = docs
         .iter()
-        .filter(|d| d.error.is_none() && !d.content.trim().is_empty())
+        .filter_map(|d| d.error.as_ref().map(|e| format!("{}: {}", d.path, e)))
         .collect();
-    if content.iter().all(|d| d.path == "_tree.md") {
+
+    let has_content = docs
+        .iter()
+        .any(|d| d.error.is_none() && !d.content.trim().is_empty() && d.path != "_tree.md");
+    if !has_content {
         if let Some(err) = docs.iter().find_map(|d| d.error.as_deref()) {
             anyhow::bail!("{}", err);
         }
         anyhow::bail!("Nothing could be extracted from {}", targets.join(", "));
     }
 
-    // Same block format as the stdout paths: bare content for a single
-    // document, FILE_START breadcrumbs (tree map first) for bundles.
+    let shield = if args.scrub {
+        Some(build_shield(args)?)
+    } else {
+        None
+    };
+    let pruned = crate::pipeline::stages::run_curation_stage(docs, args, targets.len())?;
+    let scrubbed = crate::pipeline::stages::run_privacy_stage(pruned, args, shield.as_ref())?;
+    let (processed, _pre_compression_tokens) =
+        crate::pipeline::stages::run_compression_stage(scrubbed, args)?;
+
+    let content: Vec<&crate::pipeline::GobbleDocument> = processed
+        .iter()
+        .filter(|d| d.error.is_none() && !d.content.trim().is_empty())
+        .collect();
+
+    // Bare content for a single document, FILE_START breadcrumbs (tree map
+    // first) for bundles. Note this deliberately differs from the stdout paths,
+    // which always emit the breadcrumb: a lone file handed to a model reads
+    // better without one.
     let single = content.len() == 1;
     let mut out = String::new();
     for doc in content {
@@ -169,6 +198,17 @@ pub fn gobble_to_string(targets: &[String], args: &crate::cli::Cli) -> Result<St
             ));
         }
     }
+
+    // A partial success that looks total is the failure mode this whole
+    // codebase is built to avoid; the model gets told what it did not receive.
+    if !failures.is_empty() {
+        out.push_str(&format!(
+            "\n\n> [{} item(s) failed to convert and are missing from this output: {}]",
+            failures.len(),
+            failures.join("; ")
+        ));
+    }
+
     Ok(out.trim().to_string())
 }
 
@@ -302,7 +342,7 @@ pub fn gobble_local(
         &args.include,
         &args.exclude,
         args.quiet,
-    );
+    )?;
 
     // 3. Apply --git-diff (restrict to changed files vs a ref).
     if let Some(ref git_ref) = args.git_diff {
@@ -331,7 +371,16 @@ pub fn gobble_local(
                     );
                 }
             }
-            Err(e) => eprintln!("{} {}", "⚠️".yellow(), e),
+            // Fatal, not a warning: leaving `files_to_process` unfiltered meant
+            // a typo'd ref quietly ingested the *entire repository* — straight
+            // to the clipboard with --copy, or into an LLM. The user asked for
+            // a diff; giving them everything is the opposite of the request.
+            Err(e) => anyhow::bail!(
+                "Could not resolve --git-diff ref `{}`: {}. Refusing to fall back to the \
+                 whole repository.",
+                git_ref,
+                e
+            ),
         }
     }
 
@@ -584,6 +633,10 @@ impl FetchedBody {
 fn fetch_url(url: &Url, quiet: bool) -> Result<FetchedBody> {
     use std::io::Read;
 
+    // Before anything else, including the cache: a blocked target must not be
+    // reachable by seeding the cache either.
+    crate::net::guard_url(url)?;
+
     if let Some(cached) = crate::cache::get_url(url.as_str())
         && let Some(body) = FetchedBody::from_cache_bytes(&cached)
     {
@@ -712,8 +765,17 @@ mod tests {
             }
         });
 
+        // The SSRF guard refuses loopback by default; this test *is* the
+        // legitimate local-service case the opt-in exists for.
+        let _lock = crate::net::LOCAL_URL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::net::set_allow_local_urls(true);
+
         let parsed_url = Url::parse(&url_str).unwrap();
-        let body = fetch_url(&parsed_url, true).unwrap();
+        let body = fetch_url(&parsed_url, true);
+        crate::net::set_allow_local_urls(false);
+        let body = body.unwrap();
         assert!(body.looks_like_html());
         let html_content = body.decode_text();
         assert!(html_content.contains("Goblin network testing!"));

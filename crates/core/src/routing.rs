@@ -83,8 +83,16 @@ fn route_url_target(
                         let _ = tx.send(crate::pipeline::GobbleDocument::new(p, c));
                     }
                 }
+                // In-band, not just stderr: a failure that produces no document
+                // at all is invisible to --json and leaves exit 0 when other
+                // targets succeeded.
                 Err(e) => {
-                    eprintln!("{} Horde crawl failed for {}: {}", "⚠️".yellow(), url, e)
+                    eprintln!("{} Horde crawl failed for {}: {}", "⚠️".yellow(), url, e);
+                    let _ = tx.send(crate::pipeline::GobbleDocument::failed(
+                        target.to_string(),
+                        "web",
+                        e.to_string(),
+                    ));
                 }
             }
         }
@@ -106,6 +114,11 @@ fn route_url_target(
             let temp_dir = tempfile::tempdir()?;
             if let Err(e) = crate::parsers::github::clone_github_repo(target, temp_dir.path()) {
                 eprintln!("{} Failed to clone GitHub repo: {}", "⚠️".yellow(), e);
+                let _ = tx.send(crate::pipeline::GobbleDocument::failed(
+                    target.to_string(),
+                    "repo",
+                    e.to_string(),
+                ));
                 return Ok(());
             }
             let mut repo_args = args.clone();
@@ -118,6 +131,11 @@ fn route_url_target(
                 }
                 Err(e) => {
                     eprintln!("{} Failed to process cloned repo: {}", "⚠️".yellow(), e);
+                    let _ = tx.send(crate::pipeline::GobbleDocument::failed(
+                        target.to_string(),
+                        "repo",
+                        e.to_string(),
+                    ));
                 }
             }
         }
@@ -133,7 +151,12 @@ fn route_url_target(
             match crate::fetch_url(url, args.quiet) {
                 Ok(body) => route_fetched_body(body, url, target, args, tx),
                 Err(e) => {
-                    eprintln!("{} Failed to fetch URL {}: {}", "⚠️".yellow(), url, e)
+                    eprintln!("{} Failed to fetch URL {}: {}", "⚠️".yellow(), url, e);
+                    let _ = tx.send(crate::pipeline::GobbleDocument::failed(
+                        target.to_string(),
+                        "web",
+                        format!("{:#}", e),
+                    ));
                 }
             }
         }
@@ -159,7 +182,30 @@ fn is_github_repo_url(url: &Url) -> bool {
         .path_segments()
         .map(|s| s.filter(|p| !p.is_empty()).collect())
         .unwrap_or_default();
-    segments.len() >= 2
+    // Exactly `owner/repo`, or `owner/repo/tree/<ref>`. A bare `len() >= 2`
+    // also matched `/owner/repo/blob/main/file.rs`, `/owner/repo/issues/123`
+    // and `/orgs/foo/repositories`, so asking for one file cloned the whole
+    // repository (or attempted a clone that failed and returned Ok).
+    match segments.as_slice() {
+        // Reserved first segments are github's own routes, never an owner.
+        [owner, _repo] | [owner, _repo, "tree", ..] => !matches!(
+            *owner,
+            "orgs"
+                | "settings"
+                | "notifications"
+                | "sponsors"
+                | "collections"
+                | "topics"
+                | "features"
+                | "apps"
+                | "marketplace"
+                | "explore"
+                | "search"
+                | "login"
+                | "join"
+        ),
+        _ => false,
+    }
 }
 
 /// Routes a fetched URL body by what it actually is, not by assuming HTML:
@@ -265,6 +311,32 @@ fn route_fetched_body(
             }
         }
 
+        // Subtitles fetched over HTTP get the same transcript rendering as a
+        // local .srt/.vtt — otherwise the identical file emitted clean prose
+        // from disk and raw timestamps from a URL.
+        let declared_subtitle = body.media_type.as_deref().is_some_and(|mt| {
+            mt.contains("vtt") || mt.contains("subrip") || mt.contains("x-subtitle")
+        });
+        if declared_subtitle || crate::parsers::subtitle::looks_like_subtitles(&text) {
+            match crate::parsers::subtitle::SubtitleGobbler
+                .gobble_str(&text, &crate::parsers::gobble::ParseOptions::from(args))
+            {
+                Ok(md) => {
+                    let _ = tx.send(crate::pipeline::GobbleDocument::extracted(
+                        target.to_string(),
+                        md,
+                        "subtitle",
+                        None,
+                    ));
+                    return;
+                }
+                Err(e) if declared_subtitle => {
+                    eprintln!("{} Subtitle parse failed for {}: {}", "⚠️".yellow(), url, e);
+                }
+                Err(_) => {}
+            }
+        }
+
         let label = match body.media_type.as_deref() {
             Some("text/markdown") | Some("application/markdown") => "markdown",
             Some("application/json") => "json",
@@ -315,6 +387,31 @@ fn route_fetched_body(
         }
     };
 
+    // An archive fetched over HTTP goes through the same interception as a
+    // local one. Without this, `filegoblin https://x/archive.zip` failed with
+    // "point filegoblin at it directly to extract it" — which is exactly what
+    // the user had done.
+    let staged_path = staged.path();
+    let header = crate::format::read_header(staged_path, 512);
+    if crate::format::detect(staged_path, &header) == crate::format::Format::Archive {
+        match crate::parsers::archive::ArchiveGobbler.extract_archive(staged_path, args) {
+            Ok(docs) => {
+                for doc in docs {
+                    let _ = tx.send(doc);
+                }
+            }
+            Err(e) => {
+                eprintln!("{} Failed to extract {}: {}", "⚠️".yellow(), url, e);
+                let _ = tx.send(crate::pipeline::GobbleDocument::failed(
+                    target.to_string(),
+                    "archive",
+                    format!("{:#}", e),
+                ));
+            }
+        }
+        return;
+    }
+
     let (format, result) = crate::route_and_gobble(&staged.path().to_string_lossy(), args);
     let doc = match result {
         Ok(content) => crate::pipeline::GobbleDocument::extracted(
@@ -349,6 +446,47 @@ fn route_local_target(
                 let _ = tx.send(doc);
             }
         }
-        Err(e) => eprintln!("{} Failed to sniff path {}: {}", "⚠️".yellow(), target, e),
+        Err(e) => {
+            eprintln!("{} Failed to sniff path {}: {}", "⚠️".yellow(), target, e);
+            let _ = tx.send(crate::pipeline::GobbleDocument::failed(
+                target.to_string(),
+                "unknown",
+                format!("{:#}", e),
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod github_url_tests {
+    use super::is_github_repo_url;
+    use url::Url;
+
+    #[test]
+    fn only_repository_roots_trigger_a_clone() {
+        let clones = [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo/",
+            "https://github.com/owner/repo/tree/main",
+        ];
+        for u in clones {
+            assert!(is_github_repo_url(&Url::parse(u).unwrap()), "{u}");
+        }
+
+        // Regression: these all cloned the entire repository, when the user
+        // pointed at one file, one issue, or an org listing.
+        let fetches = [
+            "https://github.com/owner/repo/blob/main/src/lib.rs",
+            "https://github.com/owner/repo/issues/123",
+            "https://github.com/owner/repo/pull/7",
+            "https://github.com/owner/repo/releases",
+            "https://github.com/orgs/foo/repositories",
+            "https://github.com/",
+            "https://github.com/owner",
+            "https://raw.githubusercontent.com/o/r/main/README.md",
+        ];
+        for u in fetches {
+            assert!(!is_github_repo_url(&Url::parse(u).unwrap()), "{u}");
+        }
     }
 }
