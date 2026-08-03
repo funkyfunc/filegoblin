@@ -19,7 +19,7 @@ impl Gobble for EmailGobbler {
             .unwrap_or(false);
 
         if is_mbox {
-            return Ok(parse_mbox(&bytes));
+            return parse_mbox(&bytes);
         }
 
         let message = MessageParser::default()
@@ -140,7 +140,7 @@ fn strip_html(html: &str) -> String {
 
 /// Splits an mbox into individual RFC822 messages (each starts with a `From `
 /// envelope line) and renders them in order.
-fn parse_mbox(bytes: &[u8]) -> String {
+fn parse_mbox(bytes: &[u8]) -> Result<String> {
     let text = String::from_utf8_lossy(bytes);
     let mut out = String::new();
     let mut count = 0;
@@ -163,10 +163,11 @@ fn parse_mbox(bytes: &[u8]) -> String {
         append_mbox_message(&mut out, &current, &mut count);
     }
 
+    // An error, not a sentence dressed as document content.
     if count == 0 {
-        return "No messages could be extracted from this mbox.".to_string();
+        anyhow::bail!("No messages could be extracted from this mbox (is it really an mbox?)");
     }
-    out
+    Ok(out)
 }
 
 /// True for an mbox envelope line: `From <sender> <date>`, where the sender
@@ -246,7 +247,7 @@ It begins here.\r\n\
 From the beginning, we knew it would work.\r\n\
 \r\n\
 The end.\r\n";
-        let out = parse_mbox(mbox.as_bytes());
+        let out = parse_mbox(mbox.as_bytes()).unwrap();
         assert_eq!(
             out.matches("# Email:").count(),
             1,
@@ -268,7 +269,7 @@ From: bob@example.com\r\n\
 Subject: Two\r\n\
 \r\n\
 Second body.\r\n";
-        let out = parse_mbox(mbox.as_bytes());
+        let out = parse_mbox(mbox.as_bytes()).unwrap();
         assert_eq!(out.matches("# Email:").count(), 2, "{out}");
     }
 }

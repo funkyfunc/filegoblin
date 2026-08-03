@@ -18,8 +18,19 @@ pub fn walk_tree(target: &str, max_depth: Option<usize>) -> (String, Vec<PathBuf
 
     let mut tree_out = String::from("```tree\n.");
     let mut files = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
 
-    for entry in walk_builder.build().flatten() {
+    for result in walk_builder.build() {
+        // `.flatten()` silently dropped these, so a permission-denied subtree
+        // vanished from both the tree and the file list with no indication that
+        // anything was missing.
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(e) => {
+                skipped.push(e.to_string());
+                continue;
+            }
+        };
         let path = entry.path();
         let depth = entry.depth();
         let prefix = " ".repeat(depth * 2);
@@ -31,6 +42,19 @@ pub fn walk_tree(target: &str, max_depth: Option<usize>) -> (String, Vec<PathBuf
         } else {
             tree_out.push_str(&format!("\n{}├── {}", prefix, name));
             files.push(path.to_path_buf());
+        }
+    }
+    if !skipped.is_empty() {
+        eprintln!(
+            "{} {} path(s) could not be read and are missing from this output:",
+            "⚠️".yellow(),
+            skipped.len()
+        );
+        for note in skipped.iter().take(5) {
+            eprintln!("   {}", note);
+        }
+        if skipped.len() > 5 {
+            eprintln!("   … and {} more", skipped.len() - 5);
         }
     }
     tree_out.push_str("\n```\n\n");
