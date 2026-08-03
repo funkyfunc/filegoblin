@@ -75,6 +75,16 @@ fn route_url_target(
         eprintln!("🌐 Sniffing the network for files: {}", url);
     }
     if args.horde {
+        // The crawler has no render path (per-URL browser launch costs ~1s and
+        // wants a CDP backend — see ADR). Say so instead of accepting the flag
+        // and quietly crawling with the static fetcher.
+        if args.browser && !args.quiet {
+            eprintln!(
+                "{} --browser has no effect with --horde: crawled pages are fetched \
+                 statically. Convert individual URLs to render them.",
+                "⚠️".yellow()
+            );
+        }
         #[cfg(feature = "web")]
         {
             match crate::parsers::crawler::crawl_web(url, args) {

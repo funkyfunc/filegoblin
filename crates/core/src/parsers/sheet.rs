@@ -199,6 +199,105 @@ fn column_index_to_letter(mut col: usize) -> String {
 }
 
 #[cfg(test)]
+mod xlsx_tests {
+    use super::*;
+    use clap::Parser;
+    use std::io::Write;
+
+    /// Builds a minimal but genuinely valid .xlsx (a zip of OOXML parts).
+    ///
+    /// `.xlsx` is a headline format with no fixture and no test of any kind —
+    /// every sheet test used CSV, which does not touch calamine at all. A
+    /// calamine upgrade that broke workbook reading would have been invisible.
+    fn write_xlsx(rows: &[&[&str]]) -> tempfile::NamedTempFile {
+        let mut sheet = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+        );
+        for (r, row) in rows.iter().enumerate() {
+            sheet.push_str(&format!("<row r=\"{}\">", r + 1));
+            for (c, cell) in row.iter().enumerate() {
+                let col = super::column_index_to_letter(c);
+                if cell.is_empty() {
+                    continue; // a genuinely absent cell, as Excel writes it
+                }
+                // `t="inlineStr"` keeps the fixture free of sharedStrings.xml.
+                sheet.push_str(&format!(
+                    "<c r=\"{}{}\" t=\"inlineStr\"><is><t>{}</t></is></c>",
+                    col,
+                    r + 1,
+                    cell
+                ));
+            }
+            sheet.push_str("</row>");
+        }
+        sheet.push_str("</sheetData></worksheet>");
+
+        let parts: Vec<(&str, String)> = vec![
+            ("[Content_Types].xml", r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#.to_string()),
+            ("_rels/.rels", r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#.to_string()),
+            ("xl/workbook.xml", r#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Ledger" sheetId="1" r:id="rId1"/></sheets></workbook>"#.to_string()),
+            ("xl/_rels/workbook.xml.rels", r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#.to_string()),
+            ("xl/worksheets/sheet1.xml", sheet),
+        ];
+
+        let mut file = tempfile::Builder::new().suffix(".xlsx").tempfile().unwrap();
+        {
+            let mut zip = zip::ZipWriter::new(file.as_file_mut());
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, body) in parts {
+                zip.start_file(name, opts).unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        file
+    }
+
+    #[test]
+    fn xlsx_workbook_renders_a_pipe_table() {
+        let file = write_xlsx(&[
+            &["Item", "Qty", "Price"],
+            &["Sword", "2", "150"],
+            &["Shield", "1", "90"],
+        ]);
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        let out = SheetGobbler.gobble(file.path(), &(&args).into()).unwrap();
+
+        assert!(out.contains("## Sheet: Ledger"), "got: {out}");
+        assert!(out.contains("| Item | Qty | Price |"), "got: {out}");
+        assert!(out.contains("|---|---|---|"), "got: {out}");
+        assert!(out.contains("| Sword | 2 | 150 |"), "got: {out}");
+        assert!(out.contains("| Shield | 1 | 90 |"), "got: {out}");
+    }
+
+    /// A gap in the middle of a row must not shift later values left.
+    #[test]
+    fn xlsx_missing_cells_keep_their_column() {
+        let file = write_xlsx(&[&["A", "B", "C"], &["left", "", "right"]]);
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        let out = SheetGobbler.gobble(file.path(), &(&args).into()).unwrap();
+        assert!(out.contains("| left |  | right |"), "got: {out}");
+    }
+
+    /// An .xlsx that is not a zip at all must fail loudly.
+    #[test]
+    fn corrupt_xlsx_errors() {
+        let mut file = tempfile::Builder::new().suffix(".xlsx").tempfile().unwrap();
+        file.write_all(b"this is definitely not a workbook")
+            .unwrap();
+        file.flush().unwrap();
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        assert!(SheetGobbler.gobble(file.path(), &(&args).into()).is_err());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;

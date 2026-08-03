@@ -376,7 +376,15 @@ mod tests {
         unsafe { std::env::remove_var("FILEGOBLIN_BROWSER") };
 
         if find_browser().is_none() {
-            eprintln!("no browser installed; skipping");
+            // A silent `return` still reports "ok", so this looked like browser
+            // coverage on machines that have none. CI sets
+            // FILEGOBLIN_REQUIRE_BROWSER=1 to turn the skip into a failure.
+            if std::env::var_os("FILEGOBLIN_REQUIRE_BROWSER").is_some() {
+                panic!("FILEGOBLIN_REQUIRE_BROWSER is set but no browser was found");
+            }
+            eprintln!(
+                "SKIPPING the --browser render assertions: no Chromium-family browser installed"
+            );
             return;
         }
         use std::io::{Read, Write};

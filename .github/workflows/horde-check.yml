@@ -31,6 +31,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
       - name: Test
+        # GitHub runners ship Chrome, so the browser render test must not
+        # quietly skip itself there.
+        env:
+          FILEGOBLIN_REQUIRE_BROWSER: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
         run: cargo test --workspace
 
   # The optional engines. Nothing here was ever compiled in CI before, so a

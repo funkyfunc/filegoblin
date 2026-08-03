@@ -118,29 +118,34 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
 
+    /// Requires the prebuilt component. It is `#[ignore]` rather than an
+    /// early `return`: a test that skips itself still reports "ok", so this
+    /// looked like WASM coverage while asserting nothing — and the path it
+    /// resolves is relative to `crates/core/`, where the file has never
+    /// existed. Run with `cargo test -- --ignored` from the repo root.
     #[test]
+    #[ignore = "needs examples/dummy_plugin.wasm; run from the repo root"]
     fn test_dummy_plugin_component() {
-        // We assume `examples/dummy_plugin.wasm` exists from our cargo run command
-        let wasm_file = Path::new("examples/dummy_plugin.wasm");
-        if !wasm_file.exists() {
-            eprintln!("Skipping WASM component test since dummy_plugin.wasm is not built.");
-            return;
-        }
+        let wasm_file = Path::new("../../examples/dummy_plugin.wasm");
+        assert!(
+            wasm_file.exists(),
+            "dummy_plugin.wasm not found at {}",
+            wasm_file.display()
+        );
 
-        // Create a fake `.gob` file
-        let target_file = Path::new("dummy_test.gob");
-        let mut f = File::create(target_file).unwrap();
+        // A fake `.gob` file, in a temp dir so a failure leaks nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let target_file = dir.path().join("dummy_test.gob");
+        let mut f = File::create(&target_file).unwrap();
         f.write_all(b"Hello Goblin!").unwrap();
 
         let gobbler = WasmGobbler {
             wasm_path: wasm_file.to_path_buf(),
         };
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
-        let result = gobbler.gobble(target_file, &(&args).into()).unwrap();
+        let result = gobbler.gobble(&target_file, &(&args).into()).unwrap();
 
         assert!(result.contains("DUMMY PARSER HIT!"));
         assert!(result.contains("Hello Goblin!"));
-
-        std::fs::remove_file(target_file).unwrap();
     }
 }

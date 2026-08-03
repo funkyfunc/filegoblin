@@ -35,6 +35,15 @@ fn mcp_handshake_and_convert() {
         r#"{"jsonrpc":"2.0","id":5,"method":"ping"}"#.to_string(),
         "this is not json".to_string(),
         r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"convert","arguments":{"source":"/definitely/not/a/real/file.pdf"}}}"#.to_string(),
+        // A source that looks like a flag: this used to print clap's help to
+        // *stdout*, destroying the protocol framing, and exit the process.
+        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"convert","arguments":{"source":"--help"}}}"#.to_string(),
+        // `-` used to make the server read its own protocol stdin to EOF.
+        r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"convert","arguments":{"source":"-"}}}"#.to_string(),
+        // A peer *response* must never be answered.
+        r#"{"jsonrpc":"2.0","id":99,"result":{"ok":true}}"#.to_string(),
+        // Everything after the hostile inputs must still be served.
+        r#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#.to_string(),
     ]
     .join("\n");
 
@@ -76,4 +85,29 @@ fn mcp_handshake_and_convert() {
     assert!(lines.iter().any(|v| v["error"]["code"] == -32700));
     // Missing file → in-band tool error, not a protocol error.
     assert_eq!(by_id(6)["result"]["isError"], true);
+
+    // Hostile sources are in-band errors, and the server survives them.
+    assert_eq!(by_id(7)["result"]["isError"], true, "`--help` as a source");
+    assert_eq!(by_id(8)["result"]["isError"], true, "`-` as a source");
+    assert!(
+        by_id(9)["result"].is_object(),
+        "the server must still answer after hostile input"
+    );
+
+    // Exactly one response per request, and nothing else. Asserting only
+    // by-id let a spurious reply — to the notification, or to the peer
+    // response with id 99 — pass unnoticed.
+    // 9 ids (1-9) + 1 parse error. The notification and the id-99 peer
+    // response contribute nothing.
+    assert_eq!(
+        lines.len(),
+        10,
+        "expected 9 request responses + 1 parse error, got {}:\n{}",
+        lines.len(),
+        stdout
+    );
+    assert!(
+        !lines.iter().any(|v| v["id"] == 99),
+        "a JSON-RPC response must never be answered"
+    );
 }

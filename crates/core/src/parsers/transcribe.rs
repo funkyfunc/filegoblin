@@ -503,7 +503,11 @@ mod imp {
                         .unwrap_or(false)
                 });
             if !model_present {
-                eprintln!("whisper model not installed; skipping");
+                // A silent `return` reports "ok" and looks like coverage.
+                eprintln!(
+                    "SKIPPING the whisper end-to-end assertions: model not installed \
+                     (`just get-whisper`, or set $FILEGOBLIN_WHISPER_MODEL)"
+                );
                 return;
             }
             let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
