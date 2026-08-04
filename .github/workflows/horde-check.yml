@@ -96,16 +96,3 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build with the dist feature list
         run: cargo build -p filegoblin --features web,ocr,wasm,rag,transcribe
-
-  # The parked TUI is outside the workspace, so nothing above compiles it.
-  # Cheap insurance that it doesn't rot while it waits to be re-integrated.
-  parked-tui:
-    name: Parked TUI builds
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Check
-        run: cargo check --manifest-path crates/tui/Cargo.toml --all-features

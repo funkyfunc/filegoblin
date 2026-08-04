@@ -4,12 +4,9 @@ members = [
     "crates/core",
     "crates/cli"
 ]
-# Parked, not shipped in v1: the TUI is a standalone crate with its own
-# workspace (build it with `cargo build --manifest-path crates/tui/Cargo.toml`).
 # The wasm plugin example is a separate crate by design — a consumer of the
 # published component API, not a workspace member.
 exclude = [
-    "crates/tui",
     "examples/dummy_plugin"
 ]
 

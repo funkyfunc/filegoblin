@@ -476,3 +476,36 @@ within an eighth of the largest, capped at 8 per page since OCR is the slowest
 thing here.
 
 **Status:** Accepted.
+
+## 2026-08-03: Removing the TUI crate
+
+**Context:** The TUI was parked (excluded from the workspace, dropped from the
+CLI) rather than deleted, on the theory that its browse-and-select workflow was
+worth re-integrating once its staleness was fixed. `--walk` has since been built,
+which makes that theory obsolete.
+
+**Decision:** Delete it. `--walk` covers the purpose — exploring deeply nested
+directories and sites — and covers it better on every axis that mattered:
+
+| | parked TUI | `--walk` |
+|---|---|---|
+| preview | raw bytes (a PDF rendered as a hex dump) | the actual converted markdown |
+| web links | present but **dead in every shipped binary** (the `tui` feature never propagated `filegoblin-tui/web`) | follows them, same-origin scoped |
+| formats | list stale at ~v1.5 | whatever the router supports |
+| tests | zero, across 1085 lines | 9 state + 5 engine |
+| deps | ratatui + crossterm | crossterm |
+
+The one capability that does not carry over is toggling `copy`/`open`/`scrub`/
+`split`/`tokens` from inside the UI. That is five flags a user can pass on the
+command line, and a picker that silently mutates them is arguably worse for
+reproducibility than typing them — a run you can't reconstruct from its command
+is a run you can't script.
+
+Keeping it parked had an ongoing cost: outside the workspace, nothing built it
+during normal development, so it could only rot, and it needed a dedicated CI
+job purely to prove it still compiled. That job is gone too.
+
+Git retains the code; `git show <rev>:crates/tui/src/ui.rs` recovers it if the
+flag-toggling idea is ever wanted in the picker.
+
+**Status:** Accepted.

@@ -68,7 +68,7 @@ cargo install --git https://github.com/funkyfunc/filegoblin filegoblin --feature
 │   ├── cli/          (filegoblin: The Headless Binary)
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs       (CLI Entry & Mascot)
-│   └── tui/          (PARKED — not a workspace member, not shipped in v1)
+│   │       └── walk.rs       (--walk interactive picker)
 └── .cargo/
     └── config.toml   (Aliases)
 ```
