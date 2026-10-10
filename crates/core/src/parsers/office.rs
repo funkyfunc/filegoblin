@@ -19,8 +19,6 @@ impl Gobble for OfficeGobbler {
 
         if ext == "docx" {
             let buf = std::fs::read(path).context("Failed to read docx buffer")?;
-            let docx =
-                docx_rs::read_docx(&buf).context("Failed to parse docx OpenXML structures")?;
 
             // Scan zip archive for document.xml, rels, and charts
             let mut doc_xml = String::new();
@@ -48,115 +46,125 @@ impl Gobble for OfficeGobbler {
                 }
             }
 
-            let rels_chart_map = extract_docx_rels_charts(&rels_xml);
-            let (body_paragraphs, math_by_para_id) = if !doc_xml.is_empty() {
-                crate::parsers::omml::extract_docx_body_paragraphs(&doc_xml)
-            } else {
-                (Vec::new(), HashMap::new())
-            };
+            let docx_res = docx_rs::read_docx(&buf);
+            let mut extracted = String::new();
 
-            // rid → URL, populated by the reader from document rels.
-            let links: HashMap<&str, &str> = docx
-                .hyperlinks
-                .iter()
-                .map(|(rid, target, _)| (rid.as_str(), target.as_str()))
-                .collect();
+            if let Ok(docx) = docx_res {
+                let rels_chart_map = extract_docx_rels_charts(&rels_xml);
+                let (body_paragraphs, math_by_para_id) = if !doc_xml.is_empty() {
+                    crate::parsers::omml::extract_docx_body_paragraphs(&doc_xml)
+                } else {
+                    (Vec::new(), HashMap::new())
+                };
 
-            let mut blocks: Vec<(bool, String)> = Vec::new(); // (is_list_item, text)
-            let mut used_charts: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            let mut body_p_idx = 0usize;
+                // rid → URL, populated by the reader from document rels.
+                let links: HashMap<&str, &str> = docx
+                    .hyperlinks
+                    .iter()
+                    .map(|(rid, target, _)| (rid.as_str(), target.as_str()))
+                    .collect();
 
-            for child in &docx.document.children {
-                match child {
-                    docx_rs::DocumentChild::Paragraph(p) => {
-                        let bp = body_paragraphs.get(body_p_idx);
-                        let math_text = bp
-                            .and_then(|b| {
-                                if b.has_math {
-                                    Some(b.text.as_str())
-                                } else {
-                                    None
-                                }
-                            })
-                            .or_else(|| math_by_para_id.get(&p.id).map(|s| s.as_str()));
+                let mut blocks: Vec<(bool, String)> = Vec::new(); // (is_list_item, text)
+                let mut used_charts: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let mut body_p_idx = 0usize;
 
-                        let md = paragraph_to_md(p, &links, math_text);
-                        let final_md = if md.trim().is_empty() {
-                            bp.map(|b| b.text.trim().to_string()).unwrap_or_default()
-                        } else {
-                            md
-                        };
+                for child in &docx.document.children {
+                    match child {
+                        docx_rs::DocumentChild::Paragraph(p) => {
+                            let bp = body_paragraphs.get(body_p_idx);
+                            let math_text = bp
+                                .and_then(|b| {
+                                    if b.has_math {
+                                        Some(b.text.as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .or_else(|| math_by_para_id.get(&p.id).map(|s| s.as_str()));
 
-                        if !final_md.trim().is_empty() {
-                            let is_list = p.property.numbering_property.is_some();
-                            blocks.push((is_list, final_md));
-                        }
+                            let md = paragraph_to_md(p, &links, math_text);
+                            let final_md = if md.trim().is_empty() {
+                                bp.map(|b| b.text.trim().to_string()).unwrap_or_default()
+                            } else {
+                                md
+                            };
 
-                        // Emit any charts anchored to this paragraph
-                        if let Some(b) = bp {
-                            for rid in &b.chart_rids {
-                                if let Some(target) = rels_chart_map.get(rid)
-                                    && let Some(chart_xml) = chart_xmls.get(target)
-                                {
-                                    used_charts.insert(target.clone());
-                                    if let Ok(chart) =
-                                        crate::parsers::openxml_chart::OpenXmlChart::parse(
-                                            chart_xml,
-                                        )
+                            if !final_md.trim().is_empty() {
+                                let is_list = p.property.numbering_property.is_some();
+                                blocks.push((is_list, final_md));
+                            }
+
+                            // Emit any charts anchored to this paragraph
+                            if let Some(b) = bp {
+                                for rid in &b.chart_rids {
+                                    if let Some(target) = rels_chart_map.get(rid)
+                                        && let Some(chart_xml) = chart_xmls.get(target)
                                     {
-                                        let chart_md = chart.render_markdown();
-                                        if !chart_md.is_empty() {
-                                            blocks.push((false, chart_md));
+                                        used_charts.insert(target.clone());
+                                        if let Ok(chart) =
+                                            crate::parsers::openxml_chart::OpenXmlChart::parse(
+                                                chart_xml,
+                                            )
+                                        {
+                                            let chart_md = chart.render_markdown();
+                                            if !chart_md.is_empty() {
+                                                blocks.push((false, chart_md));
+                                            }
                                         }
                                     }
                                 }
                             }
+
+                            body_p_idx += 1;
                         }
-
-                        body_p_idx += 1;
-                    }
-                    docx_rs::DocumentChild::Table(t) => {
-                        blocks.push((false, format_table(t, &math_by_para_id)));
-                    }
-                    _ => {}
-                }
-            }
-
-            // Emit any remaining unassociated charts
-            let mut leftover_charts: Vec<_> = chart_xmls
-                .iter()
-                .filter(|(path, _)| !used_charts.contains(*path))
-                .collect();
-            leftover_charts.sort_by_key(|(path, _)| (*path).clone());
-
-            for (_path, chart_xml) in leftover_charts {
-                if let Ok(chart) = crate::parsers::openxml_chart::OpenXmlChart::parse(chart_xml) {
-                    let chart_md = chart.render_markdown();
-                    if !chart_md.is_empty() {
-                        blocks.push((false, chart_md));
+                        docx_rs::DocumentChild::Table(t) => {
+                            blocks.push((false, format_table(t, &math_by_para_id)));
+                        }
+                        _ => {}
                     }
                 }
-            }
 
-            // Blank line between blocks, except between consecutive list items
-            // (a tight markdown list stays one list).
-            let mut extracted = String::new();
-            let mut prev_was_list = false;
-            for (is_list, block) in blocks {
-                if !extracted.is_empty() {
-                    extracted.push('\n');
-                    if !(is_list && prev_was_list) {
+                // Emit any remaining unassociated charts
+                let mut leftover_charts: Vec<_> = chart_xmls
+                    .iter()
+                    .filter(|(path, _)| !used_charts.contains(*path))
+                    .collect();
+                leftover_charts.sort_by_key(|(path, _)| (*path).clone());
+
+                for (_path, chart_xml) in leftover_charts {
+                    if let Ok(chart) = crate::parsers::openxml_chart::OpenXmlChart::parse(chart_xml)
+                    {
+                        let chart_md = chart.render_markdown();
+                        if !chart_md.is_empty() {
+                            blocks.push((false, chart_md));
+                        }
+                    }
+                }
+
+                // Blank line between blocks, except between consecutive list items
+                let mut prev_was_list = false;
+                for (is_list, block) in blocks {
+                    if !extracted.is_empty() {
                         extracted.push('\n');
+                        if !(is_list && prev_was_list) {
+                            extracted.push('\n');
+                        }
                     }
+                    extracted.push_str(block.trim_end());
+                    prev_was_list = is_list;
                 }
-                extracted.push_str(block.trim_end());
-                prev_was_list = is_list;
             }
-            // A docx whose content lives entirely in node types this walker
-            // drops (text boxes, SDT content controls, images) used to return
-            // Ok("") — a real file, e.g. a flyer built from text boxes, quietly
-            // converting to nothing at all.
+
+            // Fallback to streaming quick-xml reader if docx-rs failed or produced empty output
+            if extracted.trim().is_empty() && !doc_xml.is_empty() {
+                if let Ok(streaming_res) =
+                    parse_docx_xml_streaming(&doc_xml, &rels_xml, &chart_xmls)
+                {
+                    return Ok(streaming_res);
+                }
+            }
+
             if extracted.trim().is_empty() {
                 anyhow::bail!(
                     "No text could be extracted from this .docx (content may live in text \
@@ -227,6 +235,552 @@ fn extract_docx_rels_charts(xml: &str) -> HashMap<String, String> {
         }
     }
     map
+}
+
+/// Extracts relationship ID to hyperlink target mapping from `word/_rels/document.xml.rels`.
+fn extract_docx_rels_links(xml: &str) -> HashMap<String, String> {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut map = HashMap::new();
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"Relationship" {
+                    let mut id = None;
+                    let mut target = None;
+                    let mut is_link = false;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.local_name().as_ref() {
+                            b"Id" => {
+                                if let Ok(val) = attr.unescape_value() {
+                                    id = Some(val.into_owned());
+                                }
+                            }
+                            b"Type" => {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if val.ends_with("/hyperlink") || val.contains("hyperlink") {
+                                        is_link = true;
+                                    }
+                                }
+                            }
+                            b"Target" => {
+                                if let Ok(val) = attr.unescape_value() {
+                                    target = Some(val.into_owned());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if is_link && let (Some(id), Some(t)) = (id, target) {
+                        map.insert(id, t);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    map
+}
+
+/// Streaming quick-xml fallback parser for Word documents when docx-rs cannot parse non-standard
+/// or complex OpenXML structures (e.g. `<mc:AlternateContent>` floating text boxes, merged table
+/// `<w:gridSpan>` headers, or minimal XML packages).
+pub fn parse_docx_xml_streaming(
+    doc_xml: &str,
+    rels_xml: &str,
+    chart_xmls: &HashMap<String, String>,
+) -> Result<String> {
+    let rels_chart_map = extract_docx_rels_charts(rels_xml);
+    let rels_links_map = extract_docx_rels_links(rels_xml);
+
+    let mut reader = quick_xml::Reader::from_str(doc_xml);
+    reader.config_mut().trim_text(false);
+
+    let mut blocks: Vec<(bool, String)> = Vec::new();
+    let mut used_charts: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    struct CellState {
+        text: String,
+        span: usize,
+    }
+    struct RowState {
+        cells: Vec<CellState>,
+    }
+    struct TableState {
+        rows: Vec<RowState>,
+        current_cell: Option<CellState>,
+    }
+    let mut tbl_stack: Vec<TableState> = Vec::new();
+
+    #[derive(Default, Clone)]
+    struct ParaState {
+        text: String,
+        heading_level: Option<usize>,
+        is_list_item: bool,
+        list_level: usize,
+        chart_rids: Vec<String>,
+    }
+    let mut p_stack: Vec<ParaState> = Vec::new();
+
+    let mut in_bold = false;
+    let mut in_italic = false;
+    let mut current_link_url: Option<String> = None;
+    let mut in_body = false;
+    let mut in_fallback = false;
+    let mut choice_taken = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                let local = e.local_name();
+                match local.as_ref() {
+                    b"AlternateContent" => {
+                        choice_taken = false;
+                    }
+                    b"Choice" => {
+                        choice_taken = true;
+                    }
+                    b"Fallback" => {
+                        in_fallback = true;
+                    }
+                    _ if in_fallback && choice_taken => {
+                        // Skip duplicate content from fallback
+                    }
+                    b"body" => in_body = true,
+                    b"tbl" if in_body => {
+                        tbl_stack.push(TableState {
+                            rows: Vec::new(),
+                            current_cell: None,
+                        });
+                    }
+                    b"tr" if !tbl_stack.is_empty() => {
+                        if let Some(tbl) = tbl_stack.last_mut() {
+                            tbl.rows.push(RowState { cells: Vec::new() });
+                        }
+                    }
+                    b"tc" if !tbl_stack.is_empty() => {
+                        if let Some(tbl) = tbl_stack.last_mut() {
+                            tbl.current_cell = Some(CellState {
+                                text: String::new(),
+                                span: 1,
+                            });
+                        }
+                    }
+                    b"gridSpan" if !tbl_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"val" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Ok(span) = val.parse::<usize>() {
+                                        if let Some(tbl) = tbl_stack.last_mut() {
+                                            if let Some(ref mut cell) = tbl.current_cell {
+                                                cell.span = span.max(1);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"p" if in_body => {
+                        p_stack.push(ParaState::default());
+                    }
+                    b"pStyle" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"val" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Some(lvl) = heading_level(&val) {
+                                        if let Some(p) = p_stack.last_mut() {
+                                            p.heading_level = Some(lvl);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"numPr" if !p_stack.is_empty() => {
+                        if let Some(p) = p_stack.last_mut() {
+                            p.is_list_item = true;
+                        }
+                    }
+                    b"ilvl" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"val" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Ok(lvl) = val.parse::<usize>() {
+                                        if let Some(p) = p_stack.last_mut() {
+                                            p.list_level = lvl;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"hyperlink" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"id" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    current_link_url = rels_links_map.get(val.as_ref()).cloned();
+                                }
+                            }
+                        }
+                    }
+                    b"b" | b"bCs" => {
+                        let mut val_off = false;
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"val" {
+                                if let Ok(v) = attr.unescape_value() {
+                                    if v == "0" || v == "false" {
+                                        val_off = true;
+                                    }
+                                }
+                            }
+                        }
+                        if !val_off {
+                            in_bold = true;
+                        }
+                    }
+                    b"i" | b"iCs" => {
+                        let mut val_off = false;
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"val" {
+                                if let Ok(v) = attr.unescape_value() {
+                                    if v == "0" || v == "false" {
+                                        val_off = true;
+                                    }
+                                }
+                            }
+                        }
+                        if !val_off {
+                            in_italic = true;
+                        }
+                    }
+                    b"chart" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"id" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Some(p) = p_stack.last_mut() {
+                                        p.chart_rids.push(val.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"oMath" if !p_stack.is_empty() => {
+                        let mut math_attrs = HashMap::new();
+                        for attr in e.attributes().flatten() {
+                            let k =
+                                String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                            if let Ok(v) = attr.unescape_value() {
+                                math_attrs.insert(k, v.into_owned());
+                            }
+                        }
+                        let latex = crate::parsers::omml::parse_omml_element_to_latex(
+                            &mut reader,
+                            "oMath",
+                            math_attrs,
+                        );
+                        let trimmed = latex.trim();
+                        if !trimmed.is_empty() {
+                            if let Some(p) = p_stack.last_mut() {
+                                p.text.push_str(&format!("${}$", trimmed));
+                            }
+                        }
+                    }
+                    b"oMathPara" if !p_stack.is_empty() => {
+                        let mut math_attrs = HashMap::new();
+                        for attr in e.attributes().flatten() {
+                            let k =
+                                String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                            if let Ok(v) = attr.unescape_value() {
+                                math_attrs.insert(k, v.into_owned());
+                            }
+                        }
+                        let latex = crate::parsers::omml::parse_omml_element_to_latex(
+                            &mut reader,
+                            "oMathPara",
+                            math_attrs,
+                        );
+                        let trimmed = latex.trim();
+                        if !trimmed.is_empty() {
+                            if let Some(p) = p_stack.last_mut() {
+                                p.text.push_str(&format!("$${}$$", trimmed));
+                            }
+                        }
+                    }
+                    b"t" if !p_stack.is_empty() => {
+                        let mut text = String::new();
+                        loop {
+                            match reader.read_event() {
+                                Ok(quick_xml::events::Event::Text(ref t)) => {
+                                    if let Ok(s) = std::str::from_utf8(t.as_ref()) {
+                                        if let Ok(unescaped) = quick_xml::escape::unescape(s) {
+                                            text.push_str(&unescaped);
+                                        }
+                                    }
+                                }
+                                Ok(quick_xml::events::Event::GeneralRef(ref ge)) => {
+                                    if let Some(s) = crate::parsers::resolve_xml_entity(ge) {
+                                        text.push_str(&s);
+                                    }
+                                }
+                                Ok(quick_xml::events::Event::End(ref end_e))
+                                    if end_e.local_name().as_ref() == b"t" =>
+                                {
+                                    break;
+                                }
+                                Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+                                _ => {}
+                            }
+                        }
+                        let formatted_text = match (in_bold, in_italic) {
+                            (true, true) => emphasize(&text, "***"),
+                            (true, false) => emphasize(&text, "**"),
+                            (false, true) => emphasize(&text, "*"),
+                            (false, false) => text,
+                        };
+                        let final_text = if let Some(ref url) = current_link_url {
+                            if !formatted_text.trim().is_empty() {
+                                format!("[{}]({})", formatted_text.trim(), url)
+                            } else {
+                                formatted_text
+                            }
+                        } else {
+                            formatted_text
+                        };
+                        if let Some(p) = p_stack.last_mut() {
+                            p.text.push_str(&final_text);
+                        }
+                    }
+                    b"tab" if !p_stack.is_empty() => {
+                        if let Some(p) = p_stack.last_mut() {
+                            p.text.push('\t');
+                        }
+                    }
+                    b"br" if !p_stack.is_empty() => {
+                        if let Some(p) = p_stack.last_mut() {
+                            p.text.push('\n');
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::Empty(ref e)) => {
+                let local = e.local_name();
+                match local.as_ref() {
+                    _ if in_fallback && choice_taken => {}
+                    b"gridSpan" if !tbl_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"val" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Ok(span) = val.parse::<usize>() {
+                                        if let Some(tbl) = tbl_stack.last_mut() {
+                                            if let Some(ref mut cell) = tbl.current_cell {
+                                                cell.span = span.max(1);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"pStyle" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"val" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Some(lvl) = heading_level(&val) {
+                                        if let Some(p) = p_stack.last_mut() {
+                                            p.heading_level = Some(lvl);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"numPr" if !p_stack.is_empty() => {
+                        if let Some(p) = p_stack.last_mut() {
+                            p.is_list_item = true;
+                        }
+                    }
+                    b"ilvl" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"val" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Ok(lvl) = val.parse::<usize>() {
+                                        if let Some(p) = p_stack.last_mut() {
+                                            p.list_level = lvl;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"chart" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"id" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Some(p) = p_stack.last_mut() {
+                                        p.chart_rids.push(val.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"b" | b"bCs" => in_bold = true,
+                    b"i" | b"iCs" => in_italic = true,
+                    b"tab" if !p_stack.is_empty() => {
+                        if let Some(p) = p_stack.last_mut() {
+                            p.text.push('\t');
+                        }
+                    }
+                    b"br" if !p_stack.is_empty() => {
+                        if let Some(p) = p_stack.last_mut() {
+                            p.text.push('\n');
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => {
+                let local = e.local_name();
+                match local.as_ref() {
+                    b"AlternateContent" => {
+                        choice_taken = false;
+                    }
+                    b"Fallback" => {
+                        in_fallback = false;
+                    }
+                    b"body" => in_body = false,
+                    b"r" => {
+                        in_bold = false;
+                        in_italic = false;
+                    }
+                    b"hyperlink" => {
+                        current_link_url = None;
+                    }
+                    b"tc" if !tbl_stack.is_empty() => {
+                        if let Some(tbl) = tbl_stack.last_mut() {
+                            if let Some(cell) = tbl.current_cell.take() {
+                                if let Some(row) = tbl.rows.last_mut() {
+                                    row.cells.push(cell);
+                                }
+                            }
+                        }
+                    }
+                    b"tbl" if !tbl_stack.is_empty() => {
+                        if let Some(tbl) = tbl_stack.pop() {
+                            let mut builder = crate::parsers::TableBuilder::default();
+                            for row in tbl.rows {
+                                for cell in row.cells {
+                                    builder.push_cell(cell.text.trim(), cell.span);
+                                }
+                                builder.end_row();
+                            }
+                            let table_md = builder.render();
+                            if !table_md.trim().is_empty() {
+                                blocks.push((false, table_md));
+                            }
+                        }
+                    }
+                    b"p" => {
+                        if let Some(finished_p) = p_stack.pop() {
+                            if p_stack.is_empty() {
+                                if let Some(tbl) = tbl_stack.last_mut() {
+                                    if let Some(ref mut cell) = tbl.current_cell {
+                                        if !cell.text.is_empty() && !cell.text.ends_with(' ') {
+                                            cell.text.push(' ');
+                                        }
+                                        cell.text.push_str(finished_p.text.trim());
+                                    }
+                                } else {
+                                    let formatted = if let Some(lvl) = finished_p.heading_level {
+                                        format!("{} {}", "#".repeat(lvl), finished_p.text.trim())
+                                    } else if finished_p.is_list_item {
+                                        format!(
+                                            "{}- {}",
+                                            "  ".repeat(finished_p.list_level),
+                                            finished_p.text.trim()
+                                        )
+                                    } else {
+                                        finished_p.text.trim().to_string()
+                                    };
+                                    if !formatted.is_empty() {
+                                        blocks.push((finished_p.is_list_item, formatted));
+                                    }
+                                    for rid in &finished_p.chart_rids {
+                                        if let Some(target) = rels_chart_map.get(rid)
+                                            && let Some(chart_xml) = chart_xmls.get(target)
+                                        {
+                                            used_charts.insert(target.clone());
+                                            if let Ok(chart) =
+                                                crate::parsers::openxml_chart::OpenXmlChart::parse(
+                                                    chart_xml,
+                                                )
+                                            {
+                                                let chart_md = chart.render_markdown();
+                                                if !chart_md.is_empty() {
+                                                    blocks.push((false, chart_md));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                if let Some(parent) = p_stack.last_mut() {
+                                    if !parent.text.is_empty()
+                                        && !parent.text.ends_with(' ')
+                                        && !parent.text.ends_with('\n')
+                                    {
+                                        parent.text.push(' ');
+                                    }
+                                    parent.text.push_str(finished_p.text.trim());
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    let mut leftover_charts: Vec<_> = chart_xmls
+        .iter()
+        .filter(|(path, _)| !used_charts.contains(*path))
+        .collect();
+    leftover_charts.sort_by_key(|(path, _)| (*path).clone());
+
+    for (_path, chart_xml) in leftover_charts {
+        if let Ok(chart) = crate::parsers::openxml_chart::OpenXmlChart::parse(chart_xml) {
+            let chart_md = chart.render_markdown();
+            if !chart_md.is_empty() {
+                blocks.push((false, chart_md));
+            }
+        }
+    }
+
+    let mut extracted = String::new();
+    let mut prev_was_list = false;
+    for (is_list, block) in blocks {
+        if !extracted.is_empty() {
+            extracted.push('\n');
+            if !(is_list && prev_was_list) {
+                extracted.push('\n');
+            }
+        }
+        extracted.push_str(block.trim_end());
+        prev_was_list = is_list;
+    }
+
+    if extracted.trim().is_empty() {
+        anyhow::bail!(
+            "No text could be extracted from this .docx (content may live in text boxes, content controls, or images rather than paragraphs)"
+        );
+    }
+    Ok(extracted.trim().to_string())
 }
 
 /// One paragraph as a markdown block: heading, list item, or plain text.

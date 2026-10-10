@@ -1,0 +1,18 @@
+# Filegoblin Adversarial Gauntlet Scorecard
+
+**Overall Score:** 9/12 (75.0%)
+
+| ID | Category | Description | Status | Latency | Primary Failure Reason |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **P1** | PPTX Diagrams | Flowchart with glued connectors (<p:cxnSp>) | ✅ PASS | 11.4 ms | None |
+| **P2** | PPTX Grouped Shapes | Text inside nested <p:grpSp> groups (MarkItDown #332) | ✅ PASS | 10.6 ms | None |
+| **P3** | PPTX Chart Gaps | Chart with missing data points, must not print literal 'None' (MarkItDown #2526) | ✅ PASS | 11.0 ms | None |
+| **D1** | DOCX Tables | Word table with gridSpan merged headers | ✅ PASS | 10.2 ms | None |
+| **D3** | DOCX Floating Text Boxes | Floating text box inside mc:AlternateContent (Docling #4569) | ✅ PASS | 9.9 ms | None |
+| **D4** | DOCX Equations | Word equations in OMML format compiled to LaTeX | ✅ PASS | 32.3 ms | None |
+| **R1** | PDF Layout | Two-column scanned layout without line interleaving | ✅ PASS | 54.7 ms | None |
+| **R2** | PDF Math | Heavy mathematical notation and inequalities (CMSY/CMMI) | ❌ FAIL | 207.5 ms | Missing canary: 'Zeitz' |
+| **SCI_1** | Scientific Paper (arXiv) | Attention Is All You Need: 2-column, Transformer diagram, multi-head attention math | ✅ PASS | 679.6 ms | None |
+| **SCI_2** | Scientific Paper (arXiv) | Dense 2-column mathematics, theorems, and algorithms (arXiv:2401.14373) | ❌ FAIL | 407.7 ms | Missing canary: 'Algorithm' |
+| **BOOK_1** | Full Book (300pp) | Thinking in Systems (Meadows, 235pp): flat RAM, chapters, callouts | ❌ FAIL | 2186.1 ms | Missing canary: 'FEEDBACK LOOPS' |
+| **BOOK_2** | Full Book (Scan) | Structuring Interviews with Experts (21pp scan): high-throughput Apple Vision OCR | ✅ PASS | 330.9 ms | None |

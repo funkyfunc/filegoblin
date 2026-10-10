@@ -1,0 +1,138 @@
+[
+  {
+    "id": "P1",
+    "file": "p1_connectors_flowchart.pptx",
+    "category": "PPTX Diagrams",
+    "description": "Flowchart with glued connectors (<p:cxnSp>)",
+    "canaries_present": [
+      "Ingest Input",
+      "Validate Schema",
+      "Store Record"
+    ],
+    "syntax_contains": [
+      "flowchart",
+      "-->"
+    ]
+  },
+  {
+    "id": "P2",
+    "file": "p2_grouped_shapes.pptx",
+    "category": "PPTX Grouped Shapes",
+    "description": "Text inside nested <p:grpSp> groups (MarkItDown #332)",
+    "canaries_present": [
+      "CANARY_GROUPED_SHAPE_TEXT_ALPHA",
+      "CANARY_GROUPED_SHAPE_TEXT_BETA"
+    ]
+  },
+  {
+    "id": "P3",
+    "file": "p3_chart_gaps.pptx",
+    "category": "PPTX Chart Gaps",
+    "description": "Chart with missing data points, must not print literal 'None' (MarkItDown #2526)",
+    "canaries_present": [
+      "Q1_NORMAL",
+      "Q3_NORMAL",
+      "100.5",
+      "300.5"
+    ],
+    "forbidden_absent": [
+      "None",
+      "NaN"
+    ]
+  },
+  {
+    "id": "D1",
+    "file": "d1_merged_table.docx",
+    "category": "DOCX Tables",
+    "description": "Word table with gridSpan merged headers",
+    "canaries_present": [
+      "CANARY_MERGED_HEADER_ACROSS_TWO_COLS",
+      "CANARY_CELL_COL1",
+      "CANARY_CELL_COL2"
+    ]
+  },
+  {
+    "id": "D3",
+    "file": "d3_textbox_alternate_content.docx",
+    "category": "DOCX Floating Text Boxes",
+    "description": "Floating text box inside mc:AlternateContent (Docling #4569)",
+    "canaries_present": [
+      "CANARY_BODY_BEFORE_TEXTBOX",
+      "CANARY_TEXTBOX_ALTERNATE_CONTENT",
+      "CANARY_BODY_AFTER_TEXTBOX"
+    ]
+  },
+  {
+    "id": "D4",
+    "file": "equations.docx",
+    "category": "DOCX Equations",
+    "description": "Word equations in OMML format compiled to LaTeX",
+    "canaries_present": [
+      "m=1"
+    ],
+    "syntax_contains": [
+      "$"
+    ]
+  },
+  {
+    "id": "R1",
+    "file": "slice_a_twocolumn.pdf",
+    "category": "PDF Layout",
+    "description": "Two-column scanned layout without line interleaving",
+    "canaries_present": [
+      "Structuring Interviews with Experts"
+    ]
+  },
+  {
+    "id": "R2",
+    "file": "slice_e_math_zeitz.pdf",
+    "category": "PDF Math",
+    "description": "Heavy mathematical notation and inequalities (CMSY/CMMI)",
+    "canaries_present": [
+      "Zeitz"
+    ]
+  },
+  {
+    "id": "SCI_1",
+    "file": "scientific_papers/attention_is_all_you_need.pdf",
+    "category": "Scientific Paper (arXiv)",
+    "description": "Attention Is All You Need: 2-column, Transformer diagram, multi-head attention math",
+    "canaries_present": [
+      "Attention Is All You Need",
+      "Vaswani",
+      "softmax",
+      "MultiHead"
+    ],
+    "ground_truth_latex": "scientific_papers/attention_latex_source/model_architecture.tex"
+  },
+  {
+    "id": "SCI_2",
+    "file": "scientific_papers/arxiv_2401_14373_multicol_math.pdf",
+    "category": "Scientific Paper (arXiv)",
+    "description": "Dense 2-column mathematics, theorems, and algorithms (arXiv:2401.14373)",
+    "canaries_present": [
+      "Algorithm",
+      "Theorem"
+    ]
+  },
+  {
+    "id": "BOOK_1",
+    "file": "full_books/Thinking-in-Systems_Meadows.pdf",
+    "category": "Full Book (300pp)",
+    "description": "Thinking in Systems (Meadows, 235pp): flat RAM, chapters, callouts",
+    "canaries_present": [
+      "Thinking in Systems",
+      "Meadows",
+      "FEEDBACK LOOPS"
+    ]
+  },
+  {
+    "id": "BOOK_2",
+    "file": "full_books/StructuringInterviewswithExperts.pdf",
+    "category": "Full Book (Scan)",
+    "description": "Structuring Interviews with Experts (21pp scan): high-throughput Apple Vision OCR",
+    "canaries_present": [
+      "Structuring Interviews with Experts"
+    ]
+  }
+]

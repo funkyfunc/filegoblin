@@ -60,6 +60,16 @@ pub fn omml_to_latex(xml: &str) -> String {
         .to_string()
 }
 
+/// Parses an OMML element (e.g. `<m:oMath>` or `<m:oMathPara>`) directly from a quick-xml Reader into LaTeX.
+pub fn parse_omml_element_to_latex(
+    reader: &mut Reader<&[u8]>,
+    tag: &str,
+    attrs: HashMap<String, String>,
+) -> String {
+    let node = parse_node(reader, tag, attrs);
+    node_to_latex(&node)
+}
+
 fn parse_node(
     reader: &mut Reader<&[u8]>,
     start_tag: &str,
@@ -574,8 +584,7 @@ pub fn extract_docx_body_paragraphs(
     let mut body_paragraphs = Vec::new();
     let mut math_by_para_id = std::collections::HashMap::new();
 
-    let mut current_p = DocxBodyParagraph::default();
-    let mut in_p = false;
+    let mut p_stack: Vec<DocxBodyParagraph> = Vec::new();
     let mut in_body = false;
     let mut tbl_depth = 0usize;
 
@@ -587,26 +596,26 @@ pub fn extract_docx_body_paragraphs(
                     b"body" => in_body = true,
                     b"tbl" => tbl_depth += 1,
                     b"p" if in_body => {
-                        in_p = true;
-                        current_p = DocxBodyParagraph::default();
+                        let mut p = DocxBodyParagraph::default();
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"paraId" {
                                 if let Ok(val) = attr.unescape_value() {
-                                    current_p.id = Some(val.to_string());
+                                    p.id = Some(val.to_string());
                                 }
                             }
                         }
+                        p_stack.push(p);
                     }
-                    b"chart" if in_p => {
+                    b"chart" if !p_stack.is_empty() => {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"id" {
                                 if let Ok(val) = attr.unescape_value() {
-                                    current_p.chart_rids.push(val.to_string());
+                                    p_stack.last_mut().unwrap().chart_rids.push(val.to_string());
                                 }
                             }
                         }
                     }
-                    b"cNvPr" if in_p => {
+                    b"cNvPr" if !p_stack.is_empty() => {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"name" {
                                 if let Ok(val) = attr.unescape_value() {
@@ -615,6 +624,7 @@ pub fn extract_docx_body_paragraphs(
                                         && !name.starts_with("Chart ")
                                         && !name.starts_with("Diagram ")
                                     {
+                                        let current_p = p_stack.last_mut().unwrap();
                                         if let Some(pos) = current_p.text.find("[Image: Picture ") {
                                             if let Some(end) = current_p.text[pos..].find(']') {
                                                 current_p.text.replace_range(
@@ -639,7 +649,7 @@ pub fn extract_docx_body_paragraphs(
                             }
                         }
                     }
-                    b"docPr" if in_p => {
+                    b"docPr" if !p_stack.is_empty() => {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"name" {
                                 if let Ok(val) = attr.unescape_value() {
@@ -647,22 +657,23 @@ pub fn extract_docx_body_paragraphs(
                                     if !name.is_empty()
                                         && !name.starts_with("Chart ")
                                         && !name.starts_with("Diagram ")
-                                        && !current_p.text.contains("[Image: ")
                                     {
-                                        if !current_p.text.is_empty()
-                                            && !current_p.text.ends_with('\n')
-                                            && !current_p.text.ends_with(' ')
-                                        {
-                                            current_p.text.push(' ');
+                                        let current_p = p_stack.last_mut().unwrap();
+                                        if !current_p.text.contains("[Image: ") {
+                                            if !current_p.text.is_empty()
+                                                && !current_p.text.ends_with('\n')
+                                                && !current_p.text.ends_with(' ')
+                                            {
+                                                current_p.text.push(' ');
+                                            }
+                                            current_p.text.push_str(&format!("[Image: {}]", name));
                                         }
-                                        current_p.text.push_str(&format!("[Image: {}]", name));
                                     }
                                 }
                             }
                         }
                     }
-                    b"oMath" if in_p => {
-                        current_p.has_math = true;
+                    b"oMath" if !p_stack.is_empty() => {
                         let mut attrs = HashMap::new();
                         for attr in e.attributes().flatten() {
                             let key =
@@ -675,11 +686,12 @@ pub fn extract_docx_body_paragraphs(
                         let latex = node_to_latex(&node);
                         let trimmed = latex.trim();
                         if !trimmed.is_empty() {
+                            let current_p = p_stack.last_mut().unwrap();
+                            current_p.has_math = true;
                             current_p.text.push_str(&format!("${}$", trimmed));
                         }
                     }
-                    b"oMathPara" if in_p => {
-                        current_p.has_math = true;
+                    b"oMathPara" if !p_stack.is_empty() => {
                         let mut attrs = HashMap::new();
                         for attr in e.attributes().flatten() {
                             let key =
@@ -692,10 +704,12 @@ pub fn extract_docx_body_paragraphs(
                         let latex = node_to_latex(&node);
                         let trimmed = latex.trim();
                         if !trimmed.is_empty() {
+                            let current_p = p_stack.last_mut().unwrap();
+                            current_p.has_math = true;
                             current_p.text.push_str(&format!("$${}$$", trimmed));
                         }
                     }
-                    b"t" if in_p => {
+                    b"t" if !p_stack.is_empty() => {
                         let mut text = String::new();
                         loop {
                             match reader.read_event() {
@@ -720,13 +734,13 @@ pub fn extract_docx_body_paragraphs(
                                 _ => {}
                             }
                         }
-                        current_p.text.push_str(&text);
+                        p_stack.last_mut().unwrap().text.push_str(&text);
                     }
-                    b"tab" if in_p => {
-                        current_p.text.push('\t');
+                    b"tab" if !p_stack.is_empty() => {
+                        p_stack.last_mut().unwrap().text.push('\t');
                     }
-                    b"br" if in_p => {
-                        current_p.text.push('\n');
+                    b"br" if !p_stack.is_empty() => {
+                        p_stack.last_mut().unwrap().text.push('\n');
                     }
                     _ => {}
                 }
@@ -743,12 +757,12 @@ pub fn extract_docx_body_paragraphs(
                         }
                     }
                     body_paragraphs.push(empty_p);
-                } else if in_p {
+                } else if !p_stack.is_empty() {
                     if local.as_ref() == b"chart" {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"id" {
                                 if let Ok(val) = attr.unescape_value() {
-                                    current_p.chart_rids.push(val.to_string());
+                                    p_stack.last_mut().unwrap().chart_rids.push(val.to_string());
                                 }
                             }
                         }
@@ -761,6 +775,7 @@ pub fn extract_docx_body_paragraphs(
                                         && !name.starts_with("Chart ")
                                         && !name.starts_with("Diagram ")
                                     {
+                                        let current_p = p_stack.last_mut().unwrap();
                                         if let Some(pos) = current_p.text.find("[Image: Picture ") {
                                             if let Some(end) = current_p.text[pos..].find(']') {
                                                 current_p.text.replace_range(
@@ -792,23 +807,25 @@ pub fn extract_docx_body_paragraphs(
                                     if !name.is_empty()
                                         && !name.starts_with("Chart ")
                                         && !name.starts_with("Diagram ")
-                                        && !current_p.text.contains("[Image: ")
                                     {
-                                        if !current_p.text.is_empty()
-                                            && !current_p.text.ends_with('\n')
-                                            && !current_p.text.ends_with(' ')
-                                        {
-                                            current_p.text.push(' ');
+                                        let current_p = p_stack.last_mut().unwrap();
+                                        if !current_p.text.contains("[Image: ") {
+                                            if !current_p.text.is_empty()
+                                                && !current_p.text.ends_with('\n')
+                                                && !current_p.text.ends_with(' ')
+                                            {
+                                                current_p.text.push(' ');
+                                            }
+                                            current_p.text.push_str(&format!("[Image: {}]", name));
                                         }
-                                        current_p.text.push_str(&format!("[Image: {}]", name));
                                     }
                                 }
                             }
                         }
                     } else if local.as_ref() == b"tab" {
-                        current_p.text.push('\t');
+                        p_stack.last_mut().unwrap().text.push('\t');
                     } else if local.as_ref() == b"br" {
-                        current_p.text.push('\n');
+                        p_stack.last_mut().unwrap().text.push('\n');
                     }
                 }
             }
@@ -817,17 +834,32 @@ pub fn extract_docx_body_paragraphs(
                 match local.as_ref() {
                     b"body" => in_body = false,
                     b"tbl" => tbl_depth = tbl_depth.saturating_sub(1),
-                    b"p" if in_p => {
-                        in_p = false;
-                        if current_p.has_math {
-                            if let Some(ref id) = current_p.id {
-                                math_by_para_id.insert(id.clone(), current_p.text.clone());
+                    b"p" => {
+                        if let Some(finished_p) = p_stack.pop() {
+                            if p_stack.is_empty() {
+                                if finished_p.has_math {
+                                    if let Some(ref id) = finished_p.id {
+                                        math_by_para_id.insert(id.clone(), finished_p.text.clone());
+                                    }
+                                }
+                                if tbl_depth == 0 {
+                                    body_paragraphs.push(finished_p);
+                                }
+                            } else {
+                                if let Some(parent) = p_stack.last_mut() {
+                                    if !parent.text.is_empty()
+                                        && !parent.text.ends_with(' ')
+                                        && !parent.text.ends_with('\n')
+                                    {
+                                        parent.text.push(' ');
+                                    }
+                                    parent.text.push_str(finished_p.text.trim());
+                                    if finished_p.has_math {
+                                        parent.has_math = true;
+                                    }
+                                }
                             }
                         }
-                        if tbl_depth == 0 {
-                            body_paragraphs.push(current_p.clone());
-                        }
-                        current_p = DocxBodyParagraph::default();
                     }
                     _ => {}
                 }
