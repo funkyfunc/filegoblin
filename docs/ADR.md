@@ -509,3 +509,19 @@ Git retains the code; `git show <rev>:crates/tui/src/ui.rs` recovers it if the
 flag-toggling idea is ever wanted in the picker.
 
 **Status:** Accepted.
+
+## 2026-10-10: Deterministic PDF Layout Ordering, Header/Footer Suppression, and Table Boundary Spacing
+
+**Context:** Real-world PDF conversion for complex documents (two-column layouts, tables, sidebars, and running headers/footers) exhibited three critical failure modes:
+1. *Running Header/Footer Leakage:* Page numbers (isolated folios), running chapter/journal headers, and printer production slugs were injected between paragraphs across page boundaries, interrupting sentences and degrading downstream LLM context.
+2. *Multi-Column Reading Order & Line Interleaving:* In scanned and Vision-OCR documents, recognized spans across adjacent columns or consecutive vertical lines were sorted solely by vertical position and clustered within a loose scalar band (`Y_BAND = 0.015`). Because typical text line height and spacing are both ~0.014, consecutive vertical lines were pairwise merged and horizontally scrambled. Soft hyphens across line breaks were also left broken.
+3. *Table & Block Boundary Mangling:* Extracted markdown tables and callouts lacked guaranteed empty line boundary separation, causing CommonMark/GFM parsers to swallow or distort following paragraphs. Column count mismatches between headers and separator rows also corrupted pipe tables.
+
+**Decision:**
+- **Header/Footer Suppression (`crates/core/src/parsers/pdf.rs`):** Implemented `filter_running_headers_and_footers` using two-pass boundary analysis. Detects isolated folios (`is_isolated_folio`) including Roman numerals, OCR glyph drift (`l` $\leftrightarrow$ `1`), and bracketed page numbers; detects production/publisher slugs (`is_publisher_or_production_slug`); and clusters running headers across distinct pages using Levenshtein distance $\le 2$ (`headers_match`). Explicitly protects Page 0 document titles and author blocks (`is_document_title_block`).
+- **Geometric Reading Order & Line Assembly (`crates/core/src/parsers/ocr.rs`):** Introduced `OcrBox` geometry struct. Implemented deterministic two-column gutter detection (`detect_two_column_gutter`) to find vertical separator corridors $x \in [0.35, 0.65]$ and band-based page partitioning (`partition_two_column_page`) to preserve full-width title banners before sequencing column 1 top-to-bottom, then column 2 top-to-bottom. Line assembly (`assemble_lines_within_group`) now requires vertical overlap ($\ge 40\%$ min height) and strictly prohibits horizontal overlap ($\le 15\%$ min width), preventing consecutive lines from ever collapsing. Added automated soft-hyphen dehyphenation (`join_lines_with_dehyphenation`).
+- **Table & Block Boundary Spacing (`crates/core/src/parsers/pdf.rs`):** Implemented `format_table_and_block_boundaries` to guarantee empty line padding before and after tables and blockquotes, synchronize separator row column widths to match header rows, protect code fences, and collapse redundant newlines.
+- **Zero Hallucination Standard:** Complex raster diagram topologies and display equations are retained as extracted OCR text (`> **Text from embedded image:**`) without guessing or hallucinating synthetic graph structures or ungrounded LaTeX.
+
+**Status:** Accepted.
+
