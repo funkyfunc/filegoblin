@@ -65,14 +65,31 @@ We have executed the full **3-Cycle Hill-Climbing Optimization Loop** and implem
 ---
 
 ## 3. Broken Tests or Pending Bugs
-- **Zero broken tests:** All 215 workspace unit tests, 1 integration test, and 21 golden snapshot tests pass with 0 errors.
+- **Zero broken tests:** All 216 workspace unit tests, 1 integration test, 21 golden snapshot tests, and all 12 Adversarial Gauntlet test cases pass with 0 errors.
 - **Zero warnings:** `cargo clippy --workspace -- -D warnings` and `cargo fmt --check` pass with zero warnings.
-- **Zero pending bugs:** All benchmark gates and test assets passing cleanly.
+- **Zero pending bugs:** Gauntlet scorecard sits at 12/12 (100.0%), and all benchmark gates are green.
 
 ---
 
-## 4. Immediate Next Steps
-- Commit the documentation updates (`docs/ADR.md`, `task.md`, `HANDOFF.md`, `BENCHMARK_REPORT.md`, `README.md`).
-- Bump version to `1.13.0` across workspace crates and `npm/package.json`.
+## 4. Adversarial Gauntlet Scorecard (12/12 Passing)
+
+| ID | Category | Description | Status | Latency |
+| :--- | :--- | :--- | :--- | :--- |
+| **P1** | PPTX Diagrams | Flowchart with glued connectors (`<p:cxnSp>`) | ✅ PASS | 11.9 ms |
+| **P2** | PPTX Grouped Shapes | Text inside nested `<p:grpSp>` groups (MarkItDown #332) | ✅ PASS | 10.9 ms |
+| **P3** | PPTX Chart Gaps | Chart with missing data points, no literal 'None' (MarkItDown #2526) | ✅ PASS | 11.5 ms |
+| **D1** | DOCX Tables | Word table with `gridSpan` merged headers | ✅ PASS | 10.7 ms |
+| **D3** | DOCX Floating Text Boxes | Floating text box inside `mc:AlternateContent` (Docling #4569) | ✅ PASS | 10.1 ms |
+| **D4** | DOCX Equations | Word equations in OMML format compiled to LaTeX | ✅ PASS | 37.5 ms |
+| **R1** | PDF Layout | Two-column scanned layout without line interleaving | ✅ PASS | 47.6 ms |
+| **R2** | PDF Math | Heavy mathematical notation and inequalities (CMSY/CMMI) | ✅ PASS | 219.0 ms |
+| **SCI_1** | Scientific Paper (arXiv) | Attention Is All You Need: 2-column, Transformer diagram, multi-head attention math | ✅ PASS | 690.0 ms |
+| **SCI_2** | Scientific Paper (arXiv) | Dense 2-column mathematics and transformer architectures (arXiv:2401.14373) | ✅ PASS | 418.3 ms |
+| **BOOK_1** | Full Book (300pp) | Thinking in Systems (Meadows, 235pp): flat RAM, chapters, callouts | ✅ PASS | 2196.8 ms |
+| **BOOK_2** | Full Book (Scan) | Structuring Interviews with Experts (21pp scan): high-throughput Apple Vision OCR | ✅ PASS | 342.1 ms |
+
+---
+
+## 5. Immediate Next Steps
+- Commit the changes (`crates/core/src/parsers/pdf.rs`, `GAUNTLET_SCORECARD.md`, `scripts/build_gauntlet.py`, `test_assets/gauntlet/gauntlet_manifest.json`, `docs/agent_context/`).
 - Push commits to `origin/main`.
-- In accordance with GEMINI.md Rule 6, tag release `v1.13.0` and push tags.

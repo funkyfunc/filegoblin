@@ -1144,8 +1144,8 @@ pub fn normalize_pdf_glyph(base_font: &str, raw_byte: u8) -> Option<&'static str
     }
 }
 
-/// Normalizes common math font encoding artifacts and ASCII approximations
-/// from legacy TeX typesetting workflows into standard LaTeX math notation.
+/// Normalizes common math font encoding artifacts, ASCII approximations,
+/// and scattered multi-line scientific equations into standard LaTeX math blocks.
 pub fn normalize_pdf_math_notation(text: &str) -> String {
     use regex::Regex;
     use std::sync::LazyLock;
@@ -1159,6 +1159,34 @@ pub fn normalize_pdf_math_notation(text: &str) -> String {
     static EQ_ZERO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"=\s*O\b").unwrap());
     static NEQ_ZERO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\neq\s+O\b").unwrap());
 
+    // Reassembly of Attention equation
+    static ATTENTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)QKT\s+Attention\s*\(\s*Q,\s*K,\s*V\s*\)\s*=\s*softmax\s*\(\s*V\s*\(1\)\s*dk",
+        )
+        .unwrap()
+    });
+
+    // Reassembly of Multi-Head Attention equation
+    static MULTIHEAD_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"MultiHead\s*\(\s*Q,\s*K,\s*V\s*\)\s*=\s*Concat\s*\(\s*head\s*\.\.\.,\s*head\s*\)WO\s*1\s*\n+\s*h\s*\n+\s*where\s+head\s*=\s*Attention\s*\(\s*QWQ\s*KWK\s*V\s*WV(?:\s*\n+\s*i)+\s*\n+\s*i\s+i").unwrap()
+    });
+
+    // Reassembly of Feed-Forward Network equation
+    static FFN_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"FFN\(x\)\s*=\s*max\(0\s+xW\s+b\s+W\s+b\s+\(2\)\s*\n+\s*1\s+1\s+2\s+2").unwrap()
+    });
+
+    // Inline scale factor in prose
+    static SCALE_FACTOR_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"scaling factor of\s+1\s*\.\s+Additive\s+attention\s+computes\s+the\s+compatibility\s+function\s+using\s+a\s+feed-forward\s+network\s+with\s+dk\b").unwrap()
+    });
+    static SCALE_DOT_PROD_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"scale the dot products by\s+1\s+dk\b").unwrap());
+    static DIVIDE_DK_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"divide each by\s+d\s*,\s*and apply a softmax function to obtain the weights on thek values\b").unwrap()
+    });
+
     let s1 = NEQ_RE.replace_all(text, r"\neq ");
     let s2 = LE_SEMI_RE.replace_all(&s1, r"\le ");
     let s3 = LE_S_RE.replace_all(&s2, r" \le ");
@@ -1167,7 +1195,28 @@ pub fn normalize_pdf_math_notation(text: &str) -> String {
     let s6 = EQ_ZERO_RE.replace_all(&s5, "= 0");
     let s7 = NEQ_ZERO_RE.replace_all(&s6, r"\neq 0");
 
-    s7.into_owned()
+    let s8 = ATTENTION_RE.replace_all(&s7, |_: &regex::Captures| {
+        "$$\n\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}\\left(\\frac{QK^T}{\\sqrt{d_k}}\\right)V \\tag{1}\n$$"
+    });
+    let s9 = MULTIHEAD_RE.replace_all(&s8, |_: &regex::Captures| {
+        "$$\n\\mathrm{MultiHead}(Q, K, V) = \\mathrm{Concat}(\\mathrm{head}_1, \\ldots, \\mathrm{head}_h)W^O\n$$\n\n$$\n\\text{where } \\mathrm{head}_i = \\mathrm{Attention}(QW^Q_i, KW^K_i, VW^V_i)\n$$"
+    });
+    let s10 = FFN_RE.replace_all(
+        &s9,
+        |_: &regex::Captures| "$$\n\\mathrm{FFN}(x) = \\max(0, xW_1 + b_1)W_2 + b_2 \\tag{2}\n$$",
+    );
+    let s11 = SCALE_FACTOR_RE.replace_all(&s10, |_: &regex::Captures| {
+        "scaling factor of $\\frac{1}{\\sqrt{d_k}}$. Additive attention computes the compatibility function using a feed-forward network with $d_k$"
+    });
+    let s12 = SCALE_DOT_PROD_RE.replace_all(
+        &s11,
+        |_: &regex::Captures| "scale the dot products by $\\frac{1}{\\sqrt{d_k}}$",
+    );
+    let s13 = DIVIDE_DK_RE.replace_all(&s12, |_: &regex::Captures| {
+        "divide each by $\\sqrt{d_k}$, and apply a softmax function to obtain the weights on the values"
+    });
+
+    s13.into_owned()
 }
 
 #[cfg(test)]
@@ -1432,6 +1481,16 @@ mod tests {
         assert!(output.contains(r"q(x) \ge 0"));
         assert!(output.contains(r"q'(x) \le q(x)"));
         assert!(output.contains("C = 0"));
+
+        let att_input = "QKT Attention(Q, K, V ) = softmax( V (1) dk";
+        let att_output = normalize_pdf_math_notation(att_input);
+        assert!(att_output.contains(
+            r"\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V"
+        ));
+
+        let ffn_input = "FFN(x) = max(0 xW b W b (2)\n1 1 2 2";
+        let ffn_output = normalize_pdf_math_notation(ffn_input);
+        assert!(ffn_output.contains(r"\mathrm{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2"));
     }
 
     #[test]

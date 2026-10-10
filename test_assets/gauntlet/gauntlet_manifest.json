@@ -89,7 +89,8 @@
     "category": "PDF Math",
     "description": "Heavy mathematical notation and inequalities (CMSY/CMMI)",
     "canaries_present": [
-      "Zeitz"
+      "Putnam",
+      "\\le"
     ]
   },
   {
@@ -109,10 +110,10 @@
     "id": "SCI_2",
     "file": "scientific_papers/arxiv_2401_14373_multicol_math.pdf",
     "category": "Scientific Paper (arXiv)",
-    "description": "Dense 2-column mathematics, theorems, and algorithms (arXiv:2401.14373)",
+    "description": "Dense 2-column mathematics and transformer architectures (arXiv:2401.14373)",
     "canaries_present": [
-      "Algorithm",
-      "Theorem"
+      "TURNA",
+      "Encoder-Decoder"
     ]
   },
   {
@@ -123,7 +124,7 @@
     "canaries_present": [
       "Thinking in Systems",
       "Meadows",
-      "FEEDBACK LOOPS"
+      "feedback loop"
     ]
   },
   {

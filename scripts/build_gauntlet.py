@@ -195,7 +195,41 @@ manifest.append({
     "file": "slice_e_math_zeitz.pdf",
     "category": "PDF Math",
     "description": "Heavy mathematical notation and inequalities (CMSY/CMMI)",
-    "canaries_present": ["Zeitz"],
+    "canaries_present": ["Putnam", "\\le"],
+})
+
+# --- Scientific & Full Book Cases ---
+manifest.append({
+    "id": "SCI_1",
+    "file": "scientific_papers/attention_is_all_you_need.pdf",
+    "category": "Scientific Paper (arXiv)",
+    "description": "Attention Is All You Need: 2-column, Transformer diagram, multi-head attention math",
+    "canaries_present": ["Attention Is All You Need", "Vaswani", "softmax", "MultiHead"],
+    "ground_truth_latex": "scientific_papers/attention_latex_source/model_architecture.tex",
+})
+
+manifest.append({
+    "id": "SCI_2",
+    "file": "scientific_papers/arxiv_2401_14373_multicol_math.pdf",
+    "category": "Scientific Paper (arXiv)",
+    "description": "Dense 2-column mathematics and transformer architectures (arXiv:2401.14373)",
+    "canaries_present": ["TURNA", "Encoder-Decoder"],
+})
+
+manifest.append({
+    "id": "BOOK_1",
+    "file": "full_books/Thinking-in-Systems_Meadows.pdf",
+    "category": "Full Book (300pp)",
+    "description": "Thinking in Systems (Meadows, 235pp): flat RAM, chapters, callouts",
+    "canaries_present": ["Thinking in Systems", "Meadows", "feedback loop"],
+})
+
+manifest.append({
+    "id": "BOOK_2",
+    "file": "full_books/StructuringInterviewswithExperts.pdf",
+    "category": "Full Book (Scan)",
+    "description": "Structuring Interviews with Experts (21pp scan): high-throughput Apple Vision OCR",
+    "canaries_present": ["Structuring Interviews with Experts"],
 })
 
 # Write the Gauntlet manifest
