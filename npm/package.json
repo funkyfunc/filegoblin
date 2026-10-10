@@ -1,7 +1,7 @@
 {
   "name": "filegoblin",
   "version": "1.13.0",
-  "description": "Zero-dependency single-binary CLI converting any file or URL into clean Markdown for LLMs",
+  "description": "Fast, zero-dependency CLI & MCP server converting PDFs, Office docs, images, audio, and websites into clean Markdown for LLMs",
   "main": "./bin/filegoblin.js",
   "bin": {
     "filegoblin": "./bin/filegoblin.js"
@@ -25,7 +25,24 @@
     "docx",
     "pptx",
     "converter",
-    "cli"
+    "cli",
+    "npx",
+    "mcp",
+    "mcp-server",
+    "ocr",
+    "rag",
+    "document-parser",
+    "html-to-markdown",
+    "mermaid",
+    "tables",
+    "claude",
+    "ai",
+    "context-window",
+    "excel",
+    "omml",
+    "latex",
+    "whisper",
+    "data-extraction"
   ],
   "author": "filegoblin contributors",
   "license": "MIT",
