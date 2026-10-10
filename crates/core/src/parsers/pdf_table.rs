@@ -253,35 +253,59 @@ pub fn merge_edges(edges: &[Edge], settings: &TableSettings) -> Vec<Edge> {
     let filtered: Vec<Edge> = edges
         .iter()
         .filter(|e| e.length() >= settings.edge_min_length)
-        .cloned()
+        .copied()
         .collect();
 
     let snapped = snap_edges(&filtered, settings.snap_tolerance, settings.snap_tolerance);
 
-    // Group horizontal edges by rounded y coordinate
-    let mut h_map: BTreeMap<i32, Vec<Edge>> = BTreeMap::new();
-    // Group vertical edges by rounded x coordinate
-    let mut v_map: BTreeMap<i32, Vec<Edge>> = BTreeMap::new();
+    // Group horizontal edges by proximity within snap_tolerance
+    let mut h_clusters: Vec<(f32, Vec<Edge>)> = Vec::new();
+    for e in snapped
+        .iter()
+        .filter(|e| e.orientation == EdgeOrientation::Horizontal)
+    {
+        if let Some((avg_y, group)) = h_clusters
+            .iter_mut()
+            .find(|(y, _)| (e.top - *y).abs() <= settings.snap_tolerance)
+        {
+            *avg_y = (*avg_y * group.len() as f32 + e.top) / (group.len() + 1) as f32;
+            group.push(*e);
+        } else {
+            h_clusters.push((e.top, vec![*e]));
+        }
+    }
 
-    for e in snapped {
-        match e.orientation {
-            EdgeOrientation::Horizontal => {
-                let key = (e.top * 10.0).round() as i32;
-                h_map.entry(key).or_default().push(e);
-            }
-            EdgeOrientation::Vertical => {
-                let key = (e.x0 * 10.0).round() as i32;
-                v_map.entry(key).or_default().push(e);
-            }
+    // Group vertical edges by proximity within snap_tolerance
+    let mut v_clusters: Vec<(f32, Vec<Edge>)> = Vec::new();
+    for e in snapped
+        .iter()
+        .filter(|e| e.orientation == EdgeOrientation::Vertical)
+    {
+        if let Some((avg_x, group)) = v_clusters
+            .iter_mut()
+            .find(|(x, _)| (e.x0 - *x).abs() <= settings.snap_tolerance)
+        {
+            *avg_x = (*avg_x * group.len() as f32 + e.x0) / (group.len() + 1) as f32;
+            group.push(*e);
+        } else {
+            v_clusters.push((e.x0, vec![*e]));
         }
     }
 
     let mut result = Vec::new();
-    for (_, group) in h_map {
+    for (avg_y, mut group) in h_clusters {
+        for e in &mut group {
+            e.top = avg_y;
+            e.bottom = avg_y;
+        }
         let joined = join_edge_group(group, EdgeOrientation::Horizontal, settings.join_tolerance);
         result.extend(joined);
     }
-    for (_, group) in v_map {
+    for (avg_x, mut group) in v_clusters {
+        for e in &mut group {
+            e.x0 = avg_x;
+            e.x1 = avg_x;
+        }
         let joined = join_edge_group(group, EdgeOrientation::Vertical, settings.join_tolerance);
         result.extend(joined);
     }
@@ -593,6 +617,9 @@ impl ExtractedTable {
             for cell in row {
                 let sanitized = cell
                     .text
+                    .chars()
+                    .filter(|c| !c.is_control() || *c == ' ' || *c == '\t')
+                    .collect::<String>()
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ")

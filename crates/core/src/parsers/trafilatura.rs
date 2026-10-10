@@ -232,10 +232,19 @@ pub fn compute_metrics(el: &ElementRef) -> NodeMetrics {
         }
     }
 
-    // Link text
+    // Link text with citation dampening for academic/technical references
     for link in el.select(&SEL_LINKS) {
-        for text in link.text() {
-            metrics.link_text_len += text.trim().len();
+        let link_text: String = link.text().collect();
+        let trimmed = link_text.trim();
+        // Inline citation links like [1], [2], [14], or short footnote identifiers (<= 5 chars)
+        // are references rather than navigation link farms.
+        let is_citation = (trimmed.starts_with('[') && trimmed.ends_with(']'))
+            || (trimmed.len() <= 5
+                && trimmed
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '[' || c == ']' || c == '-'));
+        if !is_citation {
+            metrics.link_text_len += trimmed.len();
         }
     }
 
@@ -370,6 +379,15 @@ impl TrafilaturaExtractor {
                 "pre" | "code" | "table" | "blockquote" | "h1" | "h2" | "h3"
             ) {
                 continue;
+            }
+
+            // Protect syntax-highlighted code spans (e.g. Prism/hljs .token.comment)
+            if tag == "span" {
+                if let Some(cls) = val.attr("class") {
+                    if cls.contains("token") || cls.contains("hljs") || cls.starts_with("c-") {
+                        continue;
+                    }
+                }
             }
 
             let mut is_noise = false;

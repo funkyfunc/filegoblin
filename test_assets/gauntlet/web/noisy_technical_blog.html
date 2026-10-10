@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Scaling Distributed Consensus with Raft in Rust — Systems Engineering Blog</title>
+  <meta name="description" content="A deep dive into high-throughput Raft implementation in pure Rust.">
+</head>
+<body class="site-theme-dark">
+  <!-- Top Navigation Bar & Links -->
+  <header class="site-header navbar">
+    <div class="logo"><a href="/">SysEng Insights</a></div>
+    <nav class="nav-links">
+      <a href="/topics/databases">Databases</a>
+      <a href="/topics/distributed">Distributed Systems</a>
+      <a href="/topics/networking">Networking</a>
+      <a href="/topics/rust">Rust</a>
+      <a href="/topics/cloud">Cloud Architecture</a>
+      <a href="/pricing">Pricing</a>
+      <a href="/contact">Contact</a>
+      <a href="/login">Customer Login</a>
+    </nav>
+  </header>
+
+  <!-- Annoying Ad Banner -->
+  <div class="ad-banner-top dfp-ad advert" id="ad-leaderboard-top">
+    <span class="sponsor-label">Sponsored Advertisement</span>
+    <p>🚀 10x Your Cloud Bill with Quantum GPU Containers! Sign up today for $9,999/mo credits.</p>
+  </div>
+
+  <!-- Cookie Consent Modal -->
+  <div class="cookie-consent-overlay modal-barrier" id="gdpr-cookie-consent">
+    <h3>Cookie Consent & Privacy Choices</h3>
+    <p>We use 487 tracking beacons to monitor your keystrokes and monetize your browsing activity. By continuing you consent to all tracking cookies.</p>
+    <button type="button">Accept All Cookies</button>
+  </div>
+
+  <div class="layout-container">
+    <!-- Social Share Buttons Rail -->
+    <aside class="social-share-rail share-buttons" id="share-bar">
+      <a href="https://twitter.com/intent/tweet" class="share-twitter">Share on X</a>
+      <a href="https://linkedin.com/share" class="share-linkedin">Share on LinkedIn</a>
+      <a href="https://facebook.com/sharer" class="share-fb">Share on Facebook</a>
+      <a href="mailto:?subject=Read" class="share-email">Email Article</a>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content-wrapper">
+      <article class="post-content body-text" id="article-root">
+        <header class="article-header">
+          <h1 class="entry-title">Scaling Distributed Consensus with Raft in Rust</h1>
+          <p class="byline">By Dr. Alan Turing &mdash; Published October 10, 2026</p>
+        </header>
+
+        <section class="article-body">
+          <p>
+            Distributed consensus algorithms represent the foundation of modern reliable storage systems.
+            In this architectural retrospective, we analyze the implementation challenges of linearizable
+            replicated state machines operating over asynchronous networks subject to packet loss and network partitions.
+          </p>
+
+          <p>
+            The Raft consensus algorithm decomposes state machine replication into three orthogonal subproblems:
+            leader election, log replication, and safety guarantees. By enforcing strict log invariants,
+            Raft guarantees that if any server applies an entry at a given index, no other server will ever apply a different entry.
+          </p>
+
+          <h2>Core Architecture &amp; State Definitions</h2>
+          <p>
+            In our zero-allocation Rust implementation, the node state is encapsulated in an asynchronous state machine:
+          </p>
+
+          <pre><code>pub struct RaftNode {
+    id: u64,
+    peers: Vec&lt;SocketAddr&gt;,
+    current_term: u64,
+    voted_for: Option&lt;u64&gt;,
+    log: Vec&lt;LogEntry&gt;,
+    commit_index: usize,
+    last_applied: usize,
+}
+
+impl RaftNode {
+    pub async fn handle_append_entries(&amp;mut self, req: AppendRequest) -&gt; AppendResponse {
+        if req.term &lt; self.current_term {
+            return AppendResponse::reject(self.current_term);
+        }
+        self.reset_election_timer();
+        self.replicate_batch(req.entries).await
+    }
+}</code></pre>
+
+          <h2>Performance Benchmarks</h2>
+          <p>
+            We evaluated throughput and tail latency across a 5-node cluster deployed in distinct availability zones:
+          </p>
+
+          <table class="benchmark-results">
+            <thead>
+              <tr>
+                <th>Protocol</th>
+                <th>Throughput (req/s)</th>
+                <th>Latency p99 (ms)</th>
+                <th>Fault Tolerance</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Classic Paxos</td>
+                <td>42,500</td>
+                <td>18.4</td>
+                <td>2 Node Failures</td>
+              </tr>
+              <tr>
+                <td>Multi-Raft (Disk)</td>
+                <td>88,200</td>
+                <td>7.2</td>
+                <td>2 Node Failures</td>
+              </tr>
+              <tr>
+                <td>Filegoblin Raft (NVMe)</td>
+                <td>145,000</td>
+                <td>2.1</td>
+                <td>2 Node Failures</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <blockquote>
+            Safety Invariant: For any two logs containing an entry with the same index and term, the logs are identical in all entries up through the given index.
+          </blockquote>
+
+          <p>
+            Through rigorous property-based testing and deterministic fault injection, we verified that
+            zero data corruption occurred across ten million randomized cluster restarts and simulated network partitions.
+          </p>
+        </section>
+      </article>
+
+      <!-- Mid-article lead magnet / newsletter -->
+      <div class="newsletter-signup widget optin" id="subscribe-box">
+        <h3>Join 50,000 Systems Engineers</h3>
+        <p>Get our free whitepaper on kernel bypass networking delivered to your inbox.</p>
+        <input type="email" placeholder="you@company.com" />
+      </div>
+
+      <!-- Outbrain / Taboola Recommended Stories -->
+      <div class="related-stories recommendation-widget outbrain" id="taboola-below-article">
+        <h4>Recommended For You</h4>
+        <div class="story-item"><a href="/click?id=1">Celebrities Who Look Completely Unrecognizable Today</a></div>
+        <div class="story-item"><a href="/click?id=2">Eat One Clove of Garlic Before Bed For This Miracle Effect</a></div>
+        <div class="story-item"><a href="/click?id=3">Warren Buffett Warns: Move Your Money Out of Cash Immediately</a></div>
+      </div>
+
+      <!-- Disqus Comments Area -->
+      <section class="comments-section disqus_thread" id="comments">
+        <h3>User Comments (3)</h3>
+        <div class="comment-item">
+          <strong>Rustacean99:</strong> First! Great write-up on Raft invariants.
+        </div>
+        <div class="comment-item">
+          <strong>KernelHacker:</strong> Did you test with io_uring or epoll?
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Footer Navigation & Legal -->
+  <footer class="site-footer">
+    <div class="footer-links">
+      <a href="/terms">Terms of Service</a>
+      <a href="/privacy-policy">Privacy Policy</a>
+      <a href="/sitemap">XML Sitemap</a>
+      <a href="/security">Security Reports</a>
+    </div>
+    <p class="copyright">&copy; 2026 TechCorp Distributed Systems LLC. All rights reserved.</p>
+  </footer>
+</body>
+</html>

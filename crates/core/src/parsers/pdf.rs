@@ -1473,6 +1473,54 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
             continue;
         }
 
+        let sample_words: Vec<&str> = table
+            .rows
+            .iter()
+            .flat_map(|r| r.iter())
+            .map(|c| c.text.trim())
+            .filter(|s| s.len() >= 3)
+            .collect();
+
+        if let Some((start, end)) = find_pipe_table_span(&page_md, &sample_words) {
+            let existing_table = &page_md[start..end];
+            if existing_table.trim() != table_md.trim() {
+                // Find if there is a redundant heading line immediately preceding start
+                let prefix = &page_md[..start];
+                let mut trim_start = start;
+                for header in &table.rows[0] {
+                    let h_text = header.text.trim();
+                    if h_text.len() >= 4 {
+                        let bold_h = format!("**{}**", h_text);
+                        if let Some(pos) = prefix.rfind(&bold_h) {
+                            if prefix[pos + bold_h.len()..].trim().is_empty() {
+                                trim_start = pos;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                let mut new_md = String::with_capacity(page_md.len() + table_md.len());
+                new_md.push_str(&page_md[..trim_start]);
+                new_md.push_str(&table_md);
+                new_md.push('\n');
+                new_md.push_str(&page_md[end..]);
+
+                // Also clean up any displaced header that pdf_oxide dropped at the end
+                for header in &table.rows[0] {
+                    let h_text = header.text.trim();
+                    if h_text.len() >= 4 {
+                        let bold_h = format!("**{}**", h_text);
+                        new_md = new_md.replace(&format!("\n\n{}\n", bold_h), "");
+                        new_md = new_md.replace(&format!("\n\n{}", bold_h), "");
+                    }
+                }
+
+                page_md = new_md;
+            }
+            continue;
+        }
+
         let first_header = table.rows[0].first().map(|c| c.text.trim()).unwrap_or("");
         let last_cell = table
             .rows
@@ -1520,10 +1568,116 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
     page_md
 }
 
+/// Locates the byte span of a pipe table block in markdown containing matching words.
+fn find_pipe_table_span(text: &str, target_words: &[&str]) -> Option<(usize, usize)> {
+    let mut in_table = false;
+    let mut block_start = 0;
+    let mut block_end = 0;
+    let mut best_span = None;
+    let mut best_matches = 0;
+
+    let mut current_offset = 0;
+    for line in text.split_inclusive('\n') {
+        let line_len = line.len();
+        let trimmed = line.trim();
+        let is_pipe_row = trimmed.starts_with('|') && trimmed.ends_with('|');
+
+        if is_pipe_row {
+            if !in_table {
+                in_table = true;
+                block_start = current_offset;
+            }
+            block_end = current_offset + line_len;
+        } else if in_table && !trimmed.is_empty() {
+            in_table = false;
+            let block = &text[block_start..block_end];
+            let matches = target_words
+                .iter()
+                .filter(|&&w| !w.is_empty() && block.contains(w))
+                .count();
+            if matches >= 2 && matches > best_matches {
+                best_matches = matches;
+                best_span = Some((block_start, block_end));
+            }
+        }
+        current_offset += line_len;
+    }
+
+    if in_table {
+        let block = &text[block_start..block_end];
+        let matches = target_words
+            .iter()
+            .filter(|&&w| !w.is_empty() && block.contains(w))
+            .count();
+        if matches >= 2 && matches > best_matches {
+            best_span = Some((block_start, block_end));
+        }
+    }
+
+    best_span
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn test_extract_paths_and_words_on_adversarial() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let p = Path::new(&manifest_dir)
+            .join("../../test_assets/gauntlet/tables/adversarial_ruling_table.pdf");
+        let doc = PdfDocument::open(&p).unwrap();
+        let paths = doc.extract_paths(0).unwrap();
+        let words = doc.extract_words(0).unwrap();
+        let page_height = doc.get_page_media_box(0).map(|m| m.3).unwrap_or(792.0);
+        let mut edges = Vec::new();
+        for p in &paths {
+            let top = page_height - (p.bbox.y + p.bbox.height);
+            let bottom = page_height - p.bbox.y;
+            if p.is_horizontal_line(3.0) || (p.bbox.height <= 2.5 && p.bbox.width >= 10.0) {
+                edges.push(crate::parsers::pdf_table::Edge::horizontal(
+                    p.bbox.x,
+                    p.bbox.x + p.bbox.width,
+                    top,
+                ));
+            } else if p.is_vertical_line(3.0) || (p.bbox.width <= 2.5 && p.bbox.height >= 10.0) {
+                edges.push(crate::parsers::pdf_table::Edge::vertical(
+                    p.bbox.x, top, bottom,
+                ));
+            }
+        }
+        let pdf_words: Vec<crate::parsers::pdf_table::PdfWord> = words
+            .iter()
+            .map(|w| {
+                let top = page_height - (w.bbox.y + w.bbox.height);
+                let bottom = page_height - w.bbox.y;
+                crate::parsers::pdf_table::PdfWord::new(
+                    w.text.clone(),
+                    w.bbox.x,
+                    top,
+                    w.bbox.x + w.bbox.width,
+                    bottom,
+                )
+            })
+            .collect();
+        let settings = crate::parsers::pdf_table::TableSettings::default();
+        let tables = crate::parsers::pdf_table::extract_tables_from_edges_and_words(
+            &edges, &pdf_words, &settings,
+        );
+        println!("Adversarial tables count: {}", tables.len());
+        for t in &tables {
+            println!("Rows count: {}", t.rows.len());
+            for (ri, r) in t.rows.iter().enumerate() {
+                let row_str = r
+                    .iter()
+                    .map(|c| format!("'{}'", c.text))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("  Row {}: {}", ri, row_str);
+            }
+        }
+    }
 
     #[test]
     fn test_extract_paths_and_words_on_financial_report() {
