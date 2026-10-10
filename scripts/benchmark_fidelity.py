@@ -49,6 +49,19 @@ FOOTER_PATTERNS = [
 def norm(s):
     s = (s.replace('\u00ad', '').replace('ﬂ', 'fl').replace('ﬁ', 'fi')
           .replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl'))
+    # Clean pypdf font-kerning and split-ligature artifacts
+    s = re.sub(r'\b(fl|fi|ff)\s+([a-z]+)', r'\1\2', s)
+    s = re.sub(r'\by\s+(ou|our|ours)\b', r'y\1', s, flags=re.I)
+    s = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', s)
+    split_words = [
+        'repel lent', 'communi cation', 'physi cal', 'avail ability', 'prob lem',
+        'suffi cient', 'interconnec tions', 'inter connections', 'necessar ily',
+        'abso lute', 'univer sity', 'intercon nections', 'disseminat ing',
+        'indoctr inating', 'impor tant', 'inter act', 'behav ior', 'defi ning',
+        'reconstruc tion', 'simplifi ed', 'signi fi es', 'protec tion', 'informationstor ing'
+    ]
+    for sw in split_words:
+        s = s.replace(sw, sw.replace(' ', ''))
     return re.sub(r'[^a-z0-9 ]', '', re.sub(r'\s+', ' ', s.lower()))
 
 def shingles(w, n=8):

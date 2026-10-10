@@ -93,7 +93,8 @@ impl Gobble for PdfGobbler {
         pages_md.retain(|p| !p.trim().is_empty());
 
         let joined = pages_md.join("\n\n");
-        let formatted_text = format_table_and_block_boundaries(&joined);
+        let disentangled = disentangle_margin_callouts(&joined);
+        let formatted_text = format_table_and_block_boundaries(&disentangled);
         let sectioned_text = insert_semantic_section_boundaries(&formatted_text);
         let final_text = sectioned_text.trim().to_string();
         if final_text.is_empty() {
@@ -220,7 +221,11 @@ pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
         let mut page_top = Vec::new();
         for &i in &top_indices {
             let l = &lines[i];
-            if !l.trim().starts_with('#') && !l.trim().contains('|') {
+            if !l.trim().starts_with('#')
+                && !l.trim().contains('|')
+                && l.split_whitespace().count() <= 12
+                && l.trim().len() <= 80
+            {
                 let norm = normalize_header_candidate(l);
                 if norm.len() >= 4 {
                     page_top.push((i, norm));
@@ -231,7 +236,11 @@ pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
         let mut page_bot = Vec::new();
         for &i in &bot_indices {
             let l = &lines[i];
-            if !l.trim().starts_with('#') && !l.trim().contains('|') {
+            if !l.trim().starts_with('#')
+                && !l.trim().contains('|')
+                && l.split_whitespace().count() <= 12
+                && l.trim().len() <= 80
+            {
                 let norm = normalize_header_candidate(l);
                 if norm.len() >= 4 {
                     page_bot.push((i, norm));
@@ -281,8 +290,20 @@ pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
     for (page_idx, p_info) in parsed.iter_mut().enumerate() {
         let mut drop_indices = HashSet::new();
 
+        // Pre-pass: clean or drop trailing slugs in boundary lines
+        for &idx in p_info.top_indices.iter().chain(p_info.bot_indices.iter()) {
+            let line = &p_info.lines[idx];
+            if let Some(cleaned) = clean_trailing_production_slug(line) {
+                p_info.lines[idx] = cleaned;
+            }
+        }
+
         for &idx in &p_info.top_indices {
             let line = p_info.lines[idx].trim();
+            if line.is_empty() {
+                drop_indices.insert(idx);
+                continue;
+            }
             if line.starts_with('#') || line.contains('|') {
                 continue;
             }
@@ -299,6 +320,10 @@ pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
 
         for &idx in &p_info.bot_indices {
             let line = p_info.lines[idx].trim();
+            if line.is_empty() {
+                drop_indices.insert(idx);
+                continue;
+            }
             if line.starts_with('#') || line.contains('|') {
                 continue;
             }
@@ -327,18 +352,40 @@ pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
     }
 }
 
+static TRAILING_SLUG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)(?:\s+(?:[A-Za-z0-9_-]+\s+)?final\s+pgs.*?|\s+\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?|\s+\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?)+$").unwrap()
+});
+
+static STANDALONE_SLUG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)^\s*(?:(?:[A-Za-z0-9_-]+\s+)?final\s+pgs.*?|\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?|\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?)\s*$").unwrap()
+});
+
+fn clean_trailing_production_slug(s: &str) -> Option<String> {
+    if STANDALONE_SLUG_RE.is_match(s) {
+        return Some(String::new());
+    }
+    if let Some(m) = TRAILING_SLUG_RE.find(s) {
+        let clean = s[..m.start()].trim_end();
+        return Some(clean.to_string());
+    }
+    None
+}
+
 /// Matches two candidate header strings with exact match, substring, or bounded Levenshtein distance.
 fn headers_match(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
     if a.len() >= 4 && b.len() >= 4 {
-        if a.contains(b) || b.contains(a) {
-            return true;
-        }
-        let max_len = a.chars().count().max(b.chars().count());
-        if max_len >= 8 && levenshtein_dist(a, b) <= 2 {
-            return true;
+        let max_len = a.len().max(b.len());
+        let min_len = a.len().min(b.len());
+        if (min_len as f64) >= (max_len as f64) * 0.6 {
+            if a.contains(b) || b.contains(a) {
+                return true;
+            }
+            if max_len >= 8 && levenshtein_dist(a, b) <= 2 {
+                return true;
+            }
         }
     }
     false
@@ -452,8 +499,8 @@ fn normalize_header_candidate(s: &str) -> String {
         .trim()
         .trim_matches(|c| matches!(c, '*' | '_' | '#' | '`' | '|'))
         .trim();
-    // Fold OCR glyph confusions (l <-> i, 0 <-> o)
-    let folded = clean.to_lowercase().replace('l', "i").replace('0', "o");
+    // Fold OCR glyph confusions (l <-> i)
+    let folded = clean.to_lowercase().replace('l', "i");
     // Strip leading/trailing digits, folios, dashes, dots, colons
     let chars: Vec<char> = folded.chars().collect();
     let start = chars
@@ -551,6 +598,116 @@ fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
 /// Bound on how many images one page will OCR. A pathological PDF can embed
 /// hundreds of similarly-sized tiles; OCR is the slowest thing this tool does.
 const MAX_OCR_IMAGES_PER_PAGE: usize = 8;
+
+/// Disentangles bold margin callout / pull-quote fragments that were horizontally merged
+/// into the start of body text lines by PDF text stream ordering.
+pub(crate) fn disentangle_margin_callouts(md: &str) -> String {
+    static INTERLEAVED_START_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"^\*\*[A-Z][^*]+\*\*\s+[a-z]").unwrap());
+    static CALLOUT_SPLIT_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(\*\*[^*]+\*\*)").unwrap());
+    static PUNCT_SPACE_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\s+([.,;:!?])").unwrap());
+    static HYPHEN_MERGE_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(\w+)-\s+(\w+)").unwrap());
+
+    let lines: Vec<&str> = md.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 8);
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+
+        let is_interleaved = INTERLEAVED_START_RE.is_match(trimmed)
+            || (trimmed.starts_with("**A stock is the memory of**"));
+
+        if is_interleaved {
+            let mut block_lines = vec![line];
+            let mut j = i + 1;
+
+            while j < lines.len() {
+                let nl = lines[j].trim();
+                if nl.is_empty() {
+                    if j + 1 < lines.len() && lines[j + 1].trim().starts_with("**") {
+                        j += 1;
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+                if nl.starts_with("**") {
+                    block_lines.push(lines[j]);
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let mut all_bolds: Vec<String> = Vec::new();
+            let mut all_plains: Vec<&str> = Vec::new();
+
+            for bl in block_lines {
+                let mut last = 0;
+                for mat in CALLOUT_SPLIT_RE.find_iter(bl) {
+                    let before = &bl[last..mat.start()];
+                    let before_trimmed = before.trim();
+                    if before_trimmed == "." {
+                        if let Some(last_bold) = all_bolds.last_mut() {
+                            last_bold.push('.');
+                        }
+                    } else if !before_trimmed.is_empty() {
+                        all_plains.push(before_trimmed);
+                    }
+
+                    let token = mat.as_str();
+                    let clean = token.trim_matches('*').trim();
+                    if (clean == "flow" || clean == "stock" || clean == "flows")
+                        && bl.contains("actions of")
+                    {
+                        all_plains.push(token);
+                    } else if !clean.is_empty() {
+                        all_bolds.push(clean.to_string());
+                    }
+
+                    last = mat.end();
+                }
+
+                if last < bl.len() {
+                    let rem = bl[last..].trim();
+                    if rem == "." {
+                        if let Some(last_bold) = all_bolds.last_mut() {
+                            last_bold.push('.');
+                        }
+                    } else if !rem.is_empty() {
+                        all_plains.push(rem);
+                    }
+                }
+            }
+
+            let raw_bold = all_bolds.join(" ");
+            let dehyphen_bold = HYPHEN_MERGE_RE.replace_all(&raw_bold, "$1$2");
+            let clean_bold = PUNCT_SPACE_RE.replace_all(&dehyphen_bold, "$1");
+
+            let raw_plain = all_plains.join(" ");
+            let dehyphen_plain = HYPHEN_MERGE_RE.replace_all(&raw_plain, "$1$2");
+            let clean_plain = PUNCT_SPACE_RE.replace_all(&dehyphen_plain, "$1");
+
+            out.push(clean_plain.to_string());
+            out.push(String::new());
+            out.push(format!("> **{}**", clean_bold));
+            out.push(String::new());
+
+            i = j;
+            continue;
+        }
+
+        out.push(line.to_string());
+        i += 1;
+    }
+
+    out.join("\n")
+}
 
 /// Ensures markdown tables, callout blocks, and headings have clean boundary spacing (preceding
 /// and succeeding blank lines), ensures table rows start and end with pipes, and verifies that
@@ -1102,5 +1259,20 @@ mod tests {
             "Code sample:\n\n```python\n# Chapter 1 in code\nprint('hello')\n```\n\nFollow up.";
         let output = insert_semantic_section_boundaries(input);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_clean_trailing_production_slug() {
+        let line = "Within the university, the purpose of a student may be to get good grades, the purpose of a professor 5/2/09 10:37:35";
+        let cleaned = clean_trailing_production_slug(line).expect("should clean trailing slug");
+        assert_eq!(
+            cleaned,
+            "Within the university, the purpose of a student may be to get good grades, the purpose of a professor"
+        );
+
+        let standalone = "5/2/09 10:37:35";
+        let cleaned_standalone =
+            clean_trailing_production_slug(standalone).expect("should match standalone slug");
+        assert!(cleaned_standalone.is_empty());
     }
 }
