@@ -210,6 +210,7 @@ pub mod pdf;
 pub mod powerpoint;
 pub mod rtf;
 pub mod sheet;
+pub mod smartart;
 pub mod subtitle;
 pub mod transcribe;
 pub mod transcript;

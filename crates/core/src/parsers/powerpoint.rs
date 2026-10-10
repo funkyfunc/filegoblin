@@ -13,7 +13,11 @@ impl Gobble for PptxGobbler {
             std::collections::HashMap::new();
         let mut slide_chart_rels: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
+        let mut slide_smartart_rels: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         let mut chart_xmls: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut smartart_xmls: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         let mut notes_texts: std::collections::HashMap<usize, String> =
             std::collections::HashMap::new();
@@ -37,11 +41,16 @@ impl Gobble for PptxGobbler {
                     .replace("/_rels/", "/")
                     .trim_end_matches(".rels")
                     .to_string();
-                let targets = extract_chart_targets_from_rels(&rels_content);
-                slide_chart_rels.insert(slide_name, targets);
+                let chart_targets = extract_chart_targets_from_rels(&rels_content);
+                slide_chart_rels.insert(slide_name.clone(), chart_targets);
+                let diagram_targets = extract_diagram_targets_from_rels(&rels_content);
+                slide_smartart_rels.insert(slide_name, diagram_targets);
             } else if name.starts_with("ppt/charts/chart") && name.ends_with(".xml") {
                 let xml_content = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
                 chart_xmls.insert(name, xml_content);
+            } else if name.starts_with("ppt/diagrams/data") && name.ends_with(".xml") {
+                let xml_content = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
+                smartart_xmls.insert(name, xml_content);
             } else if name.starts_with("ppt/notesSlides/notesSlide") && name.ends_with(".xml") {
                 let num_str = name
                     .trim_start_matches("ppt/notesSlides/notesSlide")
@@ -72,7 +81,8 @@ impl Gobble for PptxGobbler {
         for (name, xml_content) in &slide_xmls {
             let text = extract_text_from_slide_xml(xml_content)?;
             let has_charts = slide_chart_rels.get(name).is_some_and(|c| !c.is_empty());
-            if !text.trim().is_empty() || has_charts {
+            let has_smartart = slide_smartart_rels.get(name).is_some_and(|s| !s.is_empty());
+            if !text.trim().is_empty() || has_charts || has_smartart {
                 slide_texts.insert(name.clone(), text);
             }
         }
@@ -91,6 +101,7 @@ impl Gobble for PptxGobbler {
         ordered.extend(leftovers);
 
         let mut used_charts: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut used_smartart: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut output = String::new();
 
         for (pos, name) in ordered.iter().enumerate() {
@@ -117,6 +128,26 @@ impl Gobble for PptxGobbler {
                 }
             }
 
+            // Append SmartArt diagrams for this slide
+            if let Some(diagrams) = slide_smartart_rels.get(name) {
+                for dgm_path in diagrams {
+                    if let Some(dgm_xml) = smartart_xmls.get(dgm_path) {
+                        used_smartart.insert(dgm_path.clone());
+                        if let Ok(diag) = crate::parsers::smartart::SmartArtDiagram::parse(dgm_xml)
+                        {
+                            if let Some(mermaid) = diag.render_mermaid() {
+                                if !slide_body.is_empty() {
+                                    slide_body.push_str("\n\n");
+                                }
+                                slide_body.push_str("```mermaid\n");
+                                slide_body.push_str(&mermaid);
+                                slide_body.push_str("\n```");
+                            }
+                        }
+                    }
+                }
+            }
+
             output.push_str(&format!("## Slide {}\n\n{}", pos + 1, slide_body));
             if let Some(notes) = slide_file_number(name).and_then(|n| notes_texts.get(&n)) {
                 output.push_str(&format!("\n\n**Speaker notes:**\n{}", notes));
@@ -131,6 +162,17 @@ impl Gobble for PptxGobbler {
                     let chart_md = chart.render_markdown();
                     if !chart_md.is_empty() {
                         output.push_str(&format!("{}\n\n---\n\n", chart_md));
+                    }
+                }
+            }
+        }
+
+        // If any SmartArt in the presentation were not attached to specific slides, append them
+        for (dgm_path, dgm_xml) in &smartart_xmls {
+            if !used_smartart.contains(dgm_path) {
+                if let Ok(diag) = crate::parsers::smartart::SmartArtDiagram::parse(dgm_xml) {
+                    if let Some(mermaid) = diag.render_mermaid() {
+                        output.push_str(&format!("```mermaid\n{}\n```\n\n---\n\n", mermaid));
                     }
                 }
             }
@@ -440,6 +482,54 @@ fn extract_chart_targets_from_rels(rels_xml: &str) -> Vec<String> {
     targets
 }
 
+fn extract_diagram_targets_from_rels(rels_xml: &str) -> Vec<String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut targets = Vec::new();
+    let mut reader = Reader::from_str(rels_xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if e.local_name().as_ref() == b"Relationship" =>
+            {
+                let mut is_diagram = false;
+                let mut target: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"Type" => {
+                            if let Ok(val) = attr.unescape_value() {
+                                if val.ends_with("/diagramData") {
+                                    is_diagram = true;
+                                }
+                            }
+                        }
+                        b"Target" => {
+                            if let Ok(val) = attr.unescape_value() {
+                                target = Some(val.into_owned());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if is_diagram && let Some(t) = target {
+                    let normalized = if let Some(stripped) = t.strip_prefix("../") {
+                        format!("ppt/{}", stripped)
+                    } else if let Some(stripped) = t.strip_prefix('/') {
+                        stripped.to_string()
+                    } else {
+                        format!("ppt/diagrams/{}", t.trim_start_matches("diagrams/"))
+                    };
+                    targets.push(normalized);
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    targets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +627,23 @@ mod tests {
             assert!(md.contains("```mermaid\nflowchart TD"));
             assert!(md.contains(r#"N_101["Ingest Input"] --> N_102["Validate Schema"]"#));
             assert!(md.contains(r#"N_102 -.-> N_103["Store Record"]"#));
+        }
+    }
+
+    #[test]
+    fn test_powerpoint_smartart_process() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let path =
+            Path::new(&manifest_dir).join("../../test_assets/benchmarks/smartart_process.pptx");
+        if path.exists() {
+            let gobbler = PptxGobbler;
+            let md = gobbler
+                .gobble(&path, &ParseOptions::default())
+                .expect("parse smartart process pptx");
+            assert!(md.contains("```mermaid\nflowchart LR"));
+            assert!(md.contains(
+                r#"N_1["Phase 1: Research"] --> N_2["Phase 2: Prototype"] --> N_3["Phase 3: Production"]"#
+            ));
         }
     }
 }
