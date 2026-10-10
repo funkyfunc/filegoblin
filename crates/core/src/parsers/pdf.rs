@@ -71,14 +71,19 @@ impl Gobble for PdfGobbler {
                         }
                     };
                     if matches!(kind, PageKind::ImageText)
+                        && md.split_whitespace().count() < 40
                         && let Some(ocr) = ocr_scanned_page(&doc, page)
                         && !ocr.trim().is_empty()
                         && !md
                             .to_lowercase()
                             .contains(crate::parsers::str_prefix(&normalize(&ocr), 40))
                     {
-                        md.push_str("\n\n> **Text from embedded image:**\n> ");
-                        md.push_str(&ocr.trim().replace('\n', "\n> "));
+                        if md.is_empty() {
+                            md = ocr.trim().to_string();
+                        } else {
+                            md.push_str("\n\n> **Text from embedded image:**\n> ");
+                            md.push_str(&ocr.trim().replace('\n', "\n> "));
+                        }
                     }
                     md
                 }
