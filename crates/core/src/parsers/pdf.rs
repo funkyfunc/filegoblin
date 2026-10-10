@@ -59,6 +59,9 @@ impl Gobble for PdfGobbler {
                             Ok(text) => (text.trim().to_string(), false),
                             Err(e) => (failed_page_marker(page + 1, &e.to_string()), true),
                         };
+                        if !unreadable && !md.is_empty() {
+                            md = recover_page_vector_tables(&doc, page, md);
+                        }
                         if matches!(kind, PageKind::ImageText)
                             && md.split_whitespace().count() < 40
                             && let Some(ocr) = ocr_scanned_page(&doc, page)
@@ -1378,10 +1381,200 @@ pub fn prune_isolated_subscript_noise(text: &str) -> String {
     result.join("\n")
 }
 
+/// Recovers high-fidelity GFM tables from vector ruling lines and spatial word clusters
+/// using the ported pdfplumber table extraction algorithm.
+fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: String) -> String {
+    let Ok(paths) = doc.extract_paths(page) else {
+        return page_md;
+    };
+    let Ok(words) = doc.extract_words(page) else {
+        return page_md;
+    };
+    if paths.is_empty() || words.is_empty() {
+        return page_md;
+    }
+
+    let page_height = doc.get_page_media_box(page).map(|m| m.3).unwrap_or(792.0);
+    let mut edges = Vec::new();
+    for p in &paths {
+        let top = page_height - (p.bbox.y + p.bbox.height);
+        let bottom = page_height - p.bbox.y;
+        if p.is_horizontal_line(3.0) || (p.bbox.height <= 2.5 && p.bbox.width >= 10.0) {
+            edges.push(crate::parsers::pdf_table::Edge::horizontal(
+                p.bbox.x,
+                p.bbox.x + p.bbox.width,
+                top,
+            ));
+        } else if p.is_vertical_line(3.0) || (p.bbox.width <= 2.5 && p.bbox.height >= 10.0) {
+            edges.push(crate::parsers::pdf_table::Edge::vertical(
+                p.bbox.x, top, bottom,
+            ));
+        } else if p.is_rectangle() && p.bbox.width >= 15.0 && p.bbox.height >= 10.0 {
+            edges.push(crate::parsers::pdf_table::Edge::horizontal(
+                p.bbox.x,
+                p.bbox.x + p.bbox.width,
+                top,
+            ));
+            edges.push(crate::parsers::pdf_table::Edge::horizontal(
+                p.bbox.x,
+                p.bbox.x + p.bbox.width,
+                bottom,
+            ));
+            edges.push(crate::parsers::pdf_table::Edge::vertical(
+                p.bbox.x, top, bottom,
+            ));
+            edges.push(crate::parsers::pdf_table::Edge::vertical(
+                p.bbox.x + p.bbox.width,
+                top,
+                bottom,
+            ));
+        }
+    }
+
+    if edges.is_empty() {
+        return page_md;
+    }
+
+    let pdf_words: Vec<crate::parsers::pdf_table::PdfWord> = words
+        .iter()
+        .map(|w| {
+            let top = page_height - (w.bbox.y + w.bbox.height);
+            let bottom = page_height - w.bbox.y;
+            crate::parsers::pdf_table::PdfWord::new(
+                w.text.clone(),
+                w.bbox.x,
+                top,
+                w.bbox.x + w.bbox.width,
+                bottom,
+            )
+        })
+        .collect();
+
+    let settings = crate::parsers::pdf_table::TableSettings::default();
+    let tables = crate::parsers::pdf_table::extract_tables_from_edges_and_words(
+        &edges, &pdf_words, &settings,
+    );
+
+    if tables.is_empty() {
+        return page_md;
+    }
+
+    for table in tables {
+        if table.rows.len() < 2 || table.rows.iter().all(|r| r.len() < 2) {
+            continue;
+        }
+        let table_md = table.to_markdown().trim().to_string();
+        if table_md.is_empty() {
+            continue;
+        }
+
+        // If page_md already contains this table, skip
+        if page_md.contains(&table_md) {
+            continue;
+        }
+
+        let first_header = table.rows[0].first().map(|c| c.text.trim()).unwrap_or("");
+        let last_cell = table
+            .rows
+            .last()
+            .and_then(|r| r.last())
+            .map(|c| c.text.trim())
+            .unwrap_or("");
+
+        if !first_header.is_empty() && !last_cell.is_empty() {
+            if let (Some(start_idx), Some(end_idx)) =
+                (page_md.find(first_header), page_md.rfind(last_cell))
+            {
+                if start_idx <= end_idx {
+                    let line_start = page_md[..start_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                    let line_end = page_md[end_idx..]
+                        .find('\n')
+                        .map(|i| end_idx + i)
+                        .unwrap_or(page_md.len());
+
+                    let existing_chunk = &page_md[line_start..line_end];
+                    if existing_chunk
+                        .lines()
+                        .all(|l| l.trim().starts_with('|') && l.trim().ends_with('|'))
+                        && existing_chunk.lines().count() > table.rows.len()
+                    {
+                        continue;
+                    }
+
+                    let mut new_md = String::with_capacity(page_md.len() + table_md.len());
+                    new_md.push_str(&page_md[..line_start]);
+                    new_md.push_str(&table_md);
+                    new_md.push_str(&page_md[line_end..]);
+                    page_md = new_md;
+                    continue;
+                }
+            }
+        }
+
+        if !page_md.is_empty() {
+            page_md.push_str("\n\n");
+        }
+        page_md.push_str(&table_md);
+    }
+
+    page_md
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn test_extract_paths_and_words_on_financial_report() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let p = Path::new(&manifest_dir).join("../../test_assets/financial_report.pdf");
+        let doc = PdfDocument::open(&p).unwrap();
+        let paths = doc.extract_paths(0).unwrap();
+        let words = doc.extract_words(0).unwrap();
+        assert!(!paths.is_empty());
+        assert!(!words.is_empty());
+
+        let page_height = doc.get_page_media_box(0).map(|m| m.3).unwrap_or(792.0);
+        let mut edges = Vec::new();
+        for p in &paths {
+            let top = page_height - (p.bbox.y + p.bbox.height);
+            let bottom = page_height - p.bbox.y;
+            if p.is_horizontal_line(3.0) || (p.bbox.height <= 2.5 && p.bbox.width >= 10.0) {
+                edges.push(crate::parsers::pdf_table::Edge::horizontal(
+                    p.bbox.x,
+                    p.bbox.x + p.bbox.width,
+                    top,
+                ));
+            } else if p.is_vertical_line(3.0) || (p.bbox.width <= 2.5 && p.bbox.height >= 10.0) {
+                edges.push(crate::parsers::pdf_table::Edge::vertical(
+                    p.bbox.x, top, bottom,
+                ));
+            }
+        }
+        let pdf_words: Vec<crate::parsers::pdf_table::PdfWord> = words
+            .iter()
+            .map(|w| {
+                let top = page_height - (w.bbox.y + w.bbox.height);
+                let bottom = page_height - w.bbox.y;
+                crate::parsers::pdf_table::PdfWord::new(
+                    w.text.clone(),
+                    w.bbox.x,
+                    top,
+                    w.bbox.x + w.bbox.width,
+                    bottom,
+                )
+            })
+            .collect();
+        let settings = crate::parsers::pdf_table::TableSettings::default();
+        let tables = crate::parsers::pdf_table::extract_tables_from_edges_and_words(
+            &edges, &pdf_words, &settings,
+        );
+        assert_eq!(tables.len(), 1);
+        let md = tables[0].to_markdown();
+        assert!(md.contains("| Date | Revenue | Expenses | Net Profit | Growth |"));
+        assert!(md.contains("| 2026-01-01 | $10,000,000 | $8,000,000 | $2,000,000 | +5% |"));
+    }
 
     #[test]
     fn test_pdf_extraction_with_table() {

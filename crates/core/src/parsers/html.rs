@@ -169,6 +169,13 @@ impl HtmlGobbler {
                 body.map(|b| b.inner_html())
                     .unwrap_or_else(|| doc.root_element().inner_html()),
             ]
+        } else if drop_link_farms {
+            let trafilatura = crate::parsers::trafilatura::TrafilaturaExtractor::default();
+            if let Some(extracted) = trafilatura.extract(content) {
+                vec![extracted]
+            } else {
+                select_content_roots(&doc)
+            }
         } else {
             select_content_roots(&doc)
         };

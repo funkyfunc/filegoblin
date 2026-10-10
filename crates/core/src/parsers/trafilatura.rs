@@ -164,10 +164,7 @@ pub fn is_boilerplate_attribute(value: &str) -> bool {
         "dsq",
         "reply",
         "replies",
-        // Author bios & recommendations
-        "byline",
-        "author-bio",
-        "author-card",
+        // Recommendations & widgets
         "related",
         "recommend",
         "most-popular",

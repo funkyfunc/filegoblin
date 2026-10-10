@@ -611,8 +611,8 @@ impl ExtractedTable {
 
             // Emit separator row after header (row 0)
             if row_idx == 0 {
-                let sep = vec![":---"; col_count];
-                lines.push(format!("| {} |", sep.join(" | ")));
+                let sep = vec!["---"; col_count];
+                lines.push(format!("|{}|", sep.join("|")));
             }
         }
 
@@ -1120,7 +1120,7 @@ mod tests {
 
         let md = tables[0].to_markdown();
         assert!(md.contains("| Quarterly Revenue |  |"), "{md}");
-        assert!(md.contains("| :--- | :--- |"), "{md}");
+        assert!(md.contains("|---|---|"), "{md}");
         assert!(md.contains("| Q1 | $50M |"), "{md}");
     }
 
