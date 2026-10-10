@@ -69,6 +69,9 @@ cargo install --git https://github.com/funkyfunc/filegoblin filegoblin --feature
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs       (CLI Entry & Mascot)
 │   │       └── walk.rs       (--walk interactive picker)
+│   └── npm/          (npx filegoblin Zero-Install Launcher)
+│       ├── package.json
+│       └── bin/filegoblin.js
 └── .cargo/
     └── config.toml   (Aliases)
 ```
@@ -83,10 +86,13 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, OpenDocument, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
 - [x] PDF → markdown via `pdf_oxide`: headings, pipe tables, reading order, hyphenation — with per-page scanned-vs-text classification
 - [x] **Scanned PDFs and images OCR automatically on macOS** (Apple Vision, zero setup); Linux/Windows via `--features ocr`
-- [x] Word → real markdown: heading levels, nested lists, bold/italic, hyperlinks with URLs
+- [x] Word → real markdown: heading levels, nested lists, bold/italic, hyperlinks with URLs, and equations
+- [x] **Word Office Math (OMML)**: `<m:oMath>` and `<m:oMathPara>` converted directly to standard LaTeX (`$ ... $` and `$$ ... $$`)
+- [x] **Embedded Office Charts**: PowerPoint (`.pptx`) and Word (`.docx`) OpenXML DrawingML charts (`c:chartSpace`) deconstructed into clean Markdown pipe tables
+- [x] **Zero-install npm distribution**: Execute via `npx filegoblin` in environments without Rust toolchains
 - [x] DOM-based HTML → markdown (readability-style content selection, link-farm pruning, preserved link URLs, title/source front-matter, ATX headings)
 - [x] One tabular dialect everywhere: standard markdown pipe tables across PDF, docx, pptx, OpenDocument, and CSV/XLSX
-- [x] PowerPoint: manifest-true slide order + speaker notes
+- [x] PowerPoint: manifest-true slide order + speaker notes + embedded chart tables
 - [x] Magic-byte format detection — extension-first, falling back to content signatures so renamed / extension-less files (including archives) still route correctly; legacy `.doc`/`.ppt` detected with an actionable error
 - [x] URL fetching routes by Content-Type: HTML → extractor, raw markdown/JSON/text → passthrough, binary documents (a PDF URL!) → the normal parser pipeline
 - [x] `--browser`: render JavaScript-built pages (SPAs) with your installed Chrome/Edge/Brave — headless, throwaway profile, no bundled browser
@@ -127,9 +133,9 @@ keep the binary lean). Feature-gated items are marked below.
 | Source | Path Example | Parser Used | Output Format |
 |---|---|---|---|
 | **PDF** | `~/receipt.pdf` | `PdfGobbler` | Markdown (headings, pipe tables, OCR for scans) |
-| **Word** | `~/notes.docx` | `OfficeGobbler` | Markdown (headings, lists, emphasis, links) |
+| **Word** | `~/notes.docx` | `OfficeGobbler` | Markdown (headings, lists, emphasis, links, equations, charts) |
 | **Excel/CSV** | `~/data.xlsx` | `SheetGobbler` | Markdown pipe tables (header row named) |
-| **PowerPoint** | `~/deck.pptx` | `PptxGobbler` | Per-slide markdown + speaker notes |
+| **PowerPoint** | `~/deck.pptx` | `PptxGobbler` | Per-slide markdown + speaker notes + embedded charts |
 | **OpenDocument** | `~/doc.odt`, `~/deck.odp` | `OpenDocGobbler` | Markdown (headings, lists, tables) |
 | **Source Code** | `~/project/src` | `CodeGobbler` | Full content (or `--extract symbols`) |
 | **Email** | `~/thread.eml`, `~/inbox.mbox` | `EmailGobbler` | Header block + markdown body + attachment list |

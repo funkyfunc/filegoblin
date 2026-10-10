@@ -116,7 +116,61 @@ To empower LLM agents parsing large documents without relying on arbitrary page 
 
 ---
 
-## 7. Remaining Known Limitations
+## 7. OpenXML Embedded Chart Deconstruction (Milestone 3)
+
+Office documents (`.pptx` and `.docx`) store raw tabular datasets inside OpenXML DrawingML charts (`c:chartSpace`). Rather than dropping these or relying on lossy VLMs, `filegoblin` deconstructs embedded OpenXML chart structures into standard Markdown pipe tables:
+
+- **Chart Parser (`crates/core/src/parsers/openxml_chart.rs`):**
+  - Parses `c:chart` elements directly from `ppt/charts/chart*.xml` and `word/charts/chart*.xml`.
+  - Extracts Title (`c:title`), Categories (`c:cat` / `c:xVal`), Series Names (`c:ser` $\to$ `c:tx`), and Values (`c:val` / `c:yVal`).
+  - Renders as standard Markdown pipe tables.
+- **PowerPoint Integration (`crates/core/src/parsers/powerpoint.rs`):**
+  - Maps slide relationships (`ppt/slides/_rels/slideN.xml.rels`) to target chart files.
+  - Injects formatted tables directly beneath slide content (e.g. `test_assets/benchmarks/chart_sample.pptx` produces `Quarterly Revenue by Region` with North America, EMEA, APAC data).
+  - Recovers alt-text descriptions from `<p:cNvPr descr="...">` (e.g. `- [Image: Red square SVG]`).
+- **Word Integration (`crates/core/src/parsers/office.rs`):**
+  - Maps document relationships (`word/_rels/document.xml.rels`) and anchor paragraphs.
+  - Injects formatted tables directly into document flow or appends unanchored charts.
+
+---
+
+## 8. Word Complex Layouts & Office Math (OMML) Extraction (Milestone 4)
+
+Standard converters drop math markup because `docx-rs` ignores `<m:oMath>` and `<m:oMathPara>`. `filegoblin` introduces a pure-Rust OMML converter:
+
+- **OMML-to-LaTeX Converter (`crates/core/src/parsers/omml.rs`):**
+  - Converts fractions (`\frac{num}{den}`), superscripts (`^`), subscripts (`_`), sub-superscripts, radicals (`\sqrt` and `\sqrt[deg]`), delimiters (`(...)`), and n-ary operators (`\sum`).
+  - Formats inline equations as `$ ... $` and display math as `$$ ... $$`.
+- **Word Parser Augmentation (`crates/core/src/parsers/office.rs`):**
+  - Aligns body paragraphs 1-to-1 with `docx-rs`'s AST, substituting math formulas into paragraphs and table cells while preserving headings, numbering, and table structures.
+  - Verified on `test_assets/benchmarks/equations.docx`:
+    ```markdown
+    For $m=1$,
+
+    $$sin⁡θ=\frac{mλ}{a}=\frac{(1)(550×10^{-6} mm)}{2.5 mm}=2.2×10^{-4}$$
+
+    The angle is $θ=sin^{-1}⁡(2.2×10^{-4})=2.2×10^{-4}rad$.
+
+    From Eq. 36.1.3,
+
+    $$\frac{a}{λ}=\frac{m}{sin⁡θ}=\frac{1}{sin⁡45.0^{∘}}=1.41.$$
+    ```
+
+---
+
+## 9. Zero-Install npm / npx Distribution Package (Milestone 5)
+
+Enables users in environments without Rust toolchains to run `filegoblin` instantaneously via `npx`:
+
+- **Distribution Structure (`npm/`):**
+  - `npm/package.json`: Version `1.12.0`, bin command `filegoblin -> ./bin/filegoblin.js`.
+  - `npm/bin/filegoblin.js`: Cross-platform Node.js launcher resolving target binary from Cargo build paths, installed platform packages (`@filegoblin/*`), or system PATH.
+  - Transparent execution: invokes native binary via `spawnSync` with `{ stdio: 'inherit' }` and faithfully propagates exit codes (e.g. exit code 4 for missing files).
+  - Verified with `node npm/bin/filegoblin.js test_assets/benchmarks/chart_sample.pptx -q`.
+
+---
+
+## 10. Remaining Known Limitations
 
 In accordance with `GEMINI.md` and the `book-pdf-to-markdown` standard, the following boundaries represent deliberate architectural ceilings:
 

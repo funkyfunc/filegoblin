@@ -525,3 +525,17 @@ flag-toggling idea is ever wanted in the picker.
 
 **Status:** Accepted.
 
+## 2026-10-10: OpenXML Embedded Chart Deconstruction, Office Math (OMML) Extraction, and Zero-Install npm Distribution
+
+**Context:**
+1. *Embedded Office Charts:* PowerPoint (`.pptx`) and Word (`.docx`) presentations and documents embed quantitative data inside OpenXML DrawingML charts (`c:chartSpace`). Standard text extractors drop these completely, while multi-modal VLMs guess numbers or hallucinate graph coordinates.
+2. *Office Math Equations:* Mathematical formulas in Word documents are encoded in Office Math Markup Language (`<m:oMath>` and `<m:oMathPara>`). The `docx-rs` AST parser drops these elements silently, leaving blank spots or fragments (`For , The angle is . From Eq. 36.1.3,`).
+3. *Zero-Install npm Launcher:* Deploying `filegoblin` across enterprise environments where developers do not have Rust toolchains or `pipx` required an instantaneous `npx filegoblin` distribution mechanism that guarantees transparent exit codes and zero overhead.
+
+**Decision:**
+- **OpenXML Chart Deconstruction (`crates/core/src/parsers/openxml_chart.rs`):** Implemented pure-Rust streaming chart parser using `quick-xml`. Extracts chart title (`c:title`), categories (`c:cat` / `c:xVal`), and series names with data points (`c:ser` / `c:val` / `c:yVal`), converting raw data points directly into standard Markdown pipe tables. In PowerPoint, charts are mapped via `ppt/slides/_rels/slideN.xml.rels` and inserted beneath their respective slide; in Word, charts are mapped via `word/_rels/document.xml.rels` and anchored to paragraph positions.
+- **Office Math Markup Language (OMML) to LaTeX (`crates/core/src/parsers/omml.rs`):** Implemented recursive tree-based OMML parser converting fractions (`\frac`), superscripts (`^`), subscripts (`_`), sub-superscripts, radicals (`\sqrt`), delimiters (`(...)`), and n-ary sums (`\sum`) to standard LaTeX. Body paragraphs in `word/document.xml` are extracted and aligned 1-to-1 with `docx-rs`'s AST, substituting math formulas into paragraphs and table cells while preserving heading levels, numbering, and table structure.
+- **Zero-Install npm Package (`npm/package.json` & `npm/bin/filegoblin.js`):** Created a lightweight Node.js executable wrapper that resolves target architectures (`process.platform` and `process.arch`), locates precompiled binaries, spawns via `child_process.spawnSync` with `{ stdio: 'inherit' }`, and faithfully propagates exit codes (e.g. exit code 4 on missing input files).
+
+**Status:** Accepted.
+

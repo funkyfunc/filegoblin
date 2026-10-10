@@ -47,6 +47,26 @@
   - Merges split chapter label and subtitle lines into unified section titles while protecting code fences.
   - Verified with 5 comprehensive unit tests (all passing).
 
+- [x] **OpenXML Embedded Chart Deconstruction (Milestone 3)**
+  - Implemented `crates/core/src/parsers/openxml_chart.rs` to parse ECMA-376 DrawingML charts (`c:chartSpace`).
+  - Extracts title, categories (`c:cat`/`c:xVal`), and series values (`c:ser`/`c:val`/`c:yVal`) into standard Markdown pipe tables.
+  - PowerPoint integration (`crates/core/src/parsers/powerpoint.rs`): maps slide `.rels` (`ppt/slides/_rels/slideN.xml.rels`) and injects tables beneath slide content.
+  - Word integration (`crates/core/src/parsers/office.rs`): maps document `.rels` (`word/_rels/document.xml.rels`) and injects tables at paragraph anchor positions.
+  - Recovered alt-text descriptions from `<p:cNvPr descr="...">` (e.g. `[Image: Red square SVG]`).
+
+- [x] **Word Complex Layouts & Office Math (OMML) Extraction (Milestone 4)**
+  - Implemented `crates/core/src/parsers/omml.rs` converting Office Math Markup Language (`<m:oMath>` / `<m:oMathPara>`) to LaTeX syntax.
+  - Supports fractions (`\frac`), superscripts (`^`), subscripts (`_`), sub-superscripts, radicals (`\sqrt`), delimiters (`(...)`), and n-ary sums (`\sum`).
+  - Augmented `crates/core/src/parsers/office.rs` to substitute math formulas into paragraphs and table cells while preserving headings and lists.
+  - Verified on `test_assets/benchmarks/equations.docx`.
+
+- [x] **Zero-Install npm / npx Distribution Package (Milestone 5)**
+  - Created `npm/package.json` with `filegoblin` binary mapping.
+  - Created `npm/bin/filegoblin.js` cross-platform launcher resolving Cargo release/debug builds, optional platform packages, or system PATH.
+  - Transparent execution: spawns binary with `{ stdio: 'inherit' }` and propagates exit codes.
+  - Tested with `node npm/bin/filegoblin.js test_assets/benchmarks/chart_sample.pptx -q`.
+
 ### Pending Items
-- Office structure enhancements (embedded charts, equations, and tables).
+- None (All 5 milestones complete and passing tests).
+
 

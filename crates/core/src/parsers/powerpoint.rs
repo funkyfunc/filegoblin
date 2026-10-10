@@ -9,7 +9,11 @@ impl Gobble for PptxGobbler {
         let file = std::fs::File::open(path)?;
         let mut archive = zip::ZipArchive::new(file)?;
 
-        let mut slide_texts: std::collections::HashMap<String, String> =
+        let mut slide_xmls: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut slide_chart_rels: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut chart_xmls: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         let mut notes_texts: std::collections::HashMap<usize, String> =
             std::collections::HashMap::new();
@@ -26,10 +30,18 @@ impl Gobble for PptxGobbler {
                 rels_xml = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
             } else if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
                 let xml_content = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
-                let text = extract_text_from_slide_xml(&xml_content)?;
-                if !text.trim().is_empty() {
-                    slide_texts.insert(name, text);
-                }
+                slide_xmls.insert(name, xml_content);
+            } else if name.starts_with("ppt/slides/_rels/slide") && name.ends_with(".xml.rels") {
+                let rels_content = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
+                let slide_name = name
+                    .replace("/_rels/", "/")
+                    .trim_end_matches(".rels")
+                    .to_string();
+                let targets = extract_chart_targets_from_rels(&rels_content);
+                slide_chart_rels.insert(slide_name, targets);
+            } else if name.starts_with("ppt/charts/chart") && name.ends_with(".xml") {
+                let xml_content = crate::parsers::read_zip_entry_to_string(&mut file, &name)?;
+                chart_xmls.insert(name, xml_content);
             } else if name.starts_with("ppt/notesSlides/notesSlide") && name.ends_with(".xml") {
                 let num_str = name
                     .trim_start_matches("ppt/notesSlides/notesSlide")
@@ -55,6 +67,16 @@ impl Gobble for PptxGobbler {
             }
         }
 
+        let mut slide_texts: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (name, xml_content) in &slide_xmls {
+            let text = extract_text_from_slide_xml(xml_content)?;
+            let has_charts = slide_chart_rels.get(name).is_some_and(|c| !c.is_empty());
+            if !text.trim().is_empty() || has_charts {
+                slide_texts.insert(name.clone(), text);
+            }
+        }
+
         // True slide order comes from the presentation manifest (sldIdLst → rels
         // targets); filename numbers are only a fallback, since decks that were
         // reordered in PowerPoint keep their original file names.
@@ -68,14 +90,50 @@ impl Gobble for PptxGobbler {
         leftovers.sort_by_key(|name| slide_file_number(name).unwrap_or(usize::MAX));
         ordered.extend(leftovers);
 
+        let mut used_charts: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut output = String::new();
+
         for (pos, name) in ordered.iter().enumerate() {
             let content = &slide_texts[name];
-            output.push_str(&format!("## Slide {}\n\n{}", pos + 1, content));
+            let mut slide_body = content.trim().to_string();
+
+            // Append charts for this slide
+            if let Some(charts) = slide_chart_rels.get(name) {
+                for chart_path in charts {
+                    if let Some(chart_xml) = chart_xmls.get(chart_path) {
+                        used_charts.insert(chart_path.clone());
+                        if let Ok(chart) =
+                            crate::parsers::openxml_chart::OpenXmlChart::parse(chart_xml)
+                        {
+                            let chart_md = chart.render_markdown();
+                            if !chart_md.is_empty() {
+                                if !slide_body.is_empty() {
+                                    slide_body.push_str("\n\n");
+                                }
+                                slide_body.push_str(&chart_md);
+                            }
+                        }
+                    }
+                }
+            }
+
+            output.push_str(&format!("## Slide {}\n\n{}", pos + 1, slide_body));
             if let Some(notes) = slide_file_number(name).and_then(|n| notes_texts.get(&n)) {
                 output.push_str(&format!("\n\n**Speaker notes:**\n{}", notes));
             }
             output.push_str("\n\n---\n\n");
+        }
+
+        // If any charts in the presentation were not attached to specific slides, append them
+        for (chart_path, chart_xml) in &chart_xmls {
+            if !used_charts.contains(chart_path) {
+                if let Ok(chart) = crate::parsers::openxml_chart::OpenXmlChart::parse(chart_xml) {
+                    let chart_md = chart.render_markdown();
+                    if !chart_md.is_empty() {
+                        output.push_str(&format!("{}\n\n---\n\n", chart_md));
+                    }
+                }
+            }
         }
 
         if output.trim().is_empty() {
@@ -170,6 +228,7 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
 
     let mut output = String::new();
     let mut in_text_node = false;
+    let mut image_descriptions: Vec<String> = Vec::new();
 
     let mut in_table = false;
     let mut table = crate::parsers::TableBuilder::default();
@@ -187,6 +246,24 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 match e.name().as_ref() {
+                    b"p:cNvPr" | b"cNvPr" => {
+                        for attr in e.attributes().flatten() {
+                            if (attr.key.as_ref() == b"descr" || attr.key.as_ref() == b"title")
+                                && let Ok(val) = attr.unescape_value()
+                            {
+                                let d = val.trim().to_string();
+                                if !d.is_empty()
+                                    && !d.ends_with(".png")
+                                    && !d.ends_with(".jpg")
+                                    && !d.ends_with(".jpeg")
+                                    && !d.ends_with(".svg")
+                                    && !image_descriptions.contains(&d)
+                                {
+                                    image_descriptions.push(d);
+                                }
+                            }
+                        }
+                    }
                     b"a:tbl" => {
                         in_table = true;
                         output.push('\n'); // Pad before table
@@ -257,12 +334,66 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
         }
     }
 
+    if output.trim().is_empty() && !image_descriptions.is_empty() {
+        for desc in &image_descriptions {
+            output.push_str(&format!("\n- [Image: {}]", desc));
+        }
+    }
+
     // Clean up excessive newlines/bullets generated from empty paragraphs
     Ok(output
         .lines()
         .filter(|line| !line.trim().is_empty() && line.trim() != "-")
         .collect::<Vec<&str>>()
         .join("\n"))
+}
+
+fn extract_chart_targets_from_rels(rels_xml: &str) -> Vec<String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut targets = Vec::new();
+    let mut reader = Reader::from_str(rels_xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if e.local_name().as_ref() == b"Relationship" =>
+            {
+                let mut is_chart = false;
+                let mut target: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"Type" => {
+                            if let Ok(val) = attr.unescape_value() {
+                                if val.ends_with("/chart") {
+                                    is_chart = true;
+                                }
+                            }
+                        }
+                        b"Target" => {
+                            if let Ok(val) = attr.unescape_value() {
+                                target = Some(val.into_owned());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if is_chart && let Some(t) = target {
+                    let normalized = if let Some(stripped) = t.strip_prefix("../") {
+                        format!("ppt/{}", stripped)
+                    } else if let Some(stripped) = t.strip_prefix('/') {
+                        stripped.to_string()
+                    } else {
+                        format!("ppt/charts/{}", t.trim_start_matches("charts/"))
+                    };
+                    targets.push(normalized);
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    targets
 }
 
 #[cfg(test)]
