@@ -219,8 +219,11 @@ impl OpenXmlChart {
 
         let mut mermaid = String::new();
         // Check if chart is suitable for Mermaid xychart-beta:
-        // Must be bar, line, or default; category count <= 20; has series; all values numeric.
-        if (self.chart_type == "bar" || self.chart_type == "line" || self.chart_type.is_empty())
+        // Must be bar, line, area, or default; category count <= 20; has series; all values numeric.
+        if (self.chart_type == "bar"
+            || self.chart_type == "line"
+            || self.chart_type == "area"
+            || self.chart_type.is_empty())
             && !cat_map.is_empty()
             && cat_map.len() <= 20
             && !self.series.is_empty()
@@ -293,7 +296,7 @@ impl OpenXmlChart {
                     mermaid.push_str(&format!("  y-axis {} --> {}\n", y_min_str, y_max_str));
                 }
 
-                let plot_kind = if self.chart_type == "line" {
+                let plot_kind = if self.chart_type == "line" || self.chart_type == "area" {
                     "line"
                 } else {
                     "bar"
@@ -307,6 +310,53 @@ impl OpenXmlChart {
                     ));
                 }
 
+                mermaid.push_str("```");
+            }
+        } else if self.chart_type == "pie"
+            && !cat_map.is_empty()
+            && cat_map.len() <= 20
+            && let Some(first_series) = self.series.first()
+        {
+            let mut all_positive_numeric = true;
+            let mut pie_slices: Vec<(String, f64)> = Vec::new();
+
+            for (idx, cat_name) in &cat_map {
+                let val_str = first_series
+                    .values
+                    .iter()
+                    .find(|(i, _)| i == idx)
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("");
+                if let Ok(v) = val_str.parse::<f64>() {
+                    if v >= 0.0 {
+                        pie_slices.push((cat_name.clone(), v));
+                    } else {
+                        all_positive_numeric = false;
+                        break;
+                    }
+                } else {
+                    all_positive_numeric = false;
+                    break;
+                }
+            }
+
+            if all_positive_numeric && !pie_slices.is_empty() {
+                mermaid.push_str("\n\n```mermaid\npie showData\n");
+                if let Some(ref title) = self.title {
+                    if !title.trim().is_empty() {
+                        mermaid.push_str(&format!(
+                            "  title \"{}\"\n",
+                            title.trim().replace('"', "\\\"")
+                        ));
+                    }
+                }
+                for (cat, val) in pie_slices {
+                    mermaid.push_str(&format!(
+                        "  \"{}\" : {}\n",
+                        cat.replace('"', "\\\""),
+                        fmt_num(val)
+                    ));
+                }
                 mermaid.push_str("```");
             }
         }
@@ -425,5 +475,56 @@ mod tests {
         assert!(md.contains(r#"x-axis ["North America", "EMEA", "APAC"]"#));
         assert!(md.contains(r#"y-axis "Revenue ($M)" 0 --> 50"#));
         assert!(md.contains("bar [45.2, 32.8, 18.5]"));
+    }
+
+    #[test]
+    fn test_parse_openxml_pie_chart() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:title><c:tx><c:rich><a:p><a:r><a:t>Market Share</a:t></a:r></a:p></c:rich></c:tx></c:title>
+    <c:plotArea>
+      <c:pieChart>
+        <c:ser>
+          <c:cat>
+            <c:strRef>
+              <c:strCache>
+                <c:pt idx="0"><c:v>Rust</c:v></c:pt>
+                <c:pt idx="1"><c:v>Python</c:v></c:pt>
+                <c:pt idx="2"><c:v>Go</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numRef>
+              <c:numCache>
+                <c:pt idx="0"><c:v>60</c:v></c:pt>
+                <c:pt idx="1"><c:v>30</c:v></c:pt>
+                <c:pt idx="2"><c:v>10</c:v></c:pt>
+              </c:numCache>
+            </c:numRef>
+          </c:val>
+        </c:ser>
+      </c:pieChart>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>"#;
+
+        let chart = OpenXmlChart::parse(xml).expect("parse pie chart");
+        assert_eq!(chart.chart_type, "pie");
+        assert_eq!(chart.title.as_deref(), Some("Market Share"));
+
+        let md = chart.render_markdown();
+        assert!(md.contains("### Chart: Market Share"));
+        assert!(md.contains("| Category | Series 1 |"));
+        assert!(md.contains("| Rust | 60 |"));
+        assert!(md.contains("| Python | 30 |"));
+        assert!(md.contains("| Go | 10 |"));
+
+        assert!(md.contains("```mermaid\npie showData"));
+        assert!(md.contains(r#"title "Market Share""#));
+        assert!(md.contains(r#""Rust" : 60"#));
+        assert!(md.contains(r#""Python" : 30"#));
+        assert!(md.contains(r#""Go" : 10"#));
     }
 }

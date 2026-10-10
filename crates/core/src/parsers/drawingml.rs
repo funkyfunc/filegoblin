@@ -41,7 +41,7 @@ impl SlideDiagram {
                 Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                     let local = e.local_name();
                     match local.as_ref() {
-                        b"sp" => {
+                        b"sp" | b"wsp" => {
                             in_connector = false;
                             current_shape_id = None;
                             current_text_accumulator.clear();
@@ -55,7 +55,7 @@ impl SlideDiagram {
                         }
                         b"cNvPr" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"id"
+                                if attr.key.local_name().as_ref() == b"id"
                                     && let Ok(val) = attr.unescape_value()
                                 {
                                     let id_str = val.trim().to_string();
@@ -69,7 +69,7 @@ impl SlideDiagram {
                         }
                         b"stCxn" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"id"
+                                if attr.key.local_name().as_ref() == b"id"
                                     && let Ok(val) = attr.unescape_value()
                                 {
                                     current_conn.start_id = val.trim().to_string();
@@ -78,7 +78,7 @@ impl SlideDiagram {
                         }
                         b"endCxn" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"id"
+                                if attr.key.local_name().as_ref() == b"id"
                                     && let Ok(val) = attr.unescape_value()
                                 {
                                     current_conn.end_id = val.trim().to_string();
@@ -87,7 +87,7 @@ impl SlideDiagram {
                         }
                         b"prstDash" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"val"
+                                if attr.key.local_name().as_ref() == b"val"
                                     && let Ok(val) = attr.unescape_value()
                                 {
                                     let v = val.trim();
@@ -99,7 +99,7 @@ impl SlideDiagram {
                         }
                         b"headEnd" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"type"
+                                if attr.key.local_name().as_ref() == b"type"
                                     && let Ok(val) = attr.unescape_value()
                                 {
                                     let v = val.trim();
@@ -118,7 +118,7 @@ impl SlideDiagram {
                         }
                         b"tailEnd" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"type"
+                                if attr.key.local_name().as_ref() == b"type"
                                     && let Ok(val) = attr.unescape_value()
                                 {
                                     let v = val.trim();
@@ -164,7 +164,7 @@ impl SlideDiagram {
                     let local = e.local_name();
                     match local.as_ref() {
                         b"t" => in_text_node = false,
-                        b"sp" => {
+                        b"sp" | b"wsp" => {
                             if let Some(id) = current_shape_id.take() {
                                 let label = current_text_accumulator.join(" ").trim().to_string();
                                 if !label.is_empty() {
@@ -333,5 +333,48 @@ mod tests {
         assert!(mermaid.contains("flowchart TD"));
         assert!(mermaid.contains(r#"N_101["Ingest Input"] --> N_102["Validate Schema"]"#));
         assert!(mermaid.contains(r#"N_102 -.-> N_103["Store Record"]"#));
+    }
+
+    #[test]
+    fn test_word_drawingml_connector_flowchart() {
+        let xml = r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wps:wsp>
+            <wps:cNvPr id="501" name="Word Node A"/>
+            <wps:txbx><w:txbxContent><w:p><w:r><w:t>Start Client</w:t></w:r></w:p></w:txbxContent></wps:txbx>
+          </wps:wsp>
+          <wps:wsp>
+            <wps:cNvPr id="502" name="Word Node B"/>
+            <wps:txbx><w:txbxContent><w:p><w:r><w:t>Process Request</w:t></w:r></w:p></w:txbxContent></wps:txbx>
+          </wps:wsp>
+          <wps:cxnSp>
+            <wps:cNvPr id="601" name="Word Connector 1"/>
+            <wps:cNvCxnSpPr>
+              <a:stCxn id="501"/>
+              <a:endCxn id="502"/>
+            </wps:cNvCxnSpPr>
+            <wps:spPr>
+              <a:ln><a:headEnd type="triangle"/></a:ln>
+            </wps:spPr>
+          </wps:cxnSp>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let diagram = SlideDiagram::parse(xml).expect("parse word diagram");
+        assert_eq!(diagram.shapes.len(), 2);
+        assert_eq!(diagram.connectors.len(), 1);
+
+        let mermaid = diagram.render_mermaid().expect("render mermaid");
+        assert!(mermaid.contains("flowchart TD"));
+        assert!(mermaid.contains(r#"N_501["Start Client"] --> N_502["Process Request"]"#));
     }
 }

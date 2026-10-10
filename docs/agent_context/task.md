@@ -123,7 +123,23 @@
   - **Full 12/12 Gauntlet Green:**
     - All 12 adversarial test cases passing green (100.0%) in `GAUNTLET_SCORECARD.md`.
 
+- [x] **Structural Deconstruction Expansion (v1.14.0)**
+  - **Dual Representation Pie & Area Charts (`crates/core/src/parsers/openxml_chart.rs`):**
+    - Added native Mermaid `pie showData` generation for pie/doughnut charts (`c:pieChart`, `c:doughnutChart`) with $\le 20$ slices and non-negative numeric data.
+    - Added support for area charts (`c:areaChart`) rendering as `line` in Mermaid `xychart-beta`.
+    - Unit test `test_parse_openxml_pie_chart` verifying both GFM table and Mermaid `pie showData` emission.
+  - **Word SmartArt & DrawingML Deconstruction (`crates/core/src/parsers/office.rs` & `drawingml.rs`):**
+    - Extracted Word SmartArt packages (`word/diagrams/data*.xml`) and mapped diagram relationship IDs (`<relIds r:dm="..."/>`).
+    - Anchored SmartArt compilation into Mermaid diagrams (`flowchart LR` / `flowchart TD`) in both `docx-rs` and `parse_docx_xml_streaming` readers.
+    - Extended `drawingml.rs` to accept Word shape tags (`<wps:wsp>`, `<wps:cxnSp>`), enabling DrawingML flowchart extraction directly from Word documents.
+    - Unit tests `test_office_smartart_extraction` and `test_word_drawingml_connector_flowchart` verifying full Word SmartArt and flowchart recovery.
+  - **Scientific Math Reassembly & TeX Font Table Expansion (`crates/core/src/parsers/pdf.rs`):**
+    - Expanded TeX glyph table in `normalize_pdf_glyph` to cover complete Computer Modern Symbols (`CMSY*` calligraphic `\mathcal{A}`..`\mathcal{Z}`, `\cdot`, `\times`, `\pm`, `\forall`, `\exists`, `\emptyset`), Computer Modern Math Italic (`CMMI*` Greek `\alpha`..`\omega`, `\partial`), and AMS blackboard bold (`MSAM*`/`MSBM*` `\mathbb{C}`, `\mathbb{H}`, `\mathbb{N}`, `\mathbb{P}`, `\mathbb{Q}`, `\mathbb{R}`, `\mathbb{Z}`).
+    - Reassembled parameter matrices ($W^Q_i \in \mathbb{R}^{d_{\text{model}} \times d_k}$) and head dimensions ($d_k = d_v = d_{\text{model}} / h = 64$).
+    - Implemented `prune_isolated_subscript_noise` safely eliminating orphaned single-character lowercase noise lines (`^[a-z]$`) outside of code and display math blocks.
+
 ### Pending Items
-- None (All 12 Gauntlet cases passing, all 216 workspace tests passing, 21 golden snapshots passing, 0 clippy warnings).
+- None (All 12 Gauntlet cases passing, all 219 workspace unit tests passing, 21 golden snapshot tests passing, 0 clippy warnings).
+
 
 

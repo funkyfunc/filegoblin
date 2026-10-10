@@ -20,10 +20,11 @@ impl Gobble for OfficeGobbler {
         if ext == "docx" {
             let buf = std::fs::read(path).context("Failed to read docx buffer")?;
 
-            // Scan zip archive for document.xml, rels, and charts
+            // Scan zip archive for document.xml, rels, charts, and smartart diagrams
             let mut doc_xml = String::new();
             let mut rels_xml = String::new();
             let mut chart_xmls: HashMap<String, String> = HashMap::new();
+            let mut smartart_xmls: HashMap<String, String> = HashMap::new();
 
             if let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(&buf)) {
                 for i in 0..archive.len() {
@@ -41,6 +42,12 @@ impl Gobble for OfficeGobbler {
                             {
                                 chart_xmls.insert(name, c);
                             }
+                        } else if name.starts_with("word/diagrams/data") && name.ends_with(".xml") {
+                            if let Ok(c) =
+                                crate::parsers::read_zip_entry_to_string(&mut file, &name)
+                            {
+                                smartart_xmls.insert(name, c);
+                            }
                         }
                     }
                 }
@@ -51,6 +58,7 @@ impl Gobble for OfficeGobbler {
 
             if let Ok(docx) = docx_res {
                 let rels_chart_map = extract_docx_rels_charts(&rels_xml);
+                let rels_diagram_map = extract_docx_rels_diagrams(&rels_xml);
                 let (body_paragraphs, math_by_para_id) = if !doc_xml.is_empty() {
                     crate::parsers::omml::extract_docx_body_paragraphs(&doc_xml)
                 } else {
@@ -66,6 +74,8 @@ impl Gobble for OfficeGobbler {
 
                 let mut blocks: Vec<(bool, String)> = Vec::new(); // (is_list_item, text)
                 let mut used_charts: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let mut used_smartart: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 let mut body_p_idx = 0usize;
 
@@ -114,6 +124,26 @@ impl Gobble for OfficeGobbler {
                                         }
                                     }
                                 }
+
+                                for rid in &b.diagram_rids {
+                                    if let Some(target) = rels_diagram_map.get(rid)
+                                        && let Some(dgm_xml) = smartart_xmls.get(target)
+                                    {
+                                        used_smartart.insert(target.clone());
+                                        if let Ok(diag) =
+                                            crate::parsers::smartart::SmartArtDiagram::parse(
+                                                dgm_xml,
+                                            )
+                                        {
+                                            if let Some(mermaid) = diag.render_mermaid() {
+                                                blocks.push((
+                                                    false,
+                                                    format!("```mermaid\n{}\n```", mermaid),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             body_p_idx += 1;
@@ -142,6 +172,30 @@ impl Gobble for OfficeGobbler {
                     }
                 }
 
+                // Emit any remaining unassociated SmartArt diagrams
+                let mut leftover_diagrams: Vec<_> = smartart_xmls
+                    .iter()
+                    .filter(|(path, _)| !used_smartart.contains(*path))
+                    .collect();
+                leftover_diagrams.sort_by_key(|(path, _)| (*path).clone());
+
+                for (_path, dgm_xml) in leftover_diagrams {
+                    if let Ok(diag) = crate::parsers::smartart::SmartArtDiagram::parse(dgm_xml) {
+                        if let Some(mermaid) = diag.render_mermaid() {
+                            blocks.push((false, format!("```mermaid\n{}\n```", mermaid)));
+                        }
+                    }
+                }
+
+                // If document contains DrawingML flowchart connectors, extract them
+                if doc_xml.contains("cxnSp") {
+                    if let Ok(diag) = crate::parsers::drawingml::SlideDiagram::parse(&doc_xml) {
+                        if let Some(mermaid) = diag.render_mermaid() {
+                            blocks.push((false, format!("```mermaid\n{}\n```", mermaid)));
+                        }
+                    }
+                }
+
                 // Blank line between blocks, except between consecutive list items
                 let mut prev_was_list = false;
                 for (is_list, block) in blocks {
@@ -159,7 +213,7 @@ impl Gobble for OfficeGobbler {
             // Fallback to streaming quick-xml reader if docx-rs failed or produced empty output
             if extracted.trim().is_empty() && !doc_xml.is_empty() {
                 if let Ok(streaming_res) =
-                    parse_docx_xml_streaming(&doc_xml, &rels_xml, &chart_xmls)
+                    parse_docx_xml_streaming(&doc_xml, &rels_xml, &chart_xmls, &smartart_xmls)
                 {
                     return Ok(streaming_res);
                 }
@@ -179,6 +233,67 @@ impl Gobble for OfficeGobbler {
             )
         }
     }
+}
+
+/// Extracts relationship ID to SmartArt diagram data target path mapping from `word/_rels/document.xml.rels`.
+fn extract_docx_rels_diagrams(xml: &str) -> HashMap<String, String> {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut map = HashMap::new();
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"Relationship" {
+                    let mut id = None;
+                    let mut target = None;
+                    let mut is_diagram = false;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.local_name().as_ref() {
+                            b"Id" => {
+                                if let Ok(val) = attr.unescape_value() {
+                                    id = Some(val.into_owned());
+                                }
+                            }
+                            b"Type" => {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if val.ends_with("/diagramData") || val.contains("diagramData")
+                                    {
+                                        is_diagram = true;
+                                    }
+                                }
+                            }
+                            b"Target" => {
+                                if let Ok(val) = attr.unescape_value() {
+                                    let t = val.into_owned();
+                                    if t.contains("diagrams/data") {
+                                        is_diagram = true;
+                                    }
+                                    target = Some(t);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if is_diagram && let (Some(id), Some(t)) = (id, target) {
+                        let normalized = if let Some(stripped) = t.strip_prefix("../") {
+                            format!("word/{}", stripped)
+                        } else if let Some(stripped) = t.strip_prefix('/') {
+                            stripped.to_string()
+                        } else if t.starts_with("word/") {
+                            t
+                        } else {
+                            format!("word/{}", t)
+                        };
+                        map.insert(id, normalized);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    map
 }
 
 /// Extracts relationship ID to chart target path mapping from `word/_rels/document.xml.rels`.
@@ -291,8 +406,10 @@ pub fn parse_docx_xml_streaming(
     doc_xml: &str,
     rels_xml: &str,
     chart_xmls: &HashMap<String, String>,
+    smartart_xmls: &HashMap<String, String>,
 ) -> Result<String> {
     let rels_chart_map = extract_docx_rels_charts(rels_xml);
+    let rels_diagram_map = extract_docx_rels_diagrams(rels_xml);
     let rels_links_map = extract_docx_rels_links(rels_xml);
 
     let mut reader = quick_xml::Reader::from_str(doc_xml);
@@ -300,6 +417,7 @@ pub fn parse_docx_xml_streaming(
 
     let mut blocks: Vec<(bool, String)> = Vec::new();
     let mut used_charts: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut used_smartart: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     struct CellState {
         text: String,
@@ -321,6 +439,7 @@ pub fn parse_docx_xml_streaming(
         is_list_item: bool,
         list_level: usize,
         chart_rids: Vec<String>,
+        diagram_rids: Vec<String>,
     }
     let mut p_stack: Vec<ParaState> = Vec::new();
 
@@ -462,6 +581,17 @@ pub fn parse_docx_xml_streaming(
                                 if let Ok(val) = attr.unescape_value() {
                                     if let Some(p) = p_stack.last_mut() {
                                         p.chart_rids.push(val.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"relIds" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"dm" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Some(p) = p_stack.last_mut() {
+                                        p.diagram_rids.push(val.to_string());
                                     }
                                 }
                             }
@@ -627,6 +757,17 @@ pub fn parse_docx_xml_streaming(
                             }
                         }
                     }
+                    b"relIds" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"dm" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    if let Some(p) = p_stack.last_mut() {
+                                        p.diagram_rids.push(val.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
                     b"b" | b"bCs" => in_bold = true,
                     b"i" | b"iCs" => in_italic = true,
                     b"tab" if !p_stack.is_empty() => {
@@ -725,6 +866,25 @@ pub fn parse_docx_xml_streaming(
                                             }
                                         }
                                     }
+                                    for rid in &finished_p.diagram_rids {
+                                        if let Some(target) = rels_diagram_map.get(rid)
+                                            && let Some(dgm_xml) = smartart_xmls.get(target)
+                                        {
+                                            used_smartart.insert(target.clone());
+                                            if let Ok(diag) =
+                                                crate::parsers::smartart::SmartArtDiagram::parse(
+                                                    dgm_xml,
+                                                )
+                                            {
+                                                if let Some(mermaid) = diag.render_mermaid() {
+                                                    blocks.push((
+                                                        false,
+                                                        format!("```mermaid\n{}\n```", mermaid),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
                                 if let Some(parent) = p_stack.last_mut() {
@@ -758,6 +918,28 @@ pub fn parse_docx_xml_streaming(
             let chart_md = chart.render_markdown();
             if !chart_md.is_empty() {
                 blocks.push((false, chart_md));
+            }
+        }
+    }
+
+    let mut leftover_diagrams: Vec<_> = smartart_xmls
+        .iter()
+        .filter(|(path, _)| !used_smartart.contains(*path))
+        .collect();
+    leftover_diagrams.sort_by_key(|(path, _)| (*path).clone());
+
+    for (_path, dgm_xml) in leftover_diagrams {
+        if let Ok(diag) = crate::parsers::smartart::SmartArtDiagram::parse(dgm_xml) {
+            if let Some(mermaid) = diag.render_mermaid() {
+                blocks.push((false, format!("```mermaid\n{}\n```", mermaid)));
+            }
+        }
+    }
+
+    if doc_xml.contains("cxnSp") {
+        if let Ok(diag) = crate::parsers::drawingml::SlideDiagram::parse(doc_xml) {
+            if let Some(mermaid) = diag.render_mermaid() {
+                blocks.push((false, format!("```mermaid\n{}\n```", mermaid)));
             }
         }
     }
@@ -1132,5 +1314,84 @@ mod tests {
         assert!(md.contains("### Chart: Quarterly Revenue"));
         assert!(md.contains("| EMEA | 32.5 |"));
         assert!(md.contains("| APAC | 18.2 |"));
+    }
+
+    #[test]
+    fn test_office_smartart_extraction() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let docx_path = dir.path().join("smartart_doc.docx");
+        let file = std::fs::File::create(&docx_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("word/_rels/document.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="diagrams/data1.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:r><w:t>Project Pipeline Overview</w:t></w:r>
+      <dgm:relIds r:dm="rId2"/>
+    </w:p>
+  </w:body>
+</w:document>"#,
+        )
+        .unwrap();
+
+        zip.start_file("word/diagrams/data1.xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <dgm:ptLst>
+    <dgm:pt modelId="0" type="doc"/>
+    <dgm:pt modelId="1" type="node"><dgm:t><a:p><a:r><a:t>Phase 1: Design</a:t></a:r></a:p></dgm:t></dgm:pt>
+    <dgm:pt modelId="2" type="node"><dgm:t><a:p><a:r><a:t>Phase 2: Build</a:t></a:r></a:p></dgm:t></dgm:pt>
+    <dgm:pt modelId="3" type="node"><dgm:t><a:p><a:r><a:t>Phase 3: Deploy</a:t></a:r></a:p></dgm:t></dgm:pt>
+    <dgm:pt modelId="11" type="sibTrans"/>
+    <dgm:pt modelId="12" type="sibTrans"/>
+  </dgm:ptLst>
+  <dgm:cxnLst>
+    <dgm:cxn modelId="20" type="parOf" srcId="0" destId="1" srcOrd="0" destOrd="0"/>
+    <dgm:cxn modelId="21" type="parOf" srcId="0" destId="2" srcOrd="1" destOrd="1"/>
+    <dgm:cxn modelId="22" type="parOf" srcId="0" destId="3" srcOrd="2" destOrd="2"/>
+    <dgm:cxn modelId="23" type="sibTrans" srcId="1" destId="11" srcOrd="0" destOrd="0"/>
+    <dgm:cxn modelId="24" type="sibTrans" srcId="11" destId="2" srcOrd="0" destOrd="0"/>
+    <dgm:cxn modelId="25" type="sibTrans" srcId="2" destId="12" srcOrd="0" destOrd="0"/>
+    <dgm:cxn modelId="26" type="sibTrans" srcId="12" destId="3" srcOrd="0" destOrd="0"/>
+  </dgm:cxnLst>
+</dgm:dataModel>"#).unwrap();
+
+        zip.finish().unwrap();
+
+        let gobbler = OfficeGobbler;
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        let md = gobbler.gobble(&docx_path, &(&args).into()).unwrap();
+        assert!(md.contains("Project Pipeline Overview"));
+        assert!(md.contains("```mermaid\nflowchart LR"));
+        assert!(md.contains(r#"N_1["Phase 1: Design"] --> N_2["Phase 2: Build"]"#));
+        assert!(md.contains(r#"N_2["Phase 2: Build"] --> N_3["Phase 3: Deploy"]"#));
     }
 }

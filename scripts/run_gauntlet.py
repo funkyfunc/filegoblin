@@ -12,7 +12,7 @@ with open(MANIFEST_PATH) as f:
     manifest = json.load(f)
 
 print("=" * 70)
-print(f"       FILEGOBLIN ADVERSARIAL GAUNTLET (v1.13.0)")
+print(f"       FILEGOBLIN ADVERSARIAL GAUNTLET (v1.14.0)")
 print("=" * 70)
 
 results = []

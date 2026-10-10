@@ -568,6 +568,7 @@ pub struct DocxBodyParagraph {
     pub text: String,
     pub has_math: bool,
     pub chart_rids: Vec<String>,
+    pub diagram_rids: Vec<String>,
 }
 
 /// Extracts direct body paragraphs from a Word document.xml, along with any chart references,
@@ -611,6 +612,19 @@ pub fn extract_docx_body_paragraphs(
                             if attr.key.local_name().as_ref() == b"id" {
                                 if let Ok(val) = attr.unescape_value() {
                                     p_stack.last_mut().unwrap().chart_rids.push(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"relIds" if !p_stack.is_empty() => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"dm" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    p_stack
+                                        .last_mut()
+                                        .unwrap()
+                                        .diagram_rids
+                                        .push(val.to_string());
                                 }
                             }
                         }
@@ -763,6 +777,18 @@ pub fn extract_docx_body_paragraphs(
                             if attr.key.local_name().as_ref() == b"id" {
                                 if let Ok(val) = attr.unescape_value() {
                                     p_stack.last_mut().unwrap().chart_rids.push(val.to_string());
+                                }
+                            }
+                        }
+                    } else if local.as_ref() == b"relIds" {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"dm" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    p_stack
+                                        .last_mut()
+                                        .unwrap()
+                                        .diagram_rids
+                                        .push(val.to_string());
                                 }
                             }
                         }

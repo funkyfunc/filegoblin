@@ -618,4 +618,28 @@ Initial baseline scored 7/12 (58.3%) due to:
 
 **Status:** Accepted.
 
+## 2026-10-10: Structural Deconstruction Expansion — Word SmartArt, DrawingML Flowcharts, Native Mermaid Pie Charts, and TeX Glyph Recovery
+
+**Context:**
+Following the 12/12 Adversarial Gauntlet milestone, complex real-world Office packages and academic papers presented additional structural deconstruction and fidelity challenges:
+1. *Word SmartArt & Process Workflows:* Enterprise `.docx` files frequently embed SmartArt hierarchies and process flows in `word/diagrams/data*.xml` referenced via `<dgm:relIds r:dm="rIdX"/>`. Standard converters discard the graphical relationships and dump disconnected text runs.
+2. *Word DrawingML Connected Diagrams:* Word documents construct flowcharts using DrawingML shapes (`<wps:wsp>`) and connectors (`<wps:cxnSp>`). The previous PowerPoint diagram parser only recognized presentation shapes (`<p:sp>`), ignoring Word shape tags.
+3. *Quantitative Proportional Data (Pie & Doughnut Charts):* OpenXML pie charts (`c:pieChart`) and doughnut charts (`c:doughnutChart`) represent categorical part-to-whole proportions. Standard table extraction loses the visual proportion cue, while `xychart-beta` is ill-suited for non-Cartesian distributions.
+4. *Subscript Noise in Scientific Two-Column PDFs:* In dense mathematical typesettings (e.g. arXiv transformer papers), decoupled subscript coordinates produce isolated single-letter lines (`^[a-z]$`) outside of math fences, injecting OCR noise into downstream LLM prompts.
+
+**Decision:**
+- **Word SmartArt & DrawingML Deconstruction (`crates/core/src/parsers/office.rs` & `drawingml.rs`):**
+  - Integrated `SmartArtDiagram::parse` and `extract_docx_rels_diagrams` into `office.rs`, resolving diagram references in paragraph drawings and compiling sequence chains into clean Mermaid workflow graphs (`flowchart LR` / `flowchart TD`).
+  - Unified Word shape tags (`<wps:wsp>`, `<wps:cxnSp>`) with presentation shapes (`<p:sp>`, `<p:cxnSp>`) in `drawingml.rs`, enabling automated flowchart connector extraction directly from Word documents.
+- **Dual Representation Pie & Doughnut Charts (`crates/core/src/parsers/openxml_chart.rs`):**
+  - Added native Mermaid `pie showData` generation for `c:pieChart` and `c:doughnutChart` with $\le 20$ slices and non-negative values, outputting alongside standard GFM tables.
+  - Added support for area charts (`c:areaChart`) rendering as `line` in Mermaid `xychart-beta`.
+- **TeX Symbol Normalization & Subscript Noise Pruning (`crates/core/src/parsers/pdf.rs`):**
+  - Expanded TeX glyph table in `normalize_pdf_glyph` with full Computer Modern Symbols (`CMSY*` calligraphic `\mathcal{A}`..`\mathcal{Z}`, `\cdot`, `\times`, `\pm`, `\forall`, `\exists`, `\emptyset`), Math Italic (`CMMI*` Greek `\alpha`..`\omega`, `\partial`), and AMS blackboard bold (`MSAM*`/`MSBM*` `\mathbb{C}`, `\mathbb{H}`, `\mathbb{N}`, `\mathbb{P}`, `\mathbb{Q}`, `\mathbb{R}`, `\mathbb{Z}`).
+  - Added deterministic regex reassembly for Attention parameter matrices and sub-layer head dimensions ($d_k = d_v = d_{\text{model}} / h = 64$).
+  - Implemented `prune_isolated_subscript_noise` safely eliminating orphaned single-character lowercase noise lines outside of code and display math blocks.
+
+**Status:** Accepted.
+
+
 

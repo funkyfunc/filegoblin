@@ -78,7 +78,7 @@ cargo install --git https://github.com/funkyfunc/filegoblin filegoblin --feature
 
 ---
 
-## ⚡ Current Capabilities (v1.13.0)
+## ⚡ Current Capabilities (v1.14.0)
 
 Some capabilities are gated behind opt-in Cargo features (built off by default to
 keep the binary lean). Feature-gated items are marked below.
@@ -86,12 +86,13 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, OpenDocument, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
 - [x] PDF → markdown via `pdf_oxide`: headings, pipe tables, reading order, hyphenation — with per-page scanned-vs-text classification
 - [x] **Scanned PDFs and images OCR automatically on macOS** (Apple Vision, zero setup; parallelized page conversion, 30+ pages/s); Linux/Windows via `--features ocr`
-- [x] **PDF TeX Math Font Recovery**: Computer Modern and AMS Math glyph code restoration + historical CMap substitution cleanup (`\neq`, `\le`, `\ge`)
+- [x] **PDF TeX Math Font Recovery**: Computer Modern and AMS Math glyph code restoration, CMap normalization (`\neq`, `\le`, `\ge`), scientific equation reassembly, and subscript noise elimination
 - [x] **Semantic Chapter Boundaries**: Automated detection and injection of thematic dividers and XML section markers (`<!-- filegoblin:section ... -->`)
 - [x] Word → real markdown: heading levels, nested lists, bold/italic, hyperlinks with URLs, and equations
+- [x] **Word Resilient Fallback**: Streaming OpenXML reader handling `<w:gridSpan>` merged tables and `<mc:AlternateContent>` floating text boxes
 - [x] **Word Office Math (OMML)**: `<m:oMath>` and `<m:oMathPara>` converted directly to standard LaTeX (`$ ... $` and `$$ ... $$`) with radicals, delimiters, matrices, and functions
-- [x] **Embedded Office Charts**: PowerPoint (`.pptx`) and Word (`.docx`) OpenXML DrawingML charts (`c:chartSpace`) deconstructed into clean Markdown pipe tables and native Mermaid `xychart-beta` diagrams
-- [x] **DrawingML Connectors & SmartArt**: PowerPoint shape connections and process diagrams compiled into Mermaid `flowchart` diagrams
+- [x] **Embedded Office Charts**: PowerPoint (`.pptx`) and Word (`.docx`) OpenXML DrawingML charts (`c:chartSpace`) deconstructed into clean Markdown pipe tables, Mermaid `xychart-beta`, and native Mermaid `pie showData` diagrams
+- [x] **DrawingML Connectors & SmartArt**: PowerPoint and Word shape connections, flowcharts, and SmartArt process hierarchies compiled into Mermaid `flowchart` diagrams
 - [x] **Zero-install npm distribution**: Execute via `npx filegoblin` in environments without Rust toolchains
 - [x] DOM-based HTML → markdown (readability-style content selection, link-farm pruning, preserved link URLs, title/source front-matter, ATX headings)
 - [x] One tabular dialect everywhere: standard markdown pipe tables across PDF, docx, pptx, OpenDocument, and CSV/XLSX

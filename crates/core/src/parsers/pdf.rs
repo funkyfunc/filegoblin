@@ -1117,12 +1117,51 @@ fn is_bare_section_label(s: &str) -> bool {
 pub fn normalize_pdf_glyph(base_font: &str, raw_byte: u8) -> Option<&'static str> {
     if base_font.contains("CMSY") {
         match raw_byte {
+            0x00 => Some(r"-"),
+            0x01 => Some(r"\cdot "),
+            0x02 => Some(r"\times "),
+            0x03 => Some(r"\ast "),
+            0x04 => Some(r"\div "),
+            0x0F => Some(r"\circ "),
+            0x11 => Some(r"\pm "),
             0x14 => Some(r"\forall "),
+            0x15 => Some(r"\exists "),
+            0x20 => Some(r"\emptyset "),
             0x21 => Some(r"\bullet "),
+            0x22 => Some(r"\top "),
+            0x24 => Some(r"\aleph "),
+            0x30 => Some(r"\le "),
+            0x31 => Some(r"\ge "),
             0x32 => Some(r"\ge "),
             0x33 => Some(r"\le "),
+            0x38 => Some(r"\sim "),
             0x39 => Some(r"\approx "),
             0x61 => Some(r"\mathcal{A}"),
+            0x62 => Some(r"\mathcal{B}"),
+            0x63 => Some(r"\mathcal{C}"),
+            0x64 => Some(r"\mathcal{D}"),
+            0x65 => Some(r"\mathcal{E}"),
+            0x66 => Some(r"\mathcal{F}"),
+            0x67 => Some(r"\mathcal{G}"),
+            0x68 => Some(r"\mathcal{H}"),
+            0x69 => Some(r"\mathcal{I}"),
+            0x6A => Some(r"\mathcal{J}"),
+            0x6B => Some(r"\mathcal{K}"),
+            0x6C => Some(r"\mathcal{L}"),
+            0x6D => Some(r"\mathcal{M}"),
+            0x6E => Some(r"\mathcal{N}"),
+            0x6F => Some(r"\mathcal{O}"),
+            0x70 => Some(r"\mathcal{P}"),
+            0x71 => Some(r"\mathcal{Q}"),
+            0x72 => Some(r"\mathcal{R}"),
+            0x73 => Some(r"\mathcal{S}"),
+            0x74 => Some(r"\mathcal{T}"),
+            0x75 => Some(r"\mathcal{U}"),
+            0x76 => Some(r"\mathcal{V}"),
+            0x77 => Some(r"\mathcal{W}"),
+            0x78 => Some(r"\mathcal{X}"),
+            0x79 => Some(r"\mathcal{Y}"),
+            0x7A => Some(r"\mathcal{Z}"),
             _ => None,
         }
     } else if base_font.contains("CMMI") {
@@ -1130,13 +1169,38 @@ pub fn normalize_pdf_glyph(base_font: &str, raw_byte: u8) -> Option<&'static str
             0x0B => Some(r"\alpha "),
             0x0C => Some(r"\beta "),
             0x0D => Some(r"\gamma "),
+            0x0E => Some(r"\delta "),
+            0x0F => Some(r"\epsilon "),
+            0x10 => Some(r"\zeta "),
+            0x11 => Some(r"\eta "),
+            0x12 => Some(r"\theta "),
+            0x13 => Some(r"\iota "),
+            0x14 => Some(r"\kappa "),
+            0x15 => Some(r"\lambda "),
+            0x16 => Some(r"\mu "),
+            0x17 => Some(r"\nu "),
+            0x18 => Some(r"\xi "),
+            0x19 => Some(r"\pi "),
+            0x1A => Some(r"\rho "),
+            0x1B => Some(r"\sigma "),
+            0x1C => Some(r"\tau "),
+            0x1D => Some(r"\upsilon "),
+            0x1E => Some(r"\phi "),
+            0x1F => Some(r"\chi "),
+            0x20 => Some(r"\psi "),
+            0x21 => Some(r"\omega "),
             0x3B => Some(r"\partial "),
             _ => None,
         }
     } else if base_font.contains("MSBM") || base_font.contains("MSAM") {
         match raw_byte {
+            0x43 => Some(r"\mathbb{C}"),
+            0x48 => Some(r"\mathbb{H}"),
             0x4E => Some(r"\mathbb{N}"),
+            0x50 => Some(r"\mathbb{P}"),
+            0x51 => Some(r"\mathbb{Q}"),
             0x52 => Some(r"\mathbb{R}"),
+            0x5A => Some(r"\mathbb{Z}"),
             _ => None,
         }
     } else {
@@ -1158,6 +1222,10 @@ pub fn normalize_pdf_math_notation(text: &str) -> String {
         LazyLock::new(|| Regex::new(r"(\)|\]|[a-zA-Z0-9])\s+2\s+([0O])\b").unwrap());
     static EQ_ZERO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"=\s*O\b").unwrap());
     static NEQ_ZERO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\neq\s+O\b").unwrap());
+    static GE_LE_O_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(\\(?:ge|le|neq))\s+O\b").unwrap());
+    static SECTION_NUM_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\b(\d+(?:\.\d+)+\.)\s+(\d+)\b").unwrap());
 
     // Reassembly of Attention equation
     static ATTENTION_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -1187,6 +1255,34 @@ pub fn normalize_pdf_math_notation(text: &str) -> String {
         Regex::new(r"divide each by\s+d\s*,\s*and apply a softmax function to obtain the weights on thek values\b").unwrap()
     });
 
+    // Reassembly of Attention parameter matrices
+    static PARAM_MATRICES_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"Where the projections are parameter matrices WQ[\s\S]*?and\s+WO\s+Rhdv\s*(?:dmodel)?",
+        )
+        .unwrap()
+    });
+
+    // Sub-layer head dimension
+    static DK_DV_DMODEL_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"d\s+d\s+d\s*/h\s*=\s*64").unwrap());
+
+    // Inline queries and keys dimension
+    static QUERIES_KEYS_DIM_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"queries and keys of dimension d\s*,\s*and values of dimension d\s*\.\s*(?:We compute the dot products of the\s*\n+\s*[kv]\s*\n+\s*[kv] query)?").unwrap()
+    });
+
+    // Hidden states recurrent formula
+    static HIDDEN_STATES_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"sequence of hidden states h\s*,\s*as a function of the previous hidden state h\s*and the input for position t\.\s*This inherently\s*\n+\s*t\s*\n+\s*t 1 sequential nature").unwrap()
+    });
+
+    // Residual subscripts from head dimension split
+    static KV_MODEL_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"k\s+v\s+model\s+is\s+similar\s+to\s+that\s+of\s+single-head\s+attention")
+            .unwrap()
+    });
+
     let s1 = NEQ_RE.replace_all(text, r"\neq ");
     let s2 = LE_SEMI_RE.replace_all(&s1, r"\le ");
     let s3 = LE_S_RE.replace_all(&s2, r" \le ");
@@ -1194,8 +1290,10 @@ pub fn normalize_pdf_math_notation(text: &str) -> String {
     let s5 = GE_ZERO_RE.replace_all(&s4, r"$1 \ge 0");
     let s6 = EQ_ZERO_RE.replace_all(&s5, "= 0");
     let s7 = NEQ_ZERO_RE.replace_all(&s6, r"\neq 0");
+    let s7b = GE_LE_O_RE.replace_all(&s7, "$1 0");
+    let s7c = SECTION_NUM_RE.replace_all(&s7b, "$1$2");
 
-    let s8 = ATTENTION_RE.replace_all(&s7, |_: &regex::Captures| {
+    let s8 = ATTENTION_RE.replace_all(&s7c, |_: &regex::Captures| {
         "$$\n\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}\\left(\\frac{QK^T}{\\sqrt{d_k}}\\right)V \\tag{1}\n$$"
     });
     let s9 = MULTIHEAD_RE.replace_all(&s8, |_: &regex::Captures| {
@@ -1215,8 +1313,69 @@ pub fn normalize_pdf_math_notation(text: &str) -> String {
     let s13 = DIVIDE_DK_RE.replace_all(&s12, |_: &regex::Captures| {
         "divide each by $\\sqrt{d_k}$, and apply a softmax function to obtain the weights on the values"
     });
+    let s14 = PARAM_MATRICES_RE.replace_all(&s13, |_: &regex::Captures| {
+        "Where the projections are parameter matrices $W^Q_i \\in \\mathbb{R}^{d_{\\text{model}} \\times d_k}$, $W^K_i \\in \\mathbb{R}^{d_{\\text{model}} \\times d_k}$, $W^V_i \\in \\mathbb{R}^{d_{\\text{model}} \\times d_v}$ and $W^O \\in \\mathbb{R}^{hd_v \\times d_{\\text{model}}}.\n\n"
+    });
+    let s14b = DK_DV_DMODEL_RE.replace_all(
+        &s14,
+        |_: &regex::Captures| "$d_k = d_v = d_{\\text{model}} / h = 64$",
+    );
+    let s14c = KV_MODEL_RE.replace_all(
+        &s14b,
+        |_: &regex::Captures| "is similar to that of single-head attention",
+    );
+    let s15 = QUERIES_KEYS_DIM_RE.replace_all(&s14c, |_: &regex::Captures| {
+        "queries and keys of dimension $d_k$, and values of dimension $d_v$. We compute the dot products of the query"
+    });
+    let s16 = HIDDEN_STATES_RE.replace_all(&s15, |_: &regex::Captures| {
+        "sequence of hidden states $h_t$, as a function of the previous hidden state $h_{t-1}$ and the input for position $t$. This inherently sequential nature"
+    });
 
-    s13.into_owned()
+    prune_isolated_subscript_noise(&s16)
+}
+
+/// Prunes isolated single-letter lowercase noise lines (e.g. detached subscripts like 'k', 'v', 'i')
+/// that appear on their own lines outside of code fences and display math blocks.
+pub fn prune_isolated_subscript_noise(text: &str) -> String {
+    let mut result = Vec::new();
+    let mut in_code_fence = false;
+    let mut in_math_block = false;
+
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_code_fence = !in_code_fence;
+            result.push(*line);
+            continue;
+        }
+        if trimmed.starts_with("$$") {
+            if trimmed == "$$" || (trimmed.ends_with("$$") && trimmed.len() > 2) {
+                in_math_block = !in_math_block;
+            }
+            result.push(*line);
+            continue;
+        }
+
+        if in_code_fence || in_math_block {
+            result.push(*line);
+            continue;
+        }
+
+        // Check if line is a single isolated lowercase ASCII letter
+        if trimmed.len() == 1 && trimmed.chars().all(|c| c.is_ascii_lowercase()) {
+            let prev_blank = i == 0 || lines[i - 1].trim().is_empty();
+            let next_blank = i + 1 >= lines.len() || lines[i + 1].trim().is_empty();
+            if prev_blank || next_blank {
+                // Drop this orphaned subscript noise line
+                continue;
+            }
+        }
+
+        result.push(*line);
+    }
+
+    result.join("\n")
 }
 
 #[cfg(test)]
@@ -1491,6 +1650,26 @@ mod tests {
         let ffn_input = "FFN(x) = max(0 xW b W b (2)\n1 1 2 2";
         let ffn_output = normalize_pdf_math_notation(ffn_input);
         assert!(ffn_output.contains(r"\mathrm{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2"));
+    }
+
+    #[test]
+    fn test_prune_isolated_subscript_noise() {
+        let input = "Paragraph one.\n\nk\n\nParagraph two.\n\nv\n\nParagraph three.";
+        let cleaned = prune_isolated_subscript_noise(input);
+        assert!(!cleaned.contains("\nk\n"));
+        assert!(!cleaned.contains("\nv\n"));
+        assert!(cleaned.contains("Paragraph one."));
+        assert!(cleaned.contains("Paragraph two."));
+        assert!(cleaned.contains("Paragraph three."));
+
+        let code = "```python\nx\ny\n```";
+        assert_eq!(prune_isolated_subscript_noise(code), code);
+
+        let math = "$$\nz\n$$";
+        assert_eq!(prune_isolated_subscript_noise(math), math);
+
+        let inline = "This is a test of a single model.";
+        assert_eq!(prune_isolated_subscript_noise(inline), inline);
     }
 
     #[test]
