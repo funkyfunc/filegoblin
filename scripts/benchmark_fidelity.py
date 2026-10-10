@@ -22,6 +22,8 @@ SLICES = {
     "Slice B (Tables & Charts)": "slice_b_tables_charts.pdf",
     "Slice C (Callouts & Headers)": "slice_c_callouts_headers.pdf",
     "Slice D (Unseen Frameworks)": "slice_d_unseen_frameworks.pdf",
+    "Slice E (Zeitz Math)": "slice_e_math_zeitz.pdf",
+    "Attention Is All You Need": "../gauntlet/scientific_papers/attention_is_all_you_need.pdf",
 }
 
 HEADER_PATTERNS = [
