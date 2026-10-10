@@ -489,7 +489,7 @@ mod tests {
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         let md = gobbler.gobble(path, &(&args).into()).unwrap();
         assert!(md.contains("For $m=1$,"));
-        assert!(md.contains("$$sin"));
+        assert!(md.contains(r"$$\sin") || md.contains("$$sin"));
         assert!(md.contains("The angle is $θ="));
         assert!(md.contains("From Eq. 36.1.3,"));
         assert!(md.contains(r"$$\frac{a}{λ}"));

@@ -1,9 +1,11 @@
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct OmmlNode {
     tag: String,
+    attrs: HashMap<String, String>,
     text: String,
     children: Vec<OmmlNode>,
 }
@@ -18,13 +20,28 @@ pub fn omml_to_latex(xml: &str) -> String {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
                 let tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                let child = parse_node(&mut reader, &tag);
+                let mut attrs = HashMap::new();
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                    if let Ok(val) = attr.unescape_value() {
+                        attrs.insert(key, val.into_owned());
+                    }
+                }
+                let child = parse_node(&mut reader, &tag, attrs);
                 nodes.push(child);
             }
             Ok(Event::Empty(ref e)) => {
                 let tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                let mut attrs = HashMap::new();
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                    if let Ok(val) = attr.unescape_value() {
+                        attrs.insert(key, val.into_owned());
+                    }
+                }
                 nodes.push(OmmlNode {
                     tag,
+                    attrs,
                     text: String::new(),
                     children: Vec::new(),
                 });
@@ -43,9 +60,14 @@ pub fn omml_to_latex(xml: &str) -> String {
         .to_string()
 }
 
-fn parse_node(reader: &mut Reader<&[u8]>, start_tag: &str) -> OmmlNode {
+fn parse_node(
+    reader: &mut Reader<&[u8]>,
+    start_tag: &str,
+    start_attrs: HashMap<String, String>,
+) -> OmmlNode {
     let mut node = OmmlNode {
         tag: start_tag.to_string(),
+        attrs: start_attrs,
         text: String::new(),
         children: Vec::new(),
     };
@@ -54,13 +76,28 @@ fn parse_node(reader: &mut Reader<&[u8]>, start_tag: &str) -> OmmlNode {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
                 let tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                let child = parse_node(reader, &tag);
+                let mut attrs = HashMap::new();
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                    if let Ok(val) = attr.unescape_value() {
+                        attrs.insert(key, val.into_owned());
+                    }
+                }
+                let child = parse_node(reader, &tag, attrs);
                 node.children.push(child);
             }
             Ok(Event::Empty(ref e)) => {
                 let tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                let mut attrs = HashMap::new();
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                    if let Ok(val) = attr.unescape_value() {
+                        attrs.insert(key, val.into_owned());
+                    }
+                }
                 node.children.push(OmmlNode {
                     tag,
+                    attrs,
                     text: String::new(),
                     children: Vec::new(),
                 });
@@ -70,6 +107,11 @@ fn parse_node(reader: &mut Reader<&[u8]>, start_tag: &str) -> OmmlNode {
                     && let Ok(unescaped) = quick_xml::escape::unescape(t)
                 {
                     node.text.push_str(&unescaped);
+                }
+            }
+            Ok(Event::GeneralRef(ref e)) => {
+                if let Some(s) = crate::parsers::resolve_xml_entity(e) {
+                    node.text.push_str(&s);
                 }
             }
             Ok(Event::CData(ref e)) => {
@@ -91,7 +133,33 @@ fn parse_node(reader: &mut Reader<&[u8]>, start_tag: &str) -> OmmlNode {
 
 fn node_to_latex(node: &OmmlNode) -> String {
     match node.tag.as_str() {
-        "t" => node.text.clone(),
+        "t" => {
+            let cleaned = node
+                .text
+                .replace(['\u{2061}', '\u{2062}', '\u{2063}', '\u{2064}'], "");
+            match cleaned.as_str() {
+                "sin" => "\\sin ".to_string(),
+                "cos" => "\\cos ".to_string(),
+                "tan" => "\\tan ".to_string(),
+                "sec" => "\\sec ".to_string(),
+                "csc" => "\\csc ".to_string(),
+                "cot" => "\\cot ".to_string(),
+                "sinh" => "\\sinh ".to_string(),
+                "cosh" => "\\cosh ".to_string(),
+                "tanh" => "\\tanh ".to_string(),
+                "ln" => "\\ln ".to_string(),
+                "log" => "\\log ".to_string(),
+                "exp" => "\\exp ".to_string(),
+                "lim" => "\\lim ".to_string(),
+                "max" => "\\max ".to_string(),
+                "min" => "\\min ".to_string(),
+                "det" => "\\det ".to_string(),
+                "dim" => "\\dim ".to_string(),
+                "deg" => "\\deg ".to_string(),
+                "∘" => "\\circ".to_string(),
+                other => other.to_string(),
+            }
+        }
         "f" => {
             let num = node
                 .children
@@ -107,7 +175,7 @@ fn node_to_latex(node: &OmmlNode) -> String {
                 .unwrap_or_default();
             format!("\\frac{{{}}}{{{}}}", num.trim(), den.trim())
         }
-        "num" | "den" | "e" | "sup" | "sub" => node
+        "num" | "den" | "e" | "sup" | "sub" | "lim" => node
             .children
             .iter()
             .map(node_to_latex)
@@ -165,20 +233,66 @@ fn node_to_latex(node: &OmmlNode) -> String {
             format!("{}_{{{}}}^{{{}}}", base.trim(), sub.trim(), sup.trim())
         }
         "d" => {
-            let e = node
+            let dpr = node.children.iter().find(|c| c.tag == "dPr");
+            let beg_chr = dpr
+                .and_then(|p| p.children.iter().find(|c| c.tag == "begChr"))
+                .and_then(|c| c.attrs.get("val").cloned())
+                .unwrap_or_else(|| "(".to_string());
+            let end_chr = dpr
+                .and_then(|p| p.children.iter().find(|c| c.tag == "endChr"))
+                .and_then(|c| c.attrs.get("val").cloned())
+                .unwrap_or_else(|| ")".to_string());
+            let sep_chr = dpr
+                .and_then(|p| p.children.iter().find(|c| c.tag == "sepChr"))
+                .and_then(|c| c.attrs.get("val").cloned())
+                .unwrap_or_else(|| ",".to_string());
+
+            let left_delim = match beg_chr.as_str() {
+                "(" => "(",
+                "[" => "[",
+                "{" => "\\{",
+                "|" => "|",
+                "‖" => "\\|",
+                "⟨" | "<" => "\\langle ",
+                "" => "",
+                other => other,
+            };
+            let right_delim = match end_chr.as_str() {
+                ")" => ")",
+                "]" => "]",
+                "}" => "\\}",
+                "|" => "|",
+                "‖" => "\\|",
+                "⟩" | ">" => "\\rangle ",
+                "" => "",
+                other => other,
+            };
+
+            let elements: Vec<String> = node
                 .children
                 .iter()
-                .find(|c| c.tag == "e")
+                .filter(|c| c.tag == "e")
                 .map(node_to_latex)
-                .unwrap_or_default();
-            format!("({})", e.trim())
+                .collect();
+            let inner = elements.join(&sep_chr);
+            format!("{}{}{}", left_delim, inner.trim(), right_delim)
         }
         "rad" => {
-            let deg = node
+            let hide_deg = node
                 .children
                 .iter()
-                .find(|c| c.tag == "deg")
-                .map(node_to_latex);
+                .find(|c| c.tag == "radPr")
+                .and_then(|p| p.children.iter().find(|c| c.tag == "degHide"))
+                .and_then(|c| c.attrs.get("val").map(|v| v == "1" || v == "true"))
+                .unwrap_or(false);
+            let deg = if hide_deg {
+                None
+            } else {
+                node.children
+                    .iter()
+                    .find(|c| c.tag == "deg")
+                    .map(node_to_latex)
+            };
             let e = node
                 .children
                 .iter()
@@ -194,6 +308,22 @@ fn node_to_latex(node: &OmmlNode) -> String {
             format!("\\sqrt{{{}}}", e.trim())
         }
         "nary" => {
+            let npr = node.children.iter().find(|c| c.tag == "naryPr");
+            let chr = npr
+                .and_then(|p| p.children.iter().find(|c| c.tag == "chr"))
+                .and_then(|c| c.attrs.get("val").cloned())
+                .unwrap_or_else(|| "∑".to_string());
+            let op = match chr.as_str() {
+                "∫" => "\\int",
+                "∬" => "\\iint",
+                "∭" => "\\iiint",
+                "∮" => "\\oint",
+                "∏" => "\\prod",
+                "∐" => "\\coprod",
+                "⋃" => "\\bigcup",
+                "⋂" => "\\bigcap",
+                _ => "\\sum",
+            };
             let sub = node
                 .children
                 .iter()
@@ -212,16 +342,131 @@ fn node_to_latex(node: &OmmlNode) -> String {
                 .find(|c| c.tag == "e")
                 .map(node_to_latex)
                 .unwrap_or_default();
-            if !sub.trim().is_empty() && !sup.trim().is_empty() {
-                format!(
-                    "\\sum_{{{}}}^{{{}}}{{{}}}",
-                    sub.trim(),
-                    sup.trim(),
-                    e.trim()
-                )
-            } else {
-                e
+            match (!sub.trim().is_empty(), !sup.trim().is_empty()) {
+                (true, true) => {
+                    format!("{}_{{{}}}^{{{}}} {}", op, sub.trim(), sup.trim(), e.trim())
+                }
+                (true, false) => format!("{}_{{{}}} {}", op, sub.trim(), e.trim()),
+                (false, true) => format!("{}^{{{}}} {}", op, sup.trim(), e.trim()),
+                (false, false) => format!("{} {}", op, e.trim()),
             }
+        }
+        "m" => {
+            let mut rows = Vec::new();
+            for mr in node.children.iter().filter(|c| c.tag == "mr") {
+                let cells: Vec<String> = mr
+                    .children
+                    .iter()
+                    .filter(|c| c.tag == "e")
+                    .map(|cell| node_to_latex(cell).trim().to_string())
+                    .collect();
+                rows.push(cells.join(" & "));
+            }
+            format!("\\begin{{matrix}} {} \\end{{matrix}}", rows.join(" \\\\ "))
+        }
+        "bar" => {
+            let pos = node
+                .children
+                .iter()
+                .find(|c| c.tag == "barPr")
+                .and_then(|p| p.children.iter().find(|c| c.tag == "pos"))
+                .and_then(|c| c.attrs.get("val").map(|v| v.as_str()))
+                .unwrap_or("top");
+            let e = node
+                .children
+                .iter()
+                .find(|c| c.tag == "e")
+                .map(node_to_latex)
+                .unwrap_or_default();
+            if pos == "bot" {
+                format!("\\underline{{{}}}", e.trim())
+            } else {
+                format!("\\overline{{{}}}", e.trim())
+            }
+        }
+        "acc" => {
+            let chr = node
+                .children
+                .iter()
+                .find(|c| c.tag == "accPr")
+                .and_then(|p| p.children.iter().find(|c| c.tag == "chr"))
+                .and_then(|c| c.attrs.get("val").map(|v| v.as_str()))
+                .unwrap_or("^");
+            let e = node
+                .children
+                .iter()
+                .find(|c| c.tag == "e")
+                .map(node_to_latex)
+                .unwrap_or_default();
+            let macro_name = match chr {
+                "^" | "̂" => "\\hat",
+                "¯" | "̄" => "\\bar",
+                "˙" | "̇" => "\\dot",
+                "¨" | "̈" => "\\ddot",
+                "→" | "⃗" => "\\vec",
+                "~" | "̃" => "\\tilde",
+                "˘" | "̆" => "\\breve",
+                "ˇ" | "̌" => "\\check",
+                _ => "\\hat",
+            };
+            format!("{{{}}}{{{}}}", macro_name, e.trim())
+        }
+        "limLow" => {
+            let e = node
+                .children
+                .iter()
+                .find(|c| c.tag == "e")
+                .map(node_to_latex)
+                .unwrap_or_default();
+            let lim = node
+                .children
+                .iter()
+                .find(|c| c.tag == "lim")
+                .map(node_to_latex)
+                .unwrap_or_default();
+            format!("{}_{{{}}}", e.trim(), lim.trim())
+        }
+        "limUpp" => {
+            let e = node
+                .children
+                .iter()
+                .find(|c| c.tag == "e")
+                .map(node_to_latex)
+                .unwrap_or_default();
+            let lim = node
+                .children
+                .iter()
+                .find(|c| c.tag == "lim")
+                .map(node_to_latex)
+                .unwrap_or_default();
+            format!("{}^{{{}}}", e.trim(), lim.trim())
+        }
+        "func" => {
+            let fname = node
+                .children
+                .iter()
+                .find(|c| c.tag == "fName")
+                .map(node_to_latex)
+                .unwrap_or_default();
+            let e = node
+                .children
+                .iter()
+                .find(|c| c.tag == "e")
+                .map(node_to_latex)
+                .unwrap_or_default();
+            format!("{} {}", fname.trim(), e.trim())
+        }
+        "eqArr" => {
+            let exprs: Vec<String> = node
+                .children
+                .iter()
+                .filter(|c| c.tag == "e")
+                .map(|e| node_to_latex(e).trim().to_string())
+                .collect();
+            format!(
+                "\\begin{{aligned}} {} \\end{{aligned}}",
+                exprs.join(" \\\\ ")
+            )
         }
         _ => node
             .children
@@ -243,14 +488,30 @@ pub fn extract_paragraph_with_math(p_xml: &str) -> String {
             Ok(Event::Start(ref e)) => {
                 let tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 if tag == "oMath" {
-                    let node = parse_node(&mut reader, "oMath");
+                    let mut attrs = HashMap::new();
+                    for attr in e.attributes().flatten() {
+                        let key =
+                            String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                        if let Ok(val) = attr.unescape_value() {
+                            attrs.insert(key, val.into_owned());
+                        }
+                    }
+                    let node = parse_node(&mut reader, "oMath", attrs);
                     let latex = node_to_latex(&node);
                     let trimmed = latex.trim();
                     if !trimmed.is_empty() {
                         out.push_str(&format!("${}$", trimmed));
                     }
                 } else if tag == "oMathPara" {
-                    let node = parse_node(&mut reader, "oMathPara");
+                    let mut attrs = HashMap::new();
+                    for attr in e.attributes().flatten() {
+                        let key =
+                            String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                        if let Ok(val) = attr.unescape_value() {
+                            attrs.insert(key, val.into_owned());
+                        }
+                    }
+                    let node = parse_node(&mut reader, "oMathPara", attrs);
                     let latex = node_to_latex(&node);
                     let trimmed = latex.trim();
                     if !trimmed.is_empty() {
@@ -266,6 +527,11 @@ pub fn extract_paragraph_with_math(p_xml: &str) -> String {
                                     && let Ok(unescaped) = quick_xml::escape::unescape(s)
                                 {
                                     text.push_str(&unescaped);
+                                }
+                            }
+                            Ok(Event::GeneralRef(ref ge)) => {
+                                if let Some(s) = crate::parsers::resolve_xml_entity(ge) {
+                                    text.push_str(&s);
                                 }
                             }
                             Ok(Event::End(ref end_e)) if end_e.local_name().as_ref() == b"t" => {
@@ -294,8 +560,8 @@ pub struct DocxBodyParagraph {
     pub chart_rids: Vec<String>,
 }
 
-/// Extracts direct body paragraphs from a Word document.xml, along with any chart references and math formulas.
-/// Also returns a map of paraId -> math-augmented text for any paragraphs (including those inside tables).
+/// Extracts direct body paragraphs from a Word document.xml, along with any chart references,
+/// image placeholders, and math formulas. Also returns a map of paraId -> math-augmented text.
 pub fn extract_docx_body_paragraphs(
     doc_xml: &str,
 ) -> (
@@ -340,9 +606,72 @@ pub fn extract_docx_body_paragraphs(
                             }
                         }
                     }
+                    b"cNvPr" if in_p => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"name" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    let name = val.trim();
+                                    if !name.is_empty()
+                                        && !name.starts_with("Chart ")
+                                        && !name.starts_with("Diagram ")
+                                    {
+                                        if let Some(pos) = current_p.text.find("[Image: Picture ") {
+                                            if let Some(end) = current_p.text[pos..].find(']') {
+                                                current_p.text.replace_range(
+                                                    pos..pos + end + 1,
+                                                    &format!("[Image: {}]", name),
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                        let img_str = format!("[Image: {}]", name);
+                                        if !current_p.text.contains(&img_str) {
+                                            if !current_p.text.is_empty()
+                                                && !current_p.text.ends_with('\n')
+                                                && !current_p.text.ends_with(' ')
+                                            {
+                                                current_p.text.push(' ');
+                                            }
+                                            current_p.text.push_str(&img_str);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"docPr" if in_p => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"name" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    let name = val.trim();
+                                    if !name.is_empty()
+                                        && !name.starts_with("Chart ")
+                                        && !name.starts_with("Diagram ")
+                                        && !current_p.text.contains("[Image: ")
+                                    {
+                                        if !current_p.text.is_empty()
+                                            && !current_p.text.ends_with('\n')
+                                            && !current_p.text.ends_with(' ')
+                                        {
+                                            current_p.text.push(' ');
+                                        }
+                                        current_p.text.push_str(&format!("[Image: {}]", name));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     b"oMath" if in_p => {
                         current_p.has_math = true;
-                        let node = parse_node(&mut reader, "oMath");
+                        let mut attrs = HashMap::new();
+                        for attr in e.attributes().flatten() {
+                            let key =
+                                String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                            if let Ok(val) = attr.unescape_value() {
+                                attrs.insert(key, val.into_owned());
+                            }
+                        }
+                        let node = parse_node(&mut reader, "oMath", attrs);
                         let latex = node_to_latex(&node);
                         let trimmed = latex.trim();
                         if !trimmed.is_empty() {
@@ -351,7 +680,15 @@ pub fn extract_docx_body_paragraphs(
                     }
                     b"oMathPara" if in_p => {
                         current_p.has_math = true;
-                        let node = parse_node(&mut reader, "oMathPara");
+                        let mut attrs = HashMap::new();
+                        for attr in e.attributes().flatten() {
+                            let key =
+                                String::from_utf8_lossy(attr.key.local_name().as_ref()).to_string();
+                            if let Ok(val) = attr.unescape_value() {
+                                attrs.insert(key, val.into_owned());
+                            }
+                        }
+                        let node = parse_node(&mut reader, "oMathPara", attrs);
                         let latex = node_to_latex(&node);
                         let trimmed = latex.trim();
                         if !trimmed.is_empty() {
@@ -367,6 +704,11 @@ pub fn extract_docx_body_paragraphs(
                                         && let Ok(unescaped) = quick_xml::escape::unescape(s)
                                     {
                                         text.push_str(&unescaped);
+                                    }
+                                }
+                                Ok(Event::GeneralRef(ref ge)) => {
+                                    if let Some(s) = crate::parsers::resolve_xml_entity(ge) {
+                                        text.push_str(&s);
                                     }
                                 }
                                 Ok(Event::End(ref end_e))
@@ -407,6 +749,59 @@ pub fn extract_docx_body_paragraphs(
                             if attr.key.local_name().as_ref() == b"id" {
                                 if let Ok(val) = attr.unescape_value() {
                                     current_p.chart_rids.push(val.to_string());
+                                }
+                            }
+                        }
+                    } else if local.as_ref() == b"cNvPr" {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"name" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    let name = val.trim();
+                                    if !name.is_empty()
+                                        && !name.starts_with("Chart ")
+                                        && !name.starts_with("Diagram ")
+                                    {
+                                        if let Some(pos) = current_p.text.find("[Image: Picture ") {
+                                            if let Some(end) = current_p.text[pos..].find(']') {
+                                                current_p.text.replace_range(
+                                                    pos..pos + end + 1,
+                                                    &format!("[Image: {}]", name),
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                        let img_str = format!("[Image: {}]", name);
+                                        if !current_p.text.contains(&img_str) {
+                                            if !current_p.text.is_empty()
+                                                && !current_p.text.ends_with('\n')
+                                                && !current_p.text.ends_with(' ')
+                                            {
+                                                current_p.text.push(' ');
+                                            }
+                                            current_p.text.push_str(&img_str);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if local.as_ref() == b"docPr" {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"name" {
+                                if let Ok(val) = attr.unescape_value() {
+                                    let name = val.trim();
+                                    if !name.is_empty()
+                                        && !name.starts_with("Chart ")
+                                        && !name.starts_with("Diagram ")
+                                        && !current_p.text.contains("[Image: ")
+                                    {
+                                        if !current_p.text.is_empty()
+                                            && !current_p.text.ends_with('\n')
+                                            && !current_p.text.ends_with(' ')
+                                        {
+                                            current_p.text.push(' ');
+                                        }
+                                        current_p.text.push_str(&format!("[Image: {}]", name));
+                                    }
                                 }
                             }
                         }
@@ -478,6 +873,50 @@ mod tests {
     }
 
     #[test]
+    fn test_omml_matrix_and_delimiters() {
+        let xml = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+            <m:d>
+                <m:dPr>
+                    <m:begChr m:val="["/>
+                    <m:endChr m:val="]"/>
+                </m:dPr>
+                <m:e>
+                    <m:m>
+                        <m:mr>
+                            <m:e><m:r><m:t>1</m:t></m:r></m:e>
+                            <m:e><m:r><m:t>0</m:t></m:r></m:e>
+                        </m:mr>
+                        <m:mr>
+                            <m:e><m:r><m:t>0</m:t></m:r></m:e>
+                            <m:e><m:r><m:t>1</m:t></m:r></m:e>
+                        </m:mr>
+                    </m:m>
+                </m:e>
+            </m:d>
+        </m:oMath>"#;
+
+        let latex = omml_to_latex(xml);
+        assert_eq!(latex, r"[\begin{matrix} 1 & 0 \\ 0 & 1 \end{matrix}]");
+    }
+
+    #[test]
+    fn test_omml_nary_integral() {
+        let xml = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+            <m:nary>
+                <m:naryPr>
+                    <m:chr m:val="∫"/>
+                </m:naryPr>
+                <m:sub><m:r><m:t>0</m:t></m:r></m:sub>
+                <m:sup><m:r><m:t>1</m:t></m:r></m:sup>
+                <m:e><m:r><m:t>x dx</m:t></m:r></m:e>
+            </m:nary>
+        </m:oMath>"#;
+
+        let latex = omml_to_latex(xml);
+        assert_eq!(latex, r"\int_{0}^{1} x dx");
+    }
+
+    #[test]
     fn test_extract_paragraph_with_math() {
         let xml = r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
             <w:r><w:t>The angle is </w:t></w:r>
@@ -530,6 +969,6 @@ mod tests {
         }
         assert_eq!(ps.len(), 5);
         assert!(ps[0].contains("$m=1$"));
-        assert!(ps[1].starts_with("$$sin"));
+        assert!(ps[1].starts_with(r"$$\sin") || ps[1].starts_with("$$sin"));
     }
 }
