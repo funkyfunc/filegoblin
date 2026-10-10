@@ -96,6 +96,8 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] **Zero-install npm distribution**: Execute via `npx filegoblin` in environments without Rust toolchains
 - [x] DOM-based HTML → markdown (readability-style content selection, link-farm pruning, preserved link URLs, title/source front-matter, ATX headings)
 - [x] One tabular dialect everywhere: standard markdown pipe tables across PDF, docx, pptx, OpenDocument, and CSV/XLSX
+- [x] **Pure Rust Ruling-Line Table Extraction**: Native port of `pdfplumber.table` vector ruling-line and intersection table algorithm, supporting collinear edge snapping, bounding box cycle reconstruction, multi-column merged headers, and fallback gutter detection
+- [x] **Trafilatura DOM Content Extraction**: Native port of `trafilatura.core` text/link-density heuristics, boilerplate token pruning, syntax-highlighted code block preservation, and citation-link dampening
 - [x] PowerPoint: manifest-true slide order + speaker notes + embedded chart tables
 - [x] Magic-byte format detection — extension-first, falling back to content signatures so renamed / extension-less files (including archives) still route correctly; legacy `.doc`/`.ppt` detected with an actionable error
 - [x] URL fetching routes by Content-Type: HTML → extractor, raw markdown/JSON/text → passthrough, binary documents (a PDF URL!) → the normal parser pipeline

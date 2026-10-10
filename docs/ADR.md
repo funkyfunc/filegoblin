@@ -641,5 +641,28 @@ Following the 12/12 Adversarial Gauntlet milestone, complex real-world Office pa
 
 **Status:** Accepted.
 
+## 2026-10-10: Pure Rust Port of Upstream Algorithms — pdfplumber Ruling-Line Table Extraction and Trafilatura DOM Content Scoring
 
+**Context:**
+Two major accuracy bottlenecks persisted in converting complex real-world documents into clean markdown for LLMs:
+1. *PDF Tables with Complex Ruling Lines & Colspans:* Many enterprise financial statements and institutional reports encode tables with multi-line cell text, custom cell spans, and ruling lines that high-level heuristic text extractors split into fragmented or empty rows. Industry standard Python `pdfplumber` relies on vector edge geometry, collinear line snapping, vertex intersection detection, and cycle cell bounding box clustering.
+2. *Web Article Boilerplate in Non-Semantic Markup:* Real-world web articles frequently lack `<article>` or `<main>` tags (div-soup), or wrap content in tracking scripts, sticky headers, cookie consent overlays, lead magnets, social sharing buttons, and clickbait recommendation grids ("Outbrain/Taboola"). Industry standard Python `trafilatura` computes composite DOM text metrics (punctuation density, paragraph structure, word counts) and negative link density to isolate core article prose.
 
+To adhere to the `filegoblin` zero-dependency, single-binary architecture, external Python runtimes, Node sidecars, or heavy VLMs could not be introduced.
+
+**Decision:**
+- **Pure Rust `pdfplumber.table` Port (`crates/core/src/parsers/pdf_table.rs`):**
+  - Fully ported collinear edge normalization (`merge_edges`), coordinate snapping (`snap_edges`), junction vertex detection (`find_intersections`), cycle cell reconstruction (`intersections_to_cells`), and spatial text assignment (`cluster_words_into_cells`).
+  - Added synthetic vertical and horizontal gutter edge generation (`words_to_edges_v_bounded`, `words_to_edges_h_bounded`) to support borderless and semi-bordered tables.
+  - Implemented multi-column cell span tracking and markdown pipe table generation conforming to the `filegoblin` pipe table dialect (`|---|---|`).
+  - Integrated into the PDF pipeline (`recover_page_vector_tables`), detecting broken or fragmented heuristic tables in `pdf_oxide` output and cleanly replacing them with reconstructed vector ruling-line tables.
+- **Pure Rust `trafilatura.core` Port (`crates/core/src/parsers/trafilatura.rs`):**
+  - Implemented DOM metric calculation (`compute_metrics`), scoring candidate containers based on prose length, comma/period density, paragraph structure, heading count, and code/table structural bonuses.
+  - Ported negative link density pruning (`LINK_FARM_RATIO = 0.33`) with academic citation dampening (protecting inline references like `[1]`, `[2]`, `[14]`).
+  - Pruned advertisement, tracking, cookie, social, and recommendation tokens while strictly protecting `<pre>`, `<code>`, `<table>`, `<blockquote>`, and syntax-highlighted code spans (`.token`, `.hljs`).
+  - Integrated into `HtmlGobbler::extract_markdown`, isolating main article trees while maintaining fallback for raw extraction (`--full`).
+- **Gauntlet Expansion:**
+  - Added `TBL_1` (`test_assets/gauntlet/tables/adversarial_ruling_table.pdf`) and `WEB_1` (`test_assets/gauntlet/web/noisy_technical_blog.html`) to the Adversarial Gauntlet.
+  - Scorecard reached **14/14 (100.0%) passing** with sub-50ms latencies.
+
+**Status:** Accepted.

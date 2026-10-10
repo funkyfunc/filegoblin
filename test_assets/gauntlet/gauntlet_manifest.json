@@ -135,5 +135,58 @@
     "canaries_present": [
       "Structuring Interviews with Experts"
     ]
+  },
+  {
+    "id": "TBL_1",
+    "file": "tables/adversarial_ruling_table.pdf",
+    "category": "PDF Tables",
+    "description": "Complex ruling-line PDF table with colspans and multi-line cells",
+    "canaries_present": [
+      "Portfolio Security Information",
+      "Valuation & Exposure Metrics",
+      "VTSAX",
+      "Vanguard Total Stock Market Index Fund Institutional",
+      "$1,245,670.50",
+      "+14.85%",
+      "BNDX",
+      "$850,000.00",
+      "VMFXX",
+      "$1,024,320.00"
+    ],
+    "syntax_contains": [
+      "| Portfolio Security Information |  | Valuation & Exposure Metrics |  |  |",
+      "|---|---|---|---|---|"
+    ],
+    "forbidden_absent": [
+      "|  | Liquidity Fund |",
+      "|  | Institutional |"
+    ]
+  },
+  {
+    "id": "WEB_1",
+    "file": "web/noisy_technical_blog.html",
+    "category": "HTML Web Articles",
+    "description": "Noisy technical blog: boilerplate and ad purge with code/table preservation",
+    "canaries_present": [
+      "Scaling Distributed Consensus with Raft in Rust",
+      "Dr. Alan Turing",
+      "pub struct RaftNode",
+      "Classic Paxos",
+      "Filegoblin Raft (NVMe)",
+      "Safety Invariant:"
+    ],
+    "syntax_contains": [
+      "```",
+      "| Protocol |"
+    ],
+    "forbidden_absent": [
+      "10x Your Cloud Bill with Quantum GPU Containers",
+      "We use 487 tracking beacons",
+      "Share on X",
+      "Join 50,000 Systems Engineers",
+      "Celebrities Who Look Completely Unrecognizable Today",
+      "User Comments (3)",
+      "Terms of Service"
+    ]
   }
 ]
