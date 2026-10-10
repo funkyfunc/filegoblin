@@ -220,6 +220,12 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
+    let diagram = crate::parsers::drawingml::SlideDiagram::parse(xml).ok();
+    let connected_ids = diagram
+        .as_ref()
+        .map(|d| d.connected_shape_ids())
+        .unwrap_or_default();
+
     let mut reader = Reader::from_str(xml);
     // NOT trim_text(true): it trims each text event, and entity refs split a
     // run into several, eating the spaces around them ("R&amp;D x" -> "R&Dx").
@@ -234,6 +240,8 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
     let mut table = crate::parsers::TableBuilder::default();
     let mut current_cell_text = String::new();
 
+    let mut is_connected_shape = false;
+
     loop {
         let event = reader.read_event().map_err(|e| {
             anyhow::anyhow!(
@@ -245,9 +253,21 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
         let is_empty = matches!(event, Event::Empty(_));
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
-                match e.name().as_ref() {
-                    b"p:cNvPr" | b"cNvPr" => {
+                let local = e.local_name();
+                match local.as_ref() {
+                    b"sp" => {
+                        is_connected_shape = false;
+                    }
+                    b"cNvPr" => {
                         for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"id"
+                                && let Ok(val) = attr.unescape_value()
+                            {
+                                let id = val.trim().to_string();
+                                if connected_ids.contains(&id) {
+                                    is_connected_shape = true;
+                                }
+                            }
                             if (attr.key.as_ref() == b"descr" || attr.key.as_ref() == b"title")
                                 && let Ok(val) = attr.unescape_value()
                             {
@@ -264,19 +284,21 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
                             }
                         }
                     }
-                    b"a:tbl" => {
+                    b"a:tbl" | b"tbl" => {
                         in_table = true;
                         output.push('\n'); // Pad before table
                     }
                     // A self-closing cell still occupies a column.
-                    b"a:tc" if in_table => {
+                    b"a:tc" | b"tc" if in_table => {
                         current_cell_text.clear();
                         if is_empty {
                             table.push_cell("", 1);
                         }
                     }
-                    b"a:t" => in_text_node = true,
-                    b"a:p" if !in_table => output.push_str("\n- "), // Start of a paragraph/bullet outside tables
+                    b"a:t" | b"t" => in_text_node = true,
+                    b"a:p" | b"p" if !in_table && !is_connected_shape => {
+                        output.push_str("\n- ");
+                    }
                     _ => (),
                 }
             }
@@ -287,7 +309,7 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
                 {
                     if in_table {
                         current_cell_text.push_str(&decoded);
-                    } else {
+                    } else if !is_connected_shape {
                         output.push_str(&decoded);
                     }
                 }
@@ -299,7 +321,7 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
                     let text = String::from_utf8_lossy(e.as_ref());
                     if in_table {
                         current_cell_text.push_str(&text);
-                    } else {
+                    } else if !is_connected_shape {
                         output.push_str(&text);
                     }
                 }
@@ -308,27 +330,35 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
                 if in_text_node && let Some(s) = crate::parsers::resolve_xml_entity(e) {
                     if in_table {
                         current_cell_text.push_str(&s);
-                    } else {
+                    } else if !is_connected_shape {
                         output.push_str(&s);
                     }
                 }
             }
-            Event::End(ref e) => match e.name().as_ref() {
-                b"a:tbl" => {
-                    in_table = false;
-                    output.push('\n');
-                    output.push_str(table.render().trim_end());
-                    output.push('\n');
+            Event::End(ref e) => {
+                let local = e.local_name();
+                match local.as_ref() {
+                    b"a:tbl" | b"tbl" => {
+                        in_table = false;
+                        output.push('\n');
+                        output.push_str(table.render().trim_end());
+                        output.push('\n');
+                    }
+                    b"a:tr" | b"tr" if in_table => table.end_row(),
+                    b"a:tc" | b"tc" if in_table => {
+                        table.push_cell(&current_cell_text, 1);
+                        current_cell_text.clear();
+                    }
+                    b"a:t" | b"t" => in_text_node = false,
+                    b"a:p" | b"p" if !in_table && !is_connected_shape => {
+                        output.push('\n');
+                    }
+                    b"sp" => {
+                        is_connected_shape = false;
+                    }
+                    _ => (),
                 }
-                b"a:tr" if in_table => table.end_row(),
-                b"a:tc" if in_table => {
-                    table.push_cell(&current_cell_text, 1);
-                    current_cell_text.clear();
-                }
-                b"a:t" => in_text_node = false,
-                b"a:p" if !in_table => output.push('\n'),
-                _ => (),
-            },
+            }
             Event::Eof => break,
             _ => (),
         }
@@ -341,11 +371,25 @@ fn extract_text_from_slide_xml(xml: &str) -> Result<String> {
     }
 
     // Clean up excessive newlines/bullets generated from empty paragraphs
-    Ok(output
+    let cleaned = output
         .lines()
         .filter(|line| !line.trim().is_empty() && line.trim() != "-")
         .collect::<Vec<&str>>()
-        .join("\n"))
+        .join("\n");
+
+    let mut result = cleaned;
+    if let Some(ref diag) = diagram
+        && let Some(mermaid) = diag.render_mermaid()
+    {
+        if !result.trim().is_empty() {
+            result.push_str("\n\n");
+        }
+        result.push_str("```mermaid\n");
+        result.push_str(&mermaid);
+        result.push_str("\n```");
+    }
+
+    Ok(result)
 }
 
 fn extract_chart_targets_from_rels(rels_xml: &str) -> Vec<String> {
@@ -478,5 +522,21 @@ mod tests {
             manifest_slide_order(pres, rels),
             vec!["ppt/slides/slide2.xml", "ppt/slides/slide1.xml"]
         );
+    }
+
+    #[test]
+    fn test_powerpoint_connector_flowchart() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let path =
+            Path::new(&manifest_dir).join("../../test_assets/benchmarks/connector_flowchart.pptx");
+        if path.exists() {
+            let gobbler = PptxGobbler;
+            let md = gobbler
+                .gobble(&path, &ParseOptions::default())
+                .expect("parse connector flowchart pptx");
+            assert!(md.contains("```mermaid\nflowchart TD"));
+            assert!(md.contains(r#"N_101["Ingest Input"] --> N_102["Validate Schema"]"#));
+            assert!(md.contains(r#"N_102 -.-> N_103["Store Record"]"#));
+        }
     }
 }

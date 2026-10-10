@@ -192,6 +192,7 @@ mod prefix_tests {
 
 #[cfg(feature = "web")]
 pub mod crawler;
+pub mod drawingml;
 pub mod email;
 pub mod epub;
 pub mod feed;
