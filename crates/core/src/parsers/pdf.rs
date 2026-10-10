@@ -94,7 +94,8 @@ impl Gobble for PdfGobbler {
 
         let joined = pages_md.join("\n\n");
         let formatted_text = format_table_and_block_boundaries(&joined);
-        let final_text = formatted_text.trim().to_string();
+        let sectioned_text = insert_semantic_section_boundaries(&formatted_text);
+        let final_text = sectioned_text.trim().to_string();
         if final_text.is_empty() {
             if unreadable_pages > 0 {
                 anyhow::bail!(
@@ -750,6 +751,191 @@ fn collapse_blank_lines(lines: &[String]) -> String {
     result.trim().to_string()
 }
 
+/// Inserts clean thematic dividers (`---`) and structural semantic section anchors
+/// before top-level chapter, part, and appendix headings in markdown text.
+///
+/// Example output:
+/// ```markdown
+/// ---
+/// <!-- filegoblin:section type="chapter" title="Chapter 3: The Basics" -->
+/// # Chapter 3: The Basics
+/// ```
+pub(crate) fn insert_semantic_section_boundaries(md: &str) -> String {
+    let lines: Vec<&str> = md.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 16);
+    let mut in_code_fence = false;
+
+    for i in 0..lines.len() {
+        let raw_line = lines[i];
+        let trimmed = raw_line.trim();
+
+        if trimmed.starts_with("```") {
+            in_code_fence = !in_code_fence;
+            out.push(raw_line.to_string());
+            continue;
+        }
+
+        if in_code_fence {
+            out.push(raw_line.to_string());
+            continue;
+        }
+
+        if let Some((section_type, title)) = detect_section_heading(trimmed, &lines, i) {
+            let already_anchored = out
+                .iter()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(|l| l.trim().starts_with("<!-- filegoblin:section"));
+
+            if !already_anchored {
+                let prev_is_divider = out
+                    .iter()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .is_some_and(|l| l.trim() == "---");
+
+                if !prev_is_divider {
+                    if !out.is_empty() && !out.last().is_some_and(|l| l.trim().is_empty()) {
+                        out.push(String::new());
+                    }
+                    out.push("---".to_string());
+                } else {
+                    // Pop any blank lines between existing divider and comment
+                    while out.last().is_some_and(|l| l.trim().is_empty()) {
+                        out.pop();
+                    }
+                }
+                out.push(format!(
+                    "<!-- filegoblin:section type=\"{}\" title=\"{}\" -->",
+                    section_type, title
+                ));
+            }
+        }
+
+        out.push(raw_line.to_string());
+    }
+
+    collapse_blank_lines(&out)
+}
+
+fn detect_section_heading(
+    trimmed: &str,
+    lines: &[&str],
+    idx: usize,
+) -> Option<(&'static str, String)> {
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let is_heading = trimmed.starts_with('#');
+    let level = if is_heading {
+        trimmed.chars().take_while(|&c| c == '#').count()
+    } else {
+        0
+    };
+
+    if level > 3 {
+        return None;
+    }
+
+    let clean = if is_heading {
+        trimmed[level..].trim()
+    } else {
+        trimmed
+    };
+
+    let plain = clean.trim_matches(|c| matches!(c, '*' | '_' | '`')).trim();
+
+    if plain.is_empty() {
+        return None;
+    }
+
+    let lower = plain.to_lowercase();
+    let (section_type, is_match) = if lower.starts_with("chapter") && is_section_boundary(&lower, 7)
+    {
+        ("chapter", true)
+    } else if lower.starts_with("part") && is_section_boundary(&lower, 4) {
+        ("part", true)
+    } else if lower.starts_with("appendix") && is_section_boundary(&lower, 8) {
+        ("appendix", true)
+    } else {
+        ("", false)
+    };
+
+    if !is_match {
+        return None;
+    }
+
+    if !is_heading {
+        // Without '#' marker, require all-uppercase or title-case label, short line, no trailing period
+        let is_caps =
+            plain == plain.to_uppercase() || plain.chars().next().is_some_and(|c| c.is_uppercase());
+        if !is_caps || plain.len() > 60 || plain.ends_with('.') || plain.ends_with(',') {
+            return None;
+        }
+    }
+
+    let mut title = plain.to_string();
+    if is_bare_section_label(plain) {
+        if let Some(next_raw) = lines[idx + 1..]
+            .iter()
+            .map(|l| l.trim())
+            .find(|l| !l.is_empty())
+        {
+            if !next_raw.starts_with("<!--")
+                && !next_raw.starts_with("---")
+                && !next_raw.starts_with("```")
+            {
+                let next_clean = next_raw
+                    .trim_start_matches('#')
+                    .trim()
+                    .trim_matches(|c| matches!(c, '*' | '_' | '`'))
+                    .trim();
+                let next_lower = next_clean.to_lowercase();
+                if !next_lower.starts_with("chapter")
+                    && !next_lower.starts_with("part")
+                    && !next_lower.starts_with("appendix")
+                    && next_clean.len() <= 80
+                    && !next_clean.ends_with('.')
+                    && !next_clean.is_empty()
+                {
+                    title = format!("{}: {}", plain, next_clean);
+                }
+            }
+        }
+    }
+
+    let sanitized_title = title.replace('"', "&quot;");
+    Some((section_type, sanitized_title))
+}
+
+fn is_section_boundary(s: &str, prefix_len: usize) -> bool {
+    if s.len() == prefix_len {
+        return true;
+    }
+    let rest = &s[prefix_len..];
+    rest.starts_with(' ')
+        || rest.starts_with(':')
+        || rest.starts_with('.')
+        || rest.starts_with('-')
+        || rest.starts_with('\t')
+}
+
+fn is_bare_section_label(s: &str) -> bool {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() <= 2 {
+        return true;
+    }
+    if parts.len() == 3 && (parts[1].ends_with(':') || parts[1].ends_with('.')) {
+        return false;
+    }
+    parts.len() <= 2
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,5 +1062,45 @@ mod tests {
 
         let expected = "Paragraph text.\n\n> This is a callout box.\n> Continued callout.\n\nFollowing text.\n\n# Heading 1\nHeading body.";
         assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_insert_semantic_section_boundaries_chapter() {
+        let input = "Introductory text.\n\n# Chapter 3: The Basics\n\nChapter body text.";
+        let output = insert_semantic_section_boundaries(input);
+        let expected = "Introductory text.\n\n---\n<!-- filegoblin:section type=\"chapter\" title=\"Chapter 3: The Basics\" -->\n# Chapter 3: The Basics\n\nChapter body text.";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_insert_semantic_section_boundaries_split_title() {
+        let input = "Intro text.\n\n# Chapter 1\n\n# The Basics\n\nBody text.";
+        let output = insert_semantic_section_boundaries(input);
+        let expected = "Intro text.\n\n---\n<!-- filegoblin:section type=\"chapter\" title=\"Chapter 1: The Basics\" -->\n# Chapter 1\n\n# The Basics\n\nBody text.";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_insert_semantic_section_boundaries_part() {
+        let input = "Intro text.\n\n## Part One: System Structure and Behavior\n\nBody text.";
+        let output = insert_semantic_section_boundaries(input);
+        let expected = "Intro text.\n\n---\n<!-- filegoblin:section type=\"part\" title=\"Part One: System Structure and Behavior\" -->\n## Part One: System Structure and Behavior\n\nBody text.";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_insert_semantic_section_boundaries_preserves_existing_divider() {
+        let input = "Intro text.\n\n---\n\n# Chapter 2: Second Steps\n\nBody text.";
+        let output = insert_semantic_section_boundaries(input);
+        let expected = "Intro text.\n\n---\n<!-- filegoblin:section type=\"chapter\" title=\"Chapter 2: Second Steps\" -->\n# Chapter 2: Second Steps\n\nBody text.";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_insert_semantic_section_boundaries_ignores_code_blocks() {
+        let input =
+            "Code sample:\n\n```python\n# Chapter 1 in code\nprint('hello')\n```\n\nFollow up.";
+        let output = insert_semantic_section_boundaries(input);
+        assert_eq!(output, input);
     }
 }

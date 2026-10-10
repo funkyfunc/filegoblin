@@ -638,6 +638,7 @@ impl FetchedBody {
 
 /// Version marker for the URL-cache wire format. Bump the number whenever the
 /// layout below changes, so old entries miss instead of mis-parsing.
+#[cfg(feature = "web")]
 const CACHE_FORMAT_MAGIC: &[u8] = b"filegoblin-cache-v1";
 
 #[cfg(feature = "web")]

@@ -32,11 +32,21 @@
     - Synchronized table separator row column counts (`|---|...|`) with header row column counts.
     - Protected code fences (```) from line formatting and collapsed redundant blank lines.
 
-- [x] **Phase 3: Regression & Validation Gate**
-  - Validated full test suite: 190 core unit tests + 21 golden tests passing with 0 warnings.
-  - Validated on unseen Slice D (`slice_d_unseen_frameworks.pdf`): 0 header leaks, 0 interruptions, 0 broken hyphens, 91.6% 8-gram recall.
-  - Finalized `BENCHMARK_REPORT.md` (commit `545f707`).
-  - Added ADR entry `2026-10-10: Deterministic PDF Layout Ordering, Header/Footer Suppression, and Table Boundary Spacing` to `docs/ADR.md`.
+- [x] **Full-Book Conversion Stress Testing & Telemetry (Milestone 1)**
+  - Implemented `scripts/profile_throughput.py` measuring pages/second, memory RSS, tables, and unrecovered figure markers.
+  - Profiled full books streaming to disk (`target/bench_out/`):
+    - *Structuring Interviews with Experts* (21 pages scanned): 9.15 s, 2.3 pages/s, 334 MB RSS, 9,161 words.
+    - *Thinking in Systems* (235 pages): 67.18 s, 3.5 pages/s, 94.4 MB RSS, 29,927 words, 3 tables.
+    - *Bulletproof Problem Solving* (296 pages): 44.26 s, 6.7 pages/s, 417.4 MB RSS, 57,168 words, 70 figure OCR blocks.
+  - Documented results in `BENCHMARK_REPORT.md`.
+
+- [x] **Semantic Chapter & Section Boundaries (Milestone 2)**
+  - Implemented `insert_semantic_section_boundaries` in `crates/core/src/parsers/pdf.rs`.
+  - Automatically identifies top-level chapters, parts, and appendices.
+  - Synthesizes clean thematic divider `---` and XML section comments (`<!-- filegoblin:section type="chapter" title="..." -->`).
+  - Merges split chapter label and subtitle lines into unified section titles while protecting code fences.
+  - Verified with 5 comprehensive unit tests (all passing).
 
 ### Pending Items
-- None for the current PDF conversion fidelity milestone. All verification gates and horde checks pass.
+- Office structure enhancements (embedded charts, equations, and tables).
+
