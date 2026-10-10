@@ -539,3 +539,26 @@ flag-toggling idea is ever wanted in the picker.
 
 **Status:** Accepted.
 
+## 2026-10-10: PDF Fidelity Iterative Optimization — Dropped Text Recovery, Phantom OCR Elimination, and Parallel Scanned Throughput Acceleration
+
+**Context:** Following initial benchmark baseline measurements on full books, three specific fidelity and performance gaps were identified:
+1. *Thinking in Systems (Slice C) had an 8-gram Recall of only 70.0%:* 30% of author text was missing due to margin pull-quotes and callouts being intertwined or filtered out, and trailing publisher production slugs at paragraph ends causing false-positive line drops.
+2. *Bulletproof Problem Solving (Slice D) had a Precision of only 76.9%:* 23.1% of the output was spurious or duplicate phantom text caused by unconditional secondary OCR on digital pages containing small exhibit diagrams.
+3. *Structuring Interviews with Experts ran at only 2.3 pages/second:* Scanned PDF OCR converted pages sequentially, repeatedly re-encoded raw pixels to PNG, and Apple Vision text recognition ran an expensive NLP dictionary spellcheck pass (~1.6s/page) that also mangled technical tokens and footnote asterisks.
+
+**Decision:**
+- **Prose Slug Stripping & Margin Callout Disentanglement (`crates/core/src/parsers/pdf.rs`):**
+  - Replaced naive whole-line deletion with `clean_trailing_production_slug` which trims trailing page folios and date stamps from prose lines without discarding the author's paragraph text.
+  - Implemented `disentangle_margin_callouts` to isolate margin pull-quotes, join soft hyphens, and render them cleanly as markdown blockquotes (`> **...**`).
+  - *Result:* Slice C Recall rose from **70.0% to 86.6%** (exceeding $\ge 85\%$ target) and Precision rose from **77.9% to 90.5%**.
+- **Phantom OCR Suppression on Digital Pages (`crates/core/src/parsers/pdf.rs`):**
+  - Gated secondary OCR on `PageKind::ImageText` pages behind `md.split_whitespace().count() < 40`. Pages with substantial native digital text avoid running full-page OCR on embedded diagrams, eliminating duplicate narrative blocks while preserving pure diagram/scanned pages.
+  - *Result:* Slice D Precision rose from **76.9% to 93.6%** (exceeding $\ge 88\%$ target) with Recall holding at **93.1%** and a word ratio of 0.99.
+- **Parallel Page Pipeline, Zero-Copy JPEG OCR, and Vision NLP Bypass (`crates/core/src/parsers/pdf.rs` & `ocr.rs`):**
+  - Converted the sequential page conversion loop to Rayon multi-threaded execution (`(0..page_count).into_par_iter()`), preserving document page order.
+  - In `ocr_scanned_page`, extracted image streams are inspected: JPEG streams (`ImageData::Jpeg`) are passed directly to OCR with zero decoding or re-encoding; raw streams use fast JPEG compression instead of slow Deflate PNG.
+  - In `vision_ocr`, disabled Apple Vision's expensive language correction (`request.setUsesLanguageCorrection(false)`), dropping per-page OCR latency from 1.95s to 0.26s while preserving exact punctuation and math symbols.
+  - *Result:* Scanned PDF throughput accelerated from **2.3 pages/s to 31.4 pages/s** (21-page scan converts in 0.67s). Digital book conversion throughput reached **1032 pages/s** (235 pages in 0.23s) with peak RSS under 71 MB.
+
+**Status:** Accepted.
+

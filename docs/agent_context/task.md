@@ -66,7 +66,22 @@
   - Transparent execution: spawns binary with `{ stdio: 'inherit' }` and propagates exit codes.
   - Tested with `node npm/bin/filegoblin.js test_assets/benchmarks/chart_sample.pptx -q`.
 
+- [x] **PDF Fidelity & Performance Iterative Optimization (Hill-Climbing Loop)**
+  - **Cycle 1 (Recall Recovery on Slice C - Thinking in Systems):**
+    - Diagnosed dropped text: trailing production slugs caused paragraph loss; margin pull-quotes were intertwined.
+    - Implemented `clean_trailing_production_slug` and `disentangle_margin_callouts`.
+    - **Result:** Recall increased from 70.0% to 86.6% (Target: $\ge 85\%$), Precision rose to 90.5%. (Commit `1df636d`)
+  - **Cycle 2 (Phantom OCR Elimination on Slice D - Bulletproof Problem Solving):**
+    - Diagnosed phantom text: digital pages with small diagrams triggered duplicate full-page OCR.
+    - Gated secondary OCR on `PageKind::ImageText` behind `md.split_whitespace().count() < 40`.
+    - **Result:** Precision increased from 76.9% to 93.6% (Target: $\ge 88\%$), Recall held at 93.1%. (Commit `243faa4`)
+  - **Cycle 3 (Throughput Acceleration on Scanned OCR - Structuring Interviews with Experts):**
+    - Multi-threaded page conversion via Rayon `(0..page_count).into_par_iter()`.
+    - Zero-copy direct pass-through of JPEG byte streams from PDFs to OCR engine.
+    - Disabled slow Apple Vision NLP dictionary spellchecking (`setUsesLanguageCorrection(false)`).
+    - **Result:** Throughput accelerated from 2.3 pages/s to 31.4 pages/s (Target: $\ge 5.0$ pages/s), digital throughput reached 1032 pages/s. (Commit `c31d56d`)
+
 ### Pending Items
-- None (All 5 milestones complete and passing tests).
+- None (All milestones and optimization cycles verified and committed).
 
 

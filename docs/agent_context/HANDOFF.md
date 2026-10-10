@@ -1,51 +1,56 @@
-# Session Handoff: Document Conversion Fidelity & Office Deconstruction
+# Session Handoff: PDF Fidelity Optimization & Office Deconstruction
 
 ## 1. What Was Just Completed
-We have completed all 5 milestones across PDF fidelity, full-book conversions, OpenXML embedded charts, Office Math (OMML), and zero-install npm distribution with **zero hallucination**, **pure CPU execution**, and **zero external runtime dependencies**:
+We have completed all original milestones and successfully executed the full **3-Cycle Hill-Climbing Optimization Loop** with **zero hallucination**, **pure CPU execution**, and **zero external runtime dependencies**:
 
-1. **Full-Book Conversions & Telemetry Profiling (Milestone 1, commit `123ca2d`):**
-   - Built `scripts/profile_throughput.py` measuring pages/second, peak memory RSS, tables, and figure OCR blocks.
-   - Profiled full 200–300 page books streaming to disk (`target/bench_out/`):
-     - *Structuring Interviews with Experts* (21 pages, scan): 9.15 s, 2.3 pages/s, 334 MB RSS, 9,161 words.
-     - *Thinking in Systems* (235 pages): 67.18 s, 3.5 pages/s, 94.4 MB RSS, 29,927 words, 3 tables.
-     - *Bulletproof Problem Solving* (296 pages): 44.26 s, 6.7 pages/s, 417.4 MB RSS, 57,168 words, 70 figure OCR blocks.
-   - Confirmed flat memory profile (~94 MB RSS for digital books).
+### A. The 3 Iterative Optimization Cycles
+1. **Cycle 1: Recall Recovery in *Thinking in Systems* (Slice C) — Commit `1df636d`**
+   - **Problem:** 30% of author text was missing (Recall = 70.0%).
+   - **Root Cause:** Trailing publisher/printer slugs on paragraph endings caused entire prose lines to be dropped; margin pull-quotes were intertwined with body text.
+   - **Fix:** Implemented `clean_trailing_production_slug` in `crates/core/src/parsers/pdf.rs` to strip isolated slugs without dropping paragraphs; implemented `disentangle_margin_callouts` to isolate margin quotes into markdown blockquotes (`> **...**`).
+   - **Result:** Recall surged from **70.0% to 86.6%** (Target: $\ge 85\%$), Precision rose to **90.5%**, and line interleaving remained at 0.
 
-2. **Semantic Chapter & Section Boundaries (Milestone 2, commit `123ca2d`):**
-   - Implemented `insert_semantic_section_boundaries` in `crates/core/src/parsers/pdf.rs`.
-   - Identifies chapters, parts, and appendices, injecting thematic dividers `---` and semantic XML comments (`<!-- filegoblin:section type="chapter" title="..." -->`).
-   - Merges split label/subtitle lines into single titles and protects code fences.
+2. **Cycle 2: Phantom OCR Elimination in *Bulletproof Problem Solving* (Slice D) — Commit `243faa4`**
+   - **Problem:** 23.1% of the output was phantom/duplicate text (Precision = 76.9%).
+   - **Root Cause:** Digital pages with small embedded exhibit diagrams triggered unconditional full-page secondary OCR, re-reading narrative text into duplicate blocks.
+   - **Fix:** In `crates/core/src/parsers/pdf.rs`, gated secondary OCR on `PageKind::ImageText` pages behind `md.split_whitespace().count() < 40`.
+   - **Result:** Precision surged from **76.9% to 93.6%** (Target: $\ge 88\%$), Recall held rock-solid at **93.1%**, and word ratio reached an exact 0.99.
 
-3. **OpenXML Embedded Chart Deconstruction (Milestone 3):**
-   - Built `crates/core/src/parsers/openxml_chart.rs` to parse ECMA-376 DrawingML charts (`c:chartSpace`).
-   - Extracts titles (`c:title`), categories (`c:cat` / `c:xVal`), and series values (`c:ser` / `c:val` / `c:yVal`), rendering them as standard Markdown pipe tables without data loss or VLM hallucinations.
-   - PowerPoint integration (`crates/core/src/parsers/powerpoint.rs`): maps slide relationships (`ppt/slides/_rels/slideN.xml.rels`) and appends chart tables directly under their slides; extracts alt-text descriptions from `<p:cNvPr descr="...">` (e.g. `test_svg_no_fallback.pptx` produces `[Image: Red square SVG]`).
-   - Word integration (`crates/core/src/parsers/office.rs`): maps document relationships (`word/_rels/document.xml.rels`) and anchors chart tables to their respective paragraph flow positions.
-   - Verified on `test_assets/benchmarks/chart_sample.pptx` (emits `Quarterly Revenue by Region` with North America, EMEA, APAC).
+3. **Cycle 3: Throughput Acceleration on Scanned Documents — Commit `c31d56d`**
+   - **Problem:** Scanned PDF OCR ran at only 2.3 pages/second.
+   - **Root Cause:** Pages were converted sequentially, raw pixels were repeatedly re-encoded into PNGs, and Apple Vision text recognition ran an expensive NLP dictionary spellcheck pass (~1.6s/page).
+   - **Fix:** Parallelized page conversion with Rayon `(0..page_count).into_par_iter()`; extracted direct JPEG byte slices for zero-copy OCR; disabled Apple Vision's language correction (`setUsesLanguageCorrection(false)`).
+   - **Result:** Scanned OCR throughput accelerated from **2.3 pages/s to 31.4 pages/s** (Target: $\ge 5.0$ pages/s), digital throughput reached **1032 pages/s**, and peak RSS remained under 71 MB.
 
-4. **Word Complex Layouts & Office Math (OMML) Extraction (Milestone 4):**
-   - Built pure-Rust recursive tree OMML parser `crates/core/src/parsers/omml.rs` converting Office Math Markup Language (`<m:oMath>` / `<m:oMathPara>`) to clean LaTeX syntax.
-   - Handles fractions (`\frac`), superscripts (`^`), subscripts (`_`), sub-superscripts, radicals (`\sqrt`), delimiters (`(...)`), and n-ary sums (`\sum`).
-   - In `crates/core/src/parsers/office.rs`, aligns body paragraphs 1-to-1 with `docx-rs`'s AST, substituting math formulas into paragraphs and table cells while preserving heading levels, numbering, and table structure.
-   - Verified on `test_assets/benchmarks/equations.docx` (all inline `$ ... $` and display `$$ ... $$` math formulas correctly extracted).
+### B. Core Milestones Completed
+- **Semantic Chapter Boundaries:** Automatic injection of `---` and XML section anchors (`<!-- filegoblin:section type="chapter" title="..." -->`).
+- **OpenXML Chart Deconstruction:** DrawingML charts (`c:chartSpace`) in PPTX and DOCX converted to standard Markdown pipe tables.
+- **Office Math (OMML) Extraction:** Word equations converted recursively to clean LaTeX math blocks (`$ ... $` and `$$ ... $$`).
+- **Zero-Install npm Launcher:** `npm/bin/filegoblin.js` wrapper with transparent binary execution and exit-code propagation.
 
-5. **Zero-Install npm / npx Distribution Package (Milestone 5):**
-   - Created `npm/package.json` with `filegoblin` binary mapping and metadata.
-   - Created `npm/bin/filegoblin.js` cross-platform launcher resolving Cargo release/debug builds, optional platform packages (`@filegoblin/*`), or system PATH.
-   - Transparent execution: invokes binary via `spawnSync` with `{ stdio: 'inherit' }` and faithfully propagates exit codes.
-   - Verified with `node npm/bin/filegoblin.js test_assets/benchmarks/chart_sample.pptx -q`.
+---
 
-6. **Documentation & Verification:**
-   - Updated `BENCHMARK_REPORT.md` with sections 7, 8, and 9.
-   - Appended ADR entry to `docs/ADR.md`.
-   - Updated `README.md` project structure and capabilities.
+## 2. Benchmark Scorecard
 
-## 2. Broken Tests or Pending Bugs
-- **Zero broken tests:** 202 core unit tests, 1 integration test, 3 MCP tests, and 21 golden snapshot tests pass with 0 errors or warnings.
-- **Zero clippy warnings:** `cargo clippy --workspace -- -D warnings` clean.
-- **Zero formatting issues:** `cargo fmt --check` clean.
-- **Zero pending bugs:** All 5 milestones verified against test assets.
+| Document / Slice | Metric / Focus | Baseline | Final Optimized | Target | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Slice C (*Thinking in Systems*)** | 8-Gram Recall | 70.0% | **86.6%** | $\ge 85.0\%$ | **PASSED** |
+| **Slice C (*Thinking in Systems*)** | Precision | 77.9% | **90.5%** | $\ge 85.0\%$ | **PASSED** |
+| **Slice D (*Bulletproof Problem Solving*)** | Precision | 76.9% | **93.6%** | $\ge 88.0\%$ | **PASSED** |
+| **Slice D (*Bulletproof Problem Solving*)** | 8-Gram Recall | 93.2% | **93.1%** | $\ge 90.0\%$ | **PASSED** |
+| **Scanned Book (*Structuring Interviews*)** | Throughput | 2.3 pages/s | **31.4 pages/s** | $\ge 5.0$ pages/s | **PASSED** |
+| **Full Digital Book (*Thinking in Systems*)** | Throughput | 3.5 pages/s | **1032.4 pages/s** | $\ge 10.0$ pages/s | **PASSED** |
 
-## 3. Immediate Next Steps
-- Commit the completed work.
-- Tag and release if desired.
+---
+
+## 3. Broken Tests or Pending Bugs
+- **Zero broken tests:** All 206 workspace unit tests, 1 integration test, and 21 golden snapshot tests pass with 0 errors.
+- **Zero warnings:** `cargo clippy --workspace -- -D warnings` and `cargo fmt --check` pass with zero warnings.
+- **Zero pending bugs:** All benchmark gates and test assets passing cleanly.
+
+---
+
+## 4. Immediate Next Steps
+- Commit the documentation updates (`docs/ADR.md`, `task.md`, `HANDOFF.md`).
+- Push commits to `origin/main`.
+- In accordance with GEMINI.md Rule 6, prepare a minor version bump (v1.13.0) and git tag for release.
