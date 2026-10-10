@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Default, Clone)]
 pub struct OpenXmlChart {
     pub title: Option<String>,
+    pub chart_type: String,
     pub categories: Vec<(usize, String)>,
     pub series: Vec<ChartSeries>,
 }
@@ -42,6 +43,11 @@ impl OpenXmlChart {
                 Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                     let local = e.local_name();
                     match local.as_ref() {
+                        b"barChart" => chart.chart_type = "bar".to_string(),
+                        b"lineChart" => chart.chart_type = "line".to_string(),
+                        b"pieChart" | b"doughnutChart" => chart.chart_type = "pie".to_string(),
+                        b"areaChart" => chart.chart_type = "area".to_string(),
+                        b"scatterChart" => chart.chart_type = "scatter".to_string(),
                         b"title" => in_title = true,
                         b"ser" => {
                             in_ser = true;
@@ -211,7 +217,154 @@ impl OpenXmlChart {
             out.push_str(&format!("| {} |\n", row.join(" | ")));
         }
 
+        let mut mermaid = String::new();
+        // Check if chart is suitable for Mermaid xychart-beta:
+        // Must be bar, line, or default; category count <= 20; has series; all values numeric.
+        if (self.chart_type == "bar" || self.chart_type == "line" || self.chart_type.is_empty())
+            && !cat_map.is_empty()
+            && cat_map.len() <= 20
+            && !self.series.is_empty()
+        {
+            let mut all_numeric = true;
+            let mut parsed_series: Vec<Vec<f64>> = Vec::new();
+            let mut min_val = f64::INFINITY;
+            let mut max_val = f64::NEG_INFINITY;
+
+            for s in &self.series {
+                let mut s_vals = Vec::new();
+                for idx in cat_map.keys() {
+                    let val_str = s
+                        .values
+                        .iter()
+                        .find(|(i, _)| i == idx)
+                        .map(|(_, v)| v.as_str())
+                        .unwrap_or("");
+                    if let Ok(v) = val_str.parse::<f64>() {
+                        if v < min_val {
+                            min_val = v;
+                        }
+                        if v > max_val {
+                            max_val = v;
+                        }
+                        s_vals.push(v);
+                    } else {
+                        all_numeric = false;
+                        break;
+                    }
+                }
+                if !all_numeric {
+                    break;
+                }
+                parsed_series.push(s_vals);
+            }
+
+            if all_numeric && min_val <= max_val {
+                mermaid.push_str("\n\n```mermaid\nxychart-beta\n");
+                if let Some(ref title) = self.title {
+                    if !title.trim().is_empty() {
+                        mermaid.push_str(&format!(
+                            "  title \"{}\"\n",
+                            title.trim().replace('"', "\\\"")
+                        ));
+                    }
+                }
+
+                let cat_labels: Vec<String> = cat_map
+                    .values()
+                    .map(|c| format!("\"{}\"", c.replace('"', "\\\"")))
+                    .collect();
+                mermaid.push_str(&format!("  x-axis [{}]\n", cat_labels.join(", ")));
+
+                let (y_min, y_max) = nice_limits(min_val, max_val);
+                let y_min_str = fmt_num(y_min);
+                let y_max_str = fmt_num(y_max);
+
+                if self.series.len() == 1
+                    && let Some(name) = &self.series[0].name
+                    && !name.trim().is_empty()
+                {
+                    mermaid.push_str(&format!(
+                        "  y-axis \"{}\" {} --> {}\n",
+                        name.trim().replace('"', "\\\""),
+                        y_min_str,
+                        y_max_str
+                    ));
+                } else {
+                    mermaid.push_str(&format!("  y-axis {} --> {}\n", y_min_str, y_max_str));
+                }
+
+                let plot_kind = if self.chart_type == "line" {
+                    "line"
+                } else {
+                    "bar"
+                };
+                for s_vals in parsed_series {
+                    let formatted_vals: Vec<String> = s_vals.iter().map(|v| fmt_num(*v)).collect();
+                    mermaid.push_str(&format!(
+                        "  {} [{}]\n",
+                        plot_kind,
+                        formatted_vals.join(", ")
+                    ));
+                }
+
+                mermaid.push_str("```");
+            }
+        }
+
+        if !mermaid.is_empty() {
+            out.push_str(&mermaid);
+        }
+
         out.trim().to_string()
+    }
+}
+
+fn nice_limits(min: f64, max: f64) -> (f64, f64) {
+    if max <= min {
+        return (0.0, 100.0);
+    }
+    let y_min = if min >= 0.0 {
+        0.0
+    } else {
+        let mag = 10.0_f64.powf(min.abs().log10().floor());
+        let norm = min.abs() / mag;
+        let factor = if norm <= 1.0 {
+            1.0
+        } else if norm <= 2.0 {
+            2.0
+        } else if norm <= 5.0 {
+            5.0
+        } else {
+            10.0
+        };
+        -factor * mag
+    };
+
+    let span = if max > 0.0 { max } else { 1.0 };
+    let mag = 10.0_f64.powf(span.log10().floor());
+    let norm = span / mag;
+    let factor = if norm <= 1.0 {
+        1.0
+    } else if norm <= 2.0 {
+        2.0
+    } else if norm <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    let y_max = factor * mag;
+
+    (y_min, y_max)
+}
+
+fn fmt_num(n: f64) -> String {
+    if n.fract() == 0.0 {
+        format!("{}", n as i64)
+    } else {
+        format!("{:.2}", n)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -266,5 +419,11 @@ mod tests {
         assert!(md.contains("| North America | 45.2 |"));
         assert!(md.contains("| EMEA | 32.8 |"));
         assert!(md.contains("| APAC | 18.5 |"));
+
+        assert!(md.contains("```mermaid\nxychart-beta"));
+        assert!(md.contains(r#"title "Quarterly Revenue by Region""#));
+        assert!(md.contains(r#"x-axis ["North America", "EMEA", "APAC"]"#));
+        assert!(md.contains(r#"y-axis "Revenue ($M)" 0 --> 50"#));
+        assert!(md.contains("bar [45.2, 32.8, 18.5]"));
     }
 }
