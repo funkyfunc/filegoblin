@@ -92,7 +92,9 @@ impl Gobble for PdfGobbler {
         filter_running_headers_and_footers(&mut pages_md);
         pages_md.retain(|p| !p.trim().is_empty());
 
-        let final_text = pages_md.join("\n\n").trim().to_string();
+        let joined = pages_md.join("\n\n");
+        let formatted_text = format_table_and_block_boundaries(&joined);
+        let final_text = formatted_text.trim().to_string();
         if final_text.is_empty() {
             if unreadable_pages > 0 {
                 anyhow::bail!(
@@ -549,6 +551,205 @@ fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
 /// hundreds of similarly-sized tiles; OCR is the slowest thing this tool does.
 const MAX_OCR_IMAGES_PER_PAGE: usize = 8;
 
+/// Ensures markdown tables, callout blocks, and headings have clean boundary spacing (preceding
+/// and succeeding blank lines), ensures table rows start and end with pipes, and verifies that
+/// table separator row column counts match header column counts.
+pub(crate) fn format_table_and_block_boundaries(md: &str) -> String {
+    let lines: Vec<&str> = md.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 8);
+    let mut in_table = false;
+    let mut table_rows: Vec<String> = Vec::new();
+    let mut in_blockquote = false;
+    let mut in_code_block = false;
+
+    for &raw_line in &lines {
+        let trimmed = raw_line.trim();
+
+        // Code block toggle (e.g. ```rust)
+        if trimmed.starts_with("```") {
+            if in_table {
+                flush_table(&mut out, &table_rows);
+                in_table = false;
+                table_rows.clear();
+                out.push(String::new());
+            }
+            if in_blockquote {
+                in_blockquote = false;
+                out.push(String::new());
+            }
+            in_code_block = !in_code_block;
+            if in_code_block && !out.is_empty() && !out.last().is_some_and(|l| l.trim().is_empty())
+            {
+                out.push(String::new());
+            }
+            out.push(raw_line.to_string());
+            if !in_code_block {
+                out.push(String::new());
+            }
+            continue;
+        }
+
+        if in_code_block {
+            out.push(raw_line.to_string());
+            continue;
+        }
+
+        // Table row check: starts and ends with '|' with content in between
+        let is_table_row = trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() >= 3;
+
+        // Blockquote check
+        let is_blockquote_line = trimmed.starts_with('>');
+
+        // Heading check
+        let is_heading = trimmed.starts_with('#');
+
+        if is_table_row {
+            if in_blockquote {
+                in_blockquote = false;
+                if !out.last().is_some_and(|l| l.trim().is_empty()) {
+                    out.push(String::new());
+                }
+            }
+
+            if !in_table {
+                in_table = true;
+                // Preceding boundary: ensure blank line before table
+                if !out.is_empty() && !out.last().is_some_and(|l| l.trim().is_empty()) {
+                    out.push(String::new());
+                }
+                table_rows.clear();
+            }
+            table_rows.push(trimmed.to_string());
+            continue;
+        } else if in_table {
+            flush_table(&mut out, &table_rows);
+            in_table = false;
+            table_rows.clear();
+
+            // Following boundary: ensure blank line after table
+            if !trimmed.is_empty() {
+                out.push(String::new());
+            }
+        }
+
+        if is_blockquote_line {
+            if !in_blockquote {
+                in_blockquote = true;
+                if !out.is_empty() && !out.last().is_some_and(|l| l.trim().is_empty()) {
+                    out.push(String::new());
+                }
+            }
+            out.push(raw_line.to_string());
+            continue;
+        } else if in_blockquote {
+            in_blockquote = false;
+            if !trimmed.is_empty() && !out.last().is_some_and(|l| l.trim().is_empty()) {
+                out.push(String::new());
+            }
+        }
+
+        if is_heading {
+            if !out.is_empty() && !out.last().is_some_and(|l| l.trim().is_empty()) {
+                out.push(String::new());
+            }
+            out.push(raw_line.to_string());
+            continue;
+        }
+
+        out.push(raw_line.to_string());
+    }
+
+    if in_table {
+        flush_table(&mut out, &table_rows);
+    }
+
+    collapse_blank_lines(&out)
+}
+
+fn flush_table(out: &mut Vec<String>, rows: &[String]) {
+    if rows.is_empty() {
+        return;
+    }
+
+    if rows.len() == 1 {
+        out.push(rows[0].clone());
+        return;
+    }
+
+    let header_cols = count_pipe_columns(&rows[0]);
+
+    for (row_idx, row) in rows.iter().enumerate() {
+        if row_idx == 1 && is_table_separator(row) {
+            let sep_cols = count_pipe_columns(row);
+            if sep_cols != header_cols && header_cols > 0 {
+                let mut fixed_sep = String::from("|");
+                for _ in 0..header_cols {
+                    fixed_sep.push_str("---|");
+                }
+                out.push(fixed_sep);
+                continue;
+            }
+        }
+        out.push(row.clone());
+    }
+}
+
+fn count_pipe_columns(s: &str) -> usize {
+    let trimmed = s.trim();
+    if !trimmed.starts_with('|') || !trimmed.ends_with('|') || trimmed.len() < 2 {
+        return 0;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let mut cols = 0;
+    let mut in_escape = false;
+    for c in inner.chars() {
+        if in_escape {
+            in_escape = false;
+        } else if c == '\\' {
+            in_escape = true;
+        } else if c == '|' {
+            cols += 1;
+        }
+    }
+    cols + 1
+}
+
+fn is_table_separator(s: &str) -> bool {
+    let trimmed = s.trim();
+    if !trimmed.starts_with('|') || !trimmed.ends_with('|') || trimmed.len() < 2 {
+        return false;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    inner.split('|').all(|cell| {
+        let c = cell.trim();
+        !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':')
+    })
+}
+
+fn collapse_blank_lines(lines: &[String]) -> String {
+    let mut result = String::new();
+    let mut consecutive_blanks = 0;
+
+    for line in lines {
+        if line.trim().is_empty() {
+            consecutive_blanks += 1;
+            if consecutive_blanks <= 1 {
+                result.push('\n');
+            }
+        } else {
+            consecutive_blanks = 0;
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    result.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -657,5 +858,23 @@ mod tests {
         assert!(!is_isolated_folio("Introduction"));
         assert!(!is_isolated_folio("| Date | Revenue |"));
         assert!(!is_isolated_folio("# 14 Principles"));
+    }
+
+    #[test]
+    fn test_format_table_and_block_boundaries() {
+        let input = "Preceding paragraph.\n| Date | Revenue | Expenses |\n|---|---|\n| 2026-01-01 | $10M | $8M |\nFollowing paragraph.";
+        let formatted = format_table_and_block_boundaries(input);
+
+        let expected = "Preceding paragraph.\n\n| Date | Revenue | Expenses |\n|---|---|---|\n| 2026-01-01 | $10M | $8M |\n\nFollowing paragraph.";
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_format_callout_and_heading_boundaries() {
+        let input = "Paragraph text.\n> This is a callout box.\n> Continued callout.\nFollowing text.\n# Heading 1\nHeading body.";
+        let formatted = format_table_and_block_boundaries(input);
+
+        let expected = "Paragraph text.\n\n> This is a callout box.\n> Continued callout.\n\nFollowing text.\n\n# Heading 1\nHeading body.";
+        assert_eq!(formatted, expected);
     }
 }
