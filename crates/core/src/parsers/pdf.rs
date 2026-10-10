@@ -99,7 +99,8 @@ impl Gobble for PdfGobbler {
         let disentangled = disentangle_margin_callouts(&joined);
         let formatted_text = format_table_and_block_boundaries(&disentangled);
         let sectioned_text = insert_semantic_section_boundaries(&formatted_text);
-        let final_text = sectioned_text.trim().to_string();
+        let math_normalized = normalize_pdf_math_notation(&sectioned_text);
+        let final_text = math_normalized.trim().to_string();
         if final_text.is_empty() {
             if unreadable_pages > 0 {
                 anyhow::bail!(
@@ -1111,6 +1112,64 @@ fn is_bare_section_label(s: &str) -> bool {
     parts.len() <= 2
 }
 
+/// Deterministic TeX Symbol Recovery Table for Computer Modern and AMS Math fonts
+/// when /ToUnicode CMap is absent or corrupted.
+pub fn normalize_pdf_glyph(base_font: &str, raw_byte: u8) -> Option<&'static str> {
+    if base_font.contains("CMSY") {
+        match raw_byte {
+            0x14 => Some(r"\forall "),
+            0x21 => Some(r"\bullet "),
+            0x32 => Some(r"\ge "),
+            0x33 => Some(r"\le "),
+            0x39 => Some(r"\approx "),
+            0x61 => Some(r"\mathcal{A}"),
+            _ => None,
+        }
+    } else if base_font.contains("CMMI") {
+        match raw_byte {
+            0x0B => Some(r"\alpha "),
+            0x0C => Some(r"\beta "),
+            0x0D => Some(r"\gamma "),
+            0x3B => Some(r"\partial "),
+            _ => None,
+        }
+    } else if base_font.contains("MSBM") || base_font.contains("MSAM") {
+        match raw_byte {
+            0x4E => Some(r"\mathbb{N}"),
+            0x52 => Some(r"\mathbb{R}"),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+/// Normalizes common math font encoding artifacts and ASCII approximations
+/// from legacy TeX typesetting workflows into standard LaTeX math notation.
+pub fn normalize_pdf_math_notation(text: &str) -> String {
+    use regex::Regex;
+    use std::sync::LazyLock;
+
+    static NEQ_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"=\s*I\s*-\s*").unwrap());
+    static LE_SEMI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"::;\s*").unwrap());
+    static LE_S_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+:S\s+").unwrap());
+    static GE_COLON_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"2':\s*").unwrap());
+    static GE_ZERO_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(\)|\]|[a-zA-Z0-9])\s+2\s+([0O])\b").unwrap());
+    static EQ_ZERO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"=\s*O\b").unwrap());
+    static NEQ_ZERO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\neq\s+O\b").unwrap());
+
+    let s1 = NEQ_RE.replace_all(text, r"\neq ");
+    let s2 = LE_SEMI_RE.replace_all(&s1, r"\le ");
+    let s3 = LE_S_RE.replace_all(&s2, r" \le ");
+    let s4 = GE_COLON_RE.replace_all(&s3, r"\ge ");
+    let s5 = GE_ZERO_RE.replace_all(&s4, r"$1 \ge 0");
+    let s6 = EQ_ZERO_RE.replace_all(&s5, "= 0");
+    let s7 = NEQ_ZERO_RE.replace_all(&s6, r"\neq 0");
+
+    s7.into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1353,6 +1412,40 @@ mod tests {
         for res in results {
             assert!(res.is_some(), "scanned page should produce OCR text");
             assert!(!res.unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_normalize_pdf_glyph() {
+        assert_eq!(normalize_pdf_glyph("CMSY10", 0x32), Some(r"\ge "));
+        assert_eq!(normalize_pdf_glyph("CMSY10", 0x33), Some(r"\le "));
+        assert_eq!(normalize_pdf_glyph("CMMI10", 0x0B), Some(r"\alpha "));
+        assert_eq!(normalize_pdf_glyph("CMMI10", 0x0C), Some(r"\beta "));
+        assert_eq!(normalize_pdf_glyph("MSBM10", 0x52), Some(r"\mathbb{R}"));
+    }
+
+    #[test]
+    fn test_normalize_pdf_math_notation() {
+        let input = "A =I- B and q(x) 2 0 with q'(x) ::; q(x) where C = O";
+        let output = normalize_pdf_math_notation(input);
+        assert!(output.contains(r"A \neq B"));
+        assert!(output.contains(r"q(x) \ge 0"));
+        assert!(output.contains(r"q'(x) \le q(x)"));
+        assert!(output.contains("C = 0"));
+    }
+
+    #[test]
+    fn test_pdf_math_zeitz_slice() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let path =
+            Path::new(&manifest_dir).join("../../test_assets/benchmarks/slice_e_math_zeitz.pdf");
+        if path.exists() {
+            let gobbler = PdfGobbler;
+            let md = gobbler
+                .gobble(&path, &ParseOptions::default())
+                .expect("parse math slice pdf");
+            assert!(md.contains(r"\neq"));
+            assert!(md.contains(r"\le"));
         }
     }
 }
