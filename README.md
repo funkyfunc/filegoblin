@@ -65,30 +65,33 @@ cargo install --git https://github.com/funkyfunc/filegoblin filegoblin --feature
 │   │       ├── compressor/   (Token Compression Pipeline)
 │   │       ├── parsers/      (File parsing engines)
 │   │       └── pipeline/     (Pipeline execution stages)
-│   ├── cli/          (filegoblin: The Headless Binary)
-│   │   ├── Cargo.toml
-│   │   └── src/main.rs       (CLI Entry & Mascot)
-│   │       └── walk.rs       (--walk interactive picker)
-│   └── npm/          (npx filegoblin Zero-Install Launcher)
-│       ├── package.json
-│       └── bin/filegoblin.js
+│   └── cli/          (filegoblin: The Headless Binary)
+│       ├── Cargo.toml
+│       └── src/main.rs       (CLI Entry & Mascot)
+│           └── walk.rs       (--walk interactive picker)
+├── npm/              (npx filegoblin Zero-Install Launcher)
+│   ├── package.json
+│   └── bin/filegoblin.js
 └── .cargo/
     └── config.toml   (Aliases)
 ```
 
 ---
 
-## ⚡ Current Capabilities (v1.12.0)
+## ⚡ Current Capabilities (v1.13.0)
 
 Some capabilities are gated behind opt-in Cargo features (built off by default to
 keep the binary lean). Feature-gated items are marked below.
 
 - [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, OpenDocument, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
 - [x] PDF → markdown via `pdf_oxide`: headings, pipe tables, reading order, hyphenation — with per-page scanned-vs-text classification
-- [x] **Scanned PDFs and images OCR automatically on macOS** (Apple Vision, zero setup); Linux/Windows via `--features ocr`
+- [x] **Scanned PDFs and images OCR automatically on macOS** (Apple Vision, zero setup; parallelized page conversion, 30+ pages/s); Linux/Windows via `--features ocr`
+- [x] **PDF TeX Math Font Recovery**: Computer Modern and AMS Math glyph code restoration + historical CMap substitution cleanup (`\neq`, `\le`, `\ge`)
+- [x] **Semantic Chapter Boundaries**: Automated detection and injection of thematic dividers and XML section markers (`<!-- filegoblin:section ... -->`)
 - [x] Word → real markdown: heading levels, nested lists, bold/italic, hyperlinks with URLs, and equations
-- [x] **Word Office Math (OMML)**: `<m:oMath>` and `<m:oMathPara>` converted directly to standard LaTeX (`$ ... $` and `$$ ... $$`)
-- [x] **Embedded Office Charts**: PowerPoint (`.pptx`) and Word (`.docx`) OpenXML DrawingML charts (`c:chartSpace`) deconstructed into clean Markdown pipe tables
+- [x] **Word Office Math (OMML)**: `<m:oMath>` and `<m:oMathPara>` converted directly to standard LaTeX (`$ ... $` and `$$ ... $$`) with radicals, delimiters, matrices, and functions
+- [x] **Embedded Office Charts**: PowerPoint (`.pptx`) and Word (`.docx`) OpenXML DrawingML charts (`c:chartSpace`) deconstructed into clean Markdown pipe tables and native Mermaid `xychart-beta` diagrams
+- [x] **DrawingML Connectors & SmartArt**: PowerPoint shape connections and process diagrams compiled into Mermaid `flowchart` diagrams
 - [x] **Zero-install npm distribution**: Execute via `npx filegoblin` in environments without Rust toolchains
 - [x] DOM-based HTML → markdown (readability-style content selection, link-farm pruning, preserved link URLs, title/source front-matter, ATX headings)
 - [x] One tabular dialect everywhere: standard markdown pipe tables across PDF, docx, pptx, OpenDocument, and CSV/XLSX

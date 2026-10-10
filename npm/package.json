@@ -1,6 +1,6 @@
 {
   "name": "filegoblin",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "Zero-dependency single-binary CLI converting any file or URL into clean Markdown for LLMs",
   "main": "./bin/filegoblin.js",
   "bin": {
@@ -34,10 +34,10 @@
   },
   "homepage": "https://github.com/funkyfunc/filegoblin#readme",
   "optionalDependencies": {
-    "@filegoblin/darwin-arm64": "1.12.0",
-    "@filegoblin/darwin-x64": "1.12.0",
-    "@filegoblin/linux-x64": "1.12.0",
-    "@filegoblin/linux-arm64": "1.12.0",
-    "@filegoblin/win32-x64": "1.12.0"
+    "@filegoblin/darwin-arm64": "1.13.0",
+    "@filegoblin/darwin-x64": "1.13.0",
+    "@filegoblin/linux-x64": "1.13.0",
+    "@filegoblin/linux-arm64": "1.13.0",
+    "@filegoblin/win32-x64": "1.13.0"
   }
 }

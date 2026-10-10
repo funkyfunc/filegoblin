@@ -562,3 +562,37 @@ flag-toggling idea is ever wanted in the picker.
 
 **Status:** Accepted.
 
+## 2026-10-10: Deterministic Office & PDF Structural Deconstruction — Charts to xychart, Connectors & SmartArt to Mermaid, OMML to LaTeX, and TeX CMap Recovery
+
+**Context:**
+Office packages (PowerPoint `.pptx`, Word `.docx`) and legacy typeset PDFs (e.g. TeX / LaTeX publications) encode rich domain structures that standard extractors either discard, flatten into unintelligible fragments, or corrupt:
+1. *Quantitative Charts:* Embedded DrawingML charts (`c:chartSpace`) contain the exact numeric tables that generated the visual graphic, but standard extractors drop them completely.
+2. *Diagram Connectors & SmartArt:* Process diagrams and organization charts constructed via DrawingML connectors (`p:cxnSp`) or SmartArt packages (`dgm:dataModel`) are flattened into disjoint, unlinked text bullets with zero topological relationship preserved.
+3. *Word Equations:* Word equations encoded in Office Math Markup Language (`<m:oMath>` / `<m:oMathPara>`) are silently discarded by docx AST parsers, leaving prose holes (e.g. `For , the angle is .`).
+4. *Legacy TeX PDF Math Fonts:* Decades of academic and textbook PDFs typeset with Computer Modern / AMS TeX fonts (e.g. Wiley 2006 Identity-H CMaps) map mathematical operators to non-standard glyph indices or approximate ASCII strings (`=I-` for $\neq$, `::;` / `:S` for $\le$, `2':` for $\ge$, `q(x) 2 0` for $q(x) \ge 0$, `= O` for $= 0$).
+
+Heavy multi-modal VLM solutions (e.g. Docling, Marker) introduce multi-gigabyte Python runtimes, hallucinate data points, and cannot run efficiently on CPU. `filegoblin`'s core mandate requires zero hallucination, pure CPU execution, and single-binary zero-runtime distribution.
+
+**Decision:**
+- **OpenXML DrawingML Charts to GFM Tables & Mermaid `xychart-beta` (`crates/core/src/parsers/openxml_chart.rs`):**
+  - Stream-parse `ppt/charts/chart*.xml` and `word/charts/chart*.xml` with `quick-xml`.
+  - Extract categories (`c:cat` / `c:xVal`) and series data points (`c:ser` / `c:val` / `c:yVal`) into standard GFM Markdown pipe tables.
+  - For discrete charts ($\le 20$ data points), compute aesthetic axis limits (`nice_limits`) and dual-emit a Mermaid `xychart-beta` code block containing title, x-axis categories, y-axis series range, and bar/line values.
+- **DrawingML Connectors to Mermaid Flowcharts (`crates/core/src/parsers/drawingml.rs` & `powerpoint.rs`):**
+  - Walk slide trees to extract connected shape geometry (`p:sp`) and connector lines (`p:cxnSp`).
+  - Map `stCxn` and `endCxn` shape identifiers, differentiating solid (`-->`) and dashed (`-.->`) edges.
+  - Compile the topological graph into a clean Mermaid `flowchart TD` block and automatically suppress connected diagram shapes from slide body text bullets.
+- **SmartArt dataModel to Mermaid Graphs (`crates/core/src/parsers/smartart.rs`):**
+  - Parse `dgm:dataModel` (`ppt/diagrams/data*.xml`) relationships via slide `.rels`.
+  - Filter non-semantic organizational nodes (`doc`, `pres`, `sibTrans`, `parTrans`).
+  - Resolve linear sequence transitions and hierarchies into clean Mermaid workflow graphs (`flowchart LR`).
+- **Office Math (OMML) to KaTeX LaTeX Math (`crates/core/src/parsers/omml.rs` & `office.rs`):**
+  - Recursive AST compiler translating OMML structures into clean LaTeX expressions (`$ ... $` for inline and `$$ ... $$` for display math).
+  - Handles tag attributes (`OmmlNode::attrs`): radical degrees (`degHide`), configurable delimiters (`dPr` with `begChr` / `endChr`), n-ary operators (`\int`, `\sum`, `\prod`), matrices (`m`/`mr`), and overbar/accents.
+  - Normalizes mathematical functions (`sin` $\to$ `\sin`), strips invisible Word formatting artifacts (`\u{2061}`-`\u{2064}`), and inserts image anchor placeholders for embedded drawings.
+- **PDF TeX Math Font Recovery via CMap Normalization (`crates/core/src/parsers/pdf.rs`):**
+  - Implemented `normalize_pdf_glyph` mapping raw byte indices in Computer Modern (`CMSY*`, `CMMI*`) and AMS Math (`MSAM*`, `MSBM*`) font encodings to true Unicode mathematical symbols.
+  - Implemented `normalize_pdf_math_notation` repairing historical publisher CMap substitutions and ASCII fallbacks (`=I-` $\to$ `\neq`, `::;` / `:S` $\to$ `\le`, `2':` $\to$ `\ge`, `q(x) 2 0` $\to$ `q(x) \ge 0`, `= O` $\to$ `= 0`).
+
+**Status:** Accepted.
+

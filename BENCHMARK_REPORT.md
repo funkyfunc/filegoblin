@@ -224,3 +224,100 @@ In accordance with `GEMINI.md` and the `book-pdf-to-markdown` standard, the foll
 224:   - Implemented zero-copy JPEG fast-path: when extracted images are already stored as JPEGs inside the PDF (`ImageData::Jpeg(bytes)`), the raw slice is forwarded directly to OCR with zero decoding or re-encoding. For raw bitmaps, fast JPEG encoding is used.
 225:   - In `crates/core/src/parsers/ocr.rs`, disabled the slow NLP spellchecker pass via `request.setUsesLanguageCorrection(false)`. This retains exact character fidelity (math operators, technical tokens, footnote asterisks) while dropping per-page Vision OCR latency from 1.95s to 0.26s (a 7.5x speedup per page).
 226: - **Outcome:** Throughput on the 21-page scanned book *Structuring Interviews with Experts* accelerated from **2.3 pages/s $\to$ 5.5 pages/s** (exceeding the $\ge 5.0$ pages/s gate), elapsed time dropped from 9.15s to 3.84s (2.38x speedup), and peak memory usage dropped by 28% from 334 MB to 241 MB.
+
+
+---
+
+## 12. Deterministic Office & PDF Structural Deconstruction Loops
+
+To bridge the capability gap with vision-heavy pipelines (Docling, Marker) without incurring their multi-gigabyte memory footprints or slow latencies, `filegoblin` implements deterministic, pure-CPU structural compilers for OpenXML Office packages and legacy PDF font streams:
+
+### Loop 1: Embedded Charts $\to$ GFM Tables & Mermaid xychart-beta
+- **Target Asset:** `test_assets/benchmarks/chart_sample.pptx`
+- **Engine (`crates/core/src/parsers/openxml_chart.rs`):**
+  - Traverses `ppt/charts/chart*.xml` and `word/charts/chart*.xml`.
+  - Parses category strings (`c:cat`) and numerical cache values (`c:val`).
+  - Automatically computes aesthetic axis intervals (`nice_limits`).
+  - Dual-emits a GitHub Flavored Markdown table and a native Mermaid `xychart-beta` block.
+- **Verification Snapshot:**
+  ```markdown
+  ### Chart: Quarterly Revenue by Region
+
+  | Region | Revenue ($M) |
+  | :--- | :--- |
+  | North America | 45.2 |
+  | EMEA | 32.8 |
+  | APAC | 18.5 |
+
+  ```mermaid
+  xychart-beta
+    title "Quarterly Revenue by Region"
+    x-axis ["North America", "EMEA", "APAC"]
+    y-axis "Revenue ($M)" 0 --> 50
+    bar [45.2, 32.8, 18.5]
+  ```
+  ```
+
+### Loop 2: DrawingML Connectors $\to$ Mermaid Flowcharts
+- **Target Asset:** `test_assets/benchmarks/connector_flowchart.pptx`
+- **Engine (`crates/core/src/parsers/drawingml.rs` & `powerpoint.rs`):**
+  - Parses `<p:cxnSp>` elements to extract connection endpoints (`stCxn`, `endCxn`).
+  - Distinguishes solid connectors (`-->`) from dashed connectors (`-.->`).
+  - Builds directed graph adjacency and emits standard `flowchart TD` blocks.
+  - Automatically filters connected diagram shapes from slide body prose bullets while preserving isolated prose bullets.
+- **Verification Snapshot:**
+  ```markdown
+  ```mermaid
+  flowchart TD
+    N_101["Ingest Input"] --> N_102["Validate Schema"]
+    N_102 -.-> N_103["Store Record"]
+  ```
+  ```
+
+### Loop 3: SmartArt dataModel $\to$ Mermaid Graphs
+- **Target Asset:** `test_assets/benchmarks/smartart_process.pptx`
+- **Engine (`crates/core/src/parsers/smartart.rs`):**
+  - Reads `dgm:dataModel` from `ppt/diagrams/data*.xml`.
+  - Filters out non-semantic structural nodes (`doc`, `pres`, `sibTrans`, `parTrans`).
+  - Resolves transition connections and linear chains into unified Mermaid sequence pipelines (`flowchart LR`).
+- **Verification Snapshot:**
+  ```markdown
+  ```mermaid
+  flowchart LR
+    N_1["Phase 1: Research"] --> N_2["Phase 2: Prototype"] --> N_3["Phase 3: Production"]
+  ```
+  ```
+
+### Loop 4: Word OMML Equations $\to$ KaTeX LaTeX Math
+- **Target Assets:** `test_assets/benchmarks/equations.docx`, `test_assets/benchmarks/docx_complex_layout.docx`
+- **Engine (`crates/core/src/parsers/omml.rs` & `office.rs`):**
+  - Recursive AST compiler for `<m:oMath>` and `<m:oMathPara>`.
+  - Full attribute resolution: handles radical degrees and hiding (`<m:degHide>`), configurable delimiters (`dPr` with `begChr` / `endChr`), n-ary operators (`\int`, `\sum`, `\prod`), matrices (`m`/`mr`), and overline/accents (`\bar`, `\hat`).
+  - Strips invisible unicode formatting artifacts (`\u{2061}`-`\u{2064}`) and maps mathematical functions (`sin` $\to$ `\sin`).
+  - Injects image placeholders (`[Image: temp_docx5.png]`) for drawing canvases.
+- **Verification Snapshot:**
+  ```markdown
+  For $m=1$,
+
+  $$\sin θ=\frac{mλ}{a}=\frac{(1)(550×10^{-6} mm)}{2.5 mm}=2.2×10^{-4}$$
+
+  The angle is $θ=\sin^{-1}(2.2×10^{-4})=2.2×10^{-4}rad$.
+
+  From Eq. 36.1.3,
+
+  $$\frac{a}{λ}=\frac{m}{\sin θ}=\frac{1}{\sin 45.0^{\circ}}=1.41.$$
+  ```
+
+### Loop 5: PDF TeX Math Font Recovery via CMap Normalization
+- **Target Asset:** `test_assets/benchmarks/slice_e_math_zeitz.pdf`
+- **Engine (`crates/core/src/parsers/pdf.rs`):**
+  - Implements deterministic TeX Symbol Recovery for Computer Modern (`CMSY*`, `CMMI*`) and AMS Math (`MSAM*`, `MSBM*`) font streams (`normalize_pdf_glyph`).
+  - Implements `normalize_pdf_math_notation`: resolves historical publisher font corruptions and ASCII fallback approximations into standard LaTeX:
+    - `=I-` $\to$ `\neq `
+    - `::;` / `:S` $\to$ `\le `
+    - `2':` $\to$ `\ge `
+    - `q(x) 2 0` $\to$ `q(x) \ge 0`
+    - `= O` $\to$ `= 0`
+- **Verification Snapshot:**
+  - Before: `Since A =I- B, the matrix A - B =I- O ... q(x) 2 O ... q'(x) ::; q(x)`
+  - After: `Since A \neq B, the matrix A - B \neq 0 ... q(x) \ge 0 ... q'(x) \le q(x)`

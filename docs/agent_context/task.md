@@ -81,7 +81,30 @@
     - Disabled slow Apple Vision NLP dictionary spellchecking (`setUsesLanguageCorrection(false)`).
     - **Result:** Throughput accelerated from 2.3 pages/s to 31.4 pages/s (Target: $\ge 5.0$ pages/s), digital throughput reached 1032 pages/s. (Commit `c31d56d`)
 
+- [x] **Deterministic Office & PDF Structural Deconstruction Loops**
+  - **Loop 1: Embedded Charts -> GFM Tables & Mermaid xychart-beta (Commit `baec99b`):**
+    - Extracted OpenXML DrawingML charts (`c:chartSpace`) in `crates/core/src/parsers/openxml_chart.rs`.
+    - Computes automatic axis limits (`nice_limits`) and dual-emits GFM tables and Mermaid `xychart-beta` (with title, x-axis categories, y-axis series name & range, and bar/line values).
+    - Verified on `test_assets/benchmarks/chart_sample.pptx`.
+  - **Loop 2: DrawingML Connectors -> Mermaid Flowcharts (Commit `ee25dd0`):**
+    - Created `crates/core/src/parsers/drawingml.rs` with `SlideDiagram::parse` and `render_mermaid`.
+    - Integrated with `powerpoint.rs`: connected shapes via `p:cxnSp` (`stCxn`, `endCxn`) are compiled into clean `flowchart TD` blocks, while isolated prose shapes remain as bullet points.
+    - Verified on `test_assets/benchmarks/connector_flowchart.pptx`.
+  - **Loop 3: SmartArt dataModel -> Mermaid Graphs (Commit `ad20a6b`):**
+    - Created `crates/core/src/parsers/smartart.rs` with `SmartArtDiagram::parse` and `render_mermaid`.
+    - Traverses `dgm:dataModel` (`ppt/diagrams/data*.xml`), filters non-semantic transitional nodes (`sibTrans`/`parTrans`), and compiles sequence chains into `flowchart LR` (e.g. `N_1["Phase 1: Research"] --> N_2["Phase 2: Prototype"] --> N_3["Phase 3: Production"]`).
+    - Verified on `test_assets/benchmarks/smartart_process.pptx`.
+  - **Loop 4: Word OMML Equations -> KaTeX LaTeX Math (Commit `aada1f7`):**
+    - Overhauled `crates/core/src/parsers/omml.rs` with full XML attribute support (`OmmlNode::attrs`).
+    - Compiles fractions, radicals with `degHide`, sub/superscripts, configurable delimiters (`dPr` with `begChr`/`endChr`), n-ary operators (`\int`, `\sum`, `\prod`), matrices (`m`/`mr`/`e`), and accents (`acc`).
+    - Strips invisible unicode characters (`\u{2061}`-`\u{2064}`), maps trigonometric/logarithmic functions to `\sin`, `\cos`, etc., and captures embedded images in Word documents.
+    - Verified on `test_assets/benchmarks/equations.docx` and `docx_complex_layout.docx`.
+  - **Loop 5: PDF TeX Math Font Recovery via CMap Normalization (Commit `f8d9aa4`):**
+    - Implemented `normalize_pdf_glyph` in `crates/core/src/parsers/pdf.rs` covering `CMSY*`, `CMMI*`, `MSAM*`, and `MSBM*` font glyph codes.
+    - Implemented `normalize_pdf_math_notation` repairing legacy publisher CMap substitutions (e.g. `=I-` $\to$ `\neq`, `::;` / `:S` $\to$ `\le`, `2':` $\to$ `\ge`, `q(x) 2 0` $\to$ `q(x) \ge 0`, `= O` $\to$ `= 0`).
+    - Verified on `test_assets/benchmarks/slice_e_math_zeitz.pdf`.
+
 ### Pending Items
-- None (All milestones and optimization cycles verified and committed).
+- None (All 5 loops verified with 215 tests passing, 0 warnings, and 21 golden tests matching).
 
 
