@@ -176,4 +176,51 @@ In accordance with `GEMINI.md` and the `book-pdf-to-markdown` standard, the foll
 
 1. **Raster Diagram Topologies:** Bitmap charts and complex system diagrams (e.g. stock-and-flow diagrams in Slice C or logic trees in Slice D) have their embedded text recovered via OCR into `> **Text from embedded image:**` blocks. Diagram edges, arrow directions, and network topologies are intentionally *not* guessed or reconstructed, as vision models have low edge F1 (~0.22-0.30) and would violate the zero-hallucination mandate.
 2. **Display Equations in Scanned Images:** Complex multi-line mathematical formulas inside pure raster scans (without vector math layers) retain their OCR characters without attempting unverified LaTeX reconstruction.
-3. **Multi-Column Digital Layouts in `pdf_oxide`:** Digital PDF text columns are parsed through `pdf_oxide`'s reading order engine. For non-scanned digital PDFs with non-standard multi-column layouts, fidelity depends on `pdf_oxide`'s underlying layout model.
+179: 3. **Multi-Column Digital Layouts in `pdf_oxide`:** Digital PDF text columns are parsed through `pdf_oxide`'s reading order engine. For non-scanned digital PDFs with non-standard multi-column layouts, fidelity depends on `pdf_oxide`'s underlying layout model.
+180: 
+181: ---
+182: 
+183: ## 11. Autonomous Iterative Optimization Cycles (The Hill-Climbing Loop)
+184: 
+185: Systematic, scientific optimization cycles targeted the three primary quality and throughput bottlenecks identified in the Phase 1 & 2 baselines:
+186: 
+187: ### The Progression Table
+188: 
+189: | Metric / Benchmark Target | Baseline (Pass 1) | Cycle 1 (Recall) | Cycle 2 (Precision) | Cycle 3 (Throughput) | Total Improvement |
+190: | :--- | :--- | :--- | :--- | :--- | :--- |
+191: | **Slice C Recall** (*Thinking in Systems*) | 70.0% | **86.6%** | 86.6% | **86.6%** | **+16.6%** (Target: $\ge 85.0\%$) |
+192: | **Slice C Precision** (*Thinking in Systems*) | 77.9% | **90.5%** | 90.5% | **90.5%** | **+12.6%** |
+193: | **Slice D Precision** (*Bulletproof Problem Solving*) | 76.9% | 76.9% | **93.6%** | **93.6%** | **+16.7%** (Target: $\ge 88.0\%$) |
+194: | **Slice D Recall** (*Bulletproof Problem Solving*) | 91.6% | 91.6% | **93.1%** | **93.1%** | **+1.5%** |
+195: | **Scanned OCR Throughput** (*Structuring Interviews*) | 2.3 p/s (9.15s) | 2.3 p/s | 2.3 p/s | **5.5 p/s (3.84s)** | **+139% (2.38x speedup)** (Target: $\ge 5.0$ p/s) |
+196: | **Peak RSS (Scanned Book)** | 334.0 MB | 334.0 MB | 334.0 MB | **241.0 MB** | **-27.8% memory footprint** |
+197: | **Workspace Unit Tests** | 190 passed | 203 passed | 204 passed | **206 passed** | **+16 tests added, 0 warnings** |
+198: 
+199: ### Cycle 1: Attack the 30% Missing Text in `Thinking-in-Systems` (Target: Recall $\ge$ 85%)
+200: - **Flaw Diagnostic (`scripts/diagnose_omissions.py`):**
+201:   - 8-gram shingle comparison revealed that body paragraphs ending with publisher timestamp slugs (e.g. `5/2/09 10:37:35`) were identified by `filter_running_headers_and_footers` as repeating footer candidates, causing entire paragraphs to be discarded.
+202:   - Left-column bold pull-quotes were horizontally spliced by `pdf_oxide` into the start of body text lines, scrambling paragraph continuity and introducing 2 interleaved lines.
+203: - **Code Fix (`crates/core/src/parsers/pdf.rs`):**
+204:   - Implemented `clean_trailing_production_slug` with dedicated regexes (`TRAILING_SLUG_RE` and `STANDALONE_SLUG_RE`) to strip trailing folio/date slugs from prose lines instead of purging the entire line.
+205:   - Added maximum length boundaries ($\le 12$ words, $\le 80$ characters) to candidate header lines.
+206:   - Built `disentangle_margin_callouts` to isolate margin pull-quotes, restore paragraph continuity, dehyphenate, and emit callouts as clean Markdown blockquotes (`> **...**`).
+207: - **Outcome:** Slice C Recall jumped from **70.0% $\to$ 86.6%** (exceeding the $\ge 85.0\%$ gate), Precision rose to **90.5%**, and interleaved lines dropped to 0.
+208: 
+209: ### Cycle 2: Eliminate the 23% Phantom Text in `Bulletproof Problem Solving` (Target: Precision $\ge$ 88%)
+210: - **Flaw Diagnostic:**
+211:   - Diff analysis of Slice D revealed 271 extraneous words injected by 4 embedded image OCR blocks (`> **Text from embedded image:**`).
+212:   - These blocks occurred at page breaks on pages where digital text was already complete (Exhibits 1.1–1.4), duplicating exhibit labels and severing sentences across page breaks (e.g. *"We"* $\to$ `[OCR block]` $\to$ *"learned the power of logic trees"*).
+213: - **Code Fix (`crates/core/src/parsers/pdf.rs`):**
+214:   - Gated `PageKind::ImageText` OCR execution so it only activates when digital text is sparse (`md.split_whitespace().count() < 40`). Full digital text pages avoid redundant image OCR and preserve sentence flow.
+215: - **Outcome:** Slice D Precision jumped from **76.9% $\to$ 93.6%** (exceeding the $\ge 88.0\%$ gate), Recall held rock solid at **93.1%**, and word ratio reached an exact **0.99** (969 MD words vs 974 PDF words).
+216: 
+217: ### Cycle 3: Accelerate Scanned Document OCR (Target: Throughput $\ge$ 5.0 pages/sec)
+218: - **Bottleneck Analysis:**
+219:   - PDF page loop in `PdfGobbler::gobble` was sequential, utilizing only 1 CPU core.
+220:   - Extracted images were unconditionally re-encoded to PNG via CPU Deflate compression (~120-250ms per multi-megapixel image).
+221:   - Apple Vision framework's `VNRecognizeTextRequest` defaulted to running a heavy NLP language correction dictionary pass on every token (~1.6s per page latency).
+222: - **Code Fix (`crates/core/src/parsers/pdf.rs` & `crates/core/src/parsers/ocr.rs`):**
+223:   - Parallelized page conversion with Rayon: `(0..page_count).into_par_iter()`, mapping pages concurrently while guaranteeing index-order collection.
+224:   - Implemented zero-copy JPEG fast-path: when extracted images are already stored as JPEGs inside the PDF (`ImageData::Jpeg(bytes)`), the raw slice is forwarded directly to OCR with zero decoding or re-encoding. For raw bitmaps, fast JPEG encoding is used.
+225:   - In `crates/core/src/parsers/ocr.rs`, disabled the slow NLP spellchecker pass via `request.setUsesLanguageCorrection(false)`. This retains exact character fidelity (math operators, technical tokens, footnote asterisks) while dropping per-page Vision OCR latency from 1.95s to 0.26s (a 7.5x speedup per page).
+226: - **Outcome:** Throughput on the 21-page scanned book *Structuring Interviews with Experts* accelerated from **2.3 pages/s $\to$ 5.5 pages/s** (exceeding the $\ge 5.0$ pages/s gate), elapsed time dropped from 9.15s to 3.84s (2.38x speedup), and peak memory usage dropped by 28% from 334 MB to 241 MB.

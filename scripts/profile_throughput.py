@@ -118,9 +118,9 @@ def profile_pdf(binary_path: Path, pdf_path: Path, output_dir: Path):
 
 
 def main():
-    binary_path = Path.home() / ".cargo" / "bin" / "filegoblin"
+    binary_path = Path("target/release/filegoblin")
     if not binary_path.exists():
-        binary_path = Path("target/release/filegoblin")
+        binary_path = Path.home() / ".cargo" / "bin" / "filegoblin"
     if not binary_path.exists():
         binary_path = Path("target/debug/filegoblin")
 

@@ -2,6 +2,7 @@ use crate::parsers::gobble::{Gobble, ParseOptions};
 use anyhow::{Context, Result};
 use pdf_oxide::PdfDocument;
 use pdf_oxide::extractors::PageKind;
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -35,60 +36,57 @@ impl Gobble for PdfGobbler {
             ..Default::default()
         };
 
-        let mut pages_md: Vec<String> = Vec::new();
+        let page_results: Vec<(String, bool)> = (0..page_count)
+            .into_par_iter()
+            .map(|page| {
+                // Cheap preflight: signals only, no rasterization. On any
+                // classification error, assume a text layer and let extraction try.
+                let kind = doc
+                    .classify_page(page)
+                    .map(|c| c.kind)
+                    .unwrap_or(PageKind::TextLayer);
+
+                match kind {
+                    PageKind::Empty => (String::new(), false),
+                    PageKind::Scanned => match ocr_scanned_page(&doc, page) {
+                        Some(text) if !text.trim().is_empty() => (text.trim().to_string(), false),
+                        _ => (scanned_page_marker(page + 1), true),
+                    },
+                    // TextLayer / ImageText / Mixed: the native converter. For
+                    // hybrids, also OCR the page's image so figure text isn't lost.
+                    _ => {
+                        let (mut md, unreadable) = match doc.to_markdown(page, &options) {
+                            Ok(text) => (text.trim().to_string(), false),
+                            Err(e) => (failed_page_marker(page + 1, &e.to_string()), true),
+                        };
+                        if matches!(kind, PageKind::ImageText)
+                            && md.split_whitespace().count() < 40
+                            && let Some(ocr) = ocr_scanned_page(&doc, page)
+                            && !ocr.trim().is_empty()
+                            && !md
+                                .to_lowercase()
+                                .contains(crate::parsers::str_prefix(&normalize(&ocr), 40))
+                        {
+                            if md.is_empty() {
+                                md = ocr.trim().to_string();
+                            } else {
+                                md.push_str("\n\n> **Text from embedded image:**\n> ");
+                                md.push_str(&ocr.trim().replace('\n', "\n> "));
+                            }
+                        }
+                        (md, unreadable)
+                    }
+                }
+            })
+            .collect();
+
+        let mut pages_md: Vec<String> = Vec::with_capacity(page_results.len());
         let mut unreadable_pages = 0usize;
 
-        for page in 0..page_count {
-            // Cheap preflight: signals only, no rasterization. On any
-            // classification error, assume a text layer and let extraction try.
-            let kind = doc
-                .classify_page(page)
-                .map(|c| c.kind)
-                .unwrap_or(PageKind::TextLayer);
-
-            let page_md = match kind {
-                PageKind::Empty => String::new(),
-                PageKind::Scanned => match ocr_scanned_page(&doc, page) {
-                    Some(text) if !text.trim().is_empty() => text.trim().to_string(),
-                    _ => {
-                        unreadable_pages += 1;
-                        scanned_page_marker(page + 1)
-                    }
-                },
-                // TextLayer / ImageText / Mixed: the native converter. For
-                // hybrids, also OCR the page's image so figure text isn't lost.
-                _ => {
-                    // An extraction *error* is not an empty page. Emitting
-                    // `unwrap_or_default()` here silently dropped page N from
-                    // an otherwise complete document — the reader has no way to
-                    // tell a 9-page render of a 10-page file from the real
-                    // thing. Mark it, exactly like the scanned branch does.
-                    let mut md = match doc.to_markdown(page, &options) {
-                        Ok(text) => text.trim().to_string(),
-                        Err(e) => {
-                            unreadable_pages += 1;
-                            failed_page_marker(page + 1, &e.to_string())
-                        }
-                    };
-                    if matches!(kind, PageKind::ImageText)
-                        && md.split_whitespace().count() < 40
-                        && let Some(ocr) = ocr_scanned_page(&doc, page)
-                        && !ocr.trim().is_empty()
-                        && !md
-                            .to_lowercase()
-                            .contains(crate::parsers::str_prefix(&normalize(&ocr), 40))
-                    {
-                        if md.is_empty() {
-                            md = ocr.trim().to_string();
-                        } else {
-                            md.push_str("\n\n> **Text from embedded image:**\n> ");
-                            md.push_str(&ocr.trim().replace('\n', "\n> "));
-                        }
-                    }
-                    md
-                }
-            };
-
+        for (page_md, unreadable) in page_results {
+            if unreadable {
+                unreadable_pages += 1;
+            }
             if !page_md.trim().is_empty() {
                 pages_md.push(page_md);
             }
@@ -580,17 +578,32 @@ fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
         if u64::from(img.width()) * u64::from(img.height()) < floor {
             break; // sorted, so everything after this is smaller too
         }
-        let Ok(dynamic) = img.to_dynamic_image() else {
-            continue;
+
+        // Direct zero-copy fast path if the PDF already stored JPEG data:
+        let text_res = match img.data() {
+            pdf_oxide::extractors::ImageData::Jpeg(bytes) => {
+                crate::parsers::ocr::ocr_image_bytes(bytes)
+            }
+            pdf_oxide::extractors::ImageData::Raw { .. } => {
+                let Ok(dynamic) = img.to_dynamic_image() else {
+                    continue;
+                };
+                let rgb = dynamic.to_rgb8();
+                let mut jpeg = Vec::new();
+                if rgb
+                    .write_to(
+                        &mut std::io::Cursor::new(&mut jpeg),
+                        image::ImageFormat::Jpeg,
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+                crate::parsers::ocr::ocr_image_bytes(&jpeg)
+            }
         };
-        let mut png: Vec<u8> = Vec::new();
-        if dynamic
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-            .is_err()
-        {
-            continue;
-        }
-        if let Ok(text) = crate::parsers::ocr::ocr_image_bytes(&png)
+
+        if let Ok(text) = text_res
             && !text.trim().is_empty()
         {
             parts.push(text.trim().to_string());
@@ -1279,5 +1292,67 @@ mod tests {
         let cleaned_standalone =
             clean_trailing_production_slug(standalone).expect("should match standalone slug");
         assert!(cleaned_standalone.is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_jpeg_ocr_performance() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let path = Path::new(&manifest_dir).join("../../test_assets/scanned_report.pdf");
+        let doc = PdfDocument::open(path).unwrap();
+        let images = doc.extract_images(0).unwrap();
+        let dynamic = images[0].to_dynamic_image().unwrap();
+        let rgb = dynamic.to_rgb8();
+        let mut jpeg = Vec::new();
+        rgb.write_to(
+            &mut std::io::Cursor::new(&mut jpeg),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+        let text = crate::parsers::ocr::ocr_image_bytes(&jpeg).unwrap();
+        assert!(text.contains("Revenue"));
+    }
+
+    #[test]
+    fn test_parallel_matches_sequential() {
+        use rayon::prelude::*;
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let path =
+            Path::new(&manifest_dir).join("../../test_assets/benchmarks/slice_b_tables_charts.pdf");
+        let doc = PdfDocument::open(path).unwrap();
+        let count = doc.page_count().unwrap();
+        let options = pdf_oxide::converters::ConversionOptions::default();
+
+        let seq_results: Vec<String> = (0..count)
+            .map(|p| doc.to_markdown(p, &options).unwrap())
+            .collect();
+
+        let par_results: Vec<String> = (0..count)
+            .into_par_iter()
+            .map(|p| doc.to_markdown(p, &options).unwrap())
+            .collect();
+
+        assert_eq!(seq_results, par_results);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_scanned_page_ocr_parallel() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let path =
+            Path::new(&manifest_dir).join("../../test_assets/benchmarks/slice_a_twocolumn.pdf");
+        let doc = PdfDocument::open(path).unwrap();
+        let count = doc.page_count().unwrap();
+
+        let results: Vec<_> = (0..count)
+            .into_par_iter()
+            .map(|p| ocr_scanned_page(&doc, p))
+            .collect();
+
+        assert_eq!(results.len(), count);
+        for res in results {
+            assert!(res.is_some(), "scanned page should produce OCR text");
+            assert!(!res.unwrap().is_empty());
+        }
     }
 }
