@@ -33,3 +33,5 @@ scratch/
 # OCR model weights are downloaded via `just get-brains`, never committed
 assets/*.rten
 assets/*.wasm
+
+references/
