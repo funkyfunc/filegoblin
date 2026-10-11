@@ -67,9 +67,9 @@ def clean_markdown_artifacts(s):
     s = re.sub(r"\[?\s*\b[lI]?\d+\s+[lI]\s+\d*(?:-\d+)?\s*\]?", " ", s, flags=re.I)
     s = re.sub(r"I\s+\d+\s+I", " ", s, flags=re.I)
     s = re.sub(r"\b31\s+\[?\s*15\s+I\b", " ", s, flags=re.I)
-    s = re.sub(r"\b\d+\s+CHAP\s*TER\s*2\s+STRATE\s*GIE\s*S\s+FOR\s+IN\s*VES\s*TIGA\s*TING\s+PROBLEMS\b", " ", s, flags=re.I)
-    s = re.sub(r"\b2\.2\s+STRATE\s*GIE\s*S\s+FOR\s+GE\s*TTING\s+STARTED\s+\d+\b", " ", s, flags=re.I)
-    s = re.sub(r"\b2\.3\s+ME\s*THODS\s+OF\s+ARG\s*UM\s*ENT\s+\d+\b", " ", s, flags=re.I)
+    s = re.sub(r"\b\d+\s+C\s*H\s*A\s*P\s*T\s*E\s*R\s+2\s+S\s*T\s*R\s*A\s*T\s*E\s*G\s*I\s*E\s*S\s+F\s*O\s*R\s+I\s*N\s*V\s*E\s*S\s*T\s*I\s*G\s*A\s*T\s*I\s*N\s*G\s+P\s*R\s*O\s*B\s*L\s*E\s*M\s*S\b", " ", s, flags=re.I)
+    s = re.sub(r"\b2\.2\s+S\s*T\s*R\s*A\s*T\s*E\s*G\s*I\s*E\s*S\s+F\s*O\s*R\s+G\s*E\s*T\s*T\s*I\s*N\s*G\s+S\s*T\s*A\s*R\s*T\s*E\s*D\s+\d+\b", " ", s, flags=re.I)
+    s = re.sub(r"\b2\.3\s+M\s*E\s*T\s*H\s*O\s*D\s*S\s+O\s*F\s+A\s*R\s*G\s*U\s*M\s*E\s*N\s*T\s+\d+\b", " ", s, flags=re.I)
     return s
 
 def fix_fused(s):

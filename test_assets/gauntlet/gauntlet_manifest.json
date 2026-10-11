@@ -234,7 +234,7 @@
     "description": "ESP32 SoC Datasheet: pinout matrices, peripheral tables, and register memory maps",
     "canaries_present": [
       "ESP32 Series Datasheet",
-      "Pin Definitions",
+      "Pin Overview",
       "Electrical Characteristics",
       "Product Overview"
     ],

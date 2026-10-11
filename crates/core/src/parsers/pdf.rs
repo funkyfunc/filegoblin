@@ -74,10 +74,15 @@ fn detect_two_column_bands(
         let mut window_bot = 0.0f32;
 
         for i in 0..col_slices.len() {
+            if !col_slices[i].1 {
+                continue;
+            }
             let mut true_count = 0;
             for j in i..col_slices.len() {
                 if col_slices[j].1 {
                     true_count += 1;
+                } else {
+                    continue;
                 }
                 let len = j - i + 1;
                 let ratio = (true_count as f32) / (len as f32);
@@ -153,8 +158,8 @@ fn convert_page_text(
         if has_full_width_top {
             let mut opts = options.clone();
             opts.include_region = Some((
-                Rect::new(0.0, top_cut, width, height - top_cut),
-                RectFilterMode::MinOverlap(0.5),
+                Rect::new(0.0, top_cut - 1.0, width, height - top_cut + 1.0),
+                RectFilterMode::MinOverlap(0.2),
             ));
             if let Ok(md) = doc.to_markdown(page, &opts) {
                 let t = md.trim();
@@ -168,8 +173,8 @@ fn convert_page_text(
         {
             let mut opts = options.clone();
             opts.include_region = Some((
-                Rect::new(0.0, bot_cut, gx, top_cut - bot_cut),
-                RectFilterMode::MinOverlap(0.5),
+                Rect::new(0.0, bot_cut, gx + 2.0, top_cut - bot_cut),
+                RectFilterMode::MinOverlap(0.2),
             ));
             if let Ok(md) = doc.to_markdown(page, &opts) {
                 let t = md.trim();
@@ -183,8 +188,8 @@ fn convert_page_text(
         {
             let mut opts = options.clone();
             opts.include_region = Some((
-                Rect::new(gx, bot_cut, width - gx, top_cut - bot_cut),
-                RectFilterMode::MinOverlap(0.5),
+                Rect::new(gx - 2.0, bot_cut, width - gx + 2.0, top_cut - bot_cut),
+                RectFilterMode::MinOverlap(0.2),
             ));
             if let Ok(md) = doc.to_markdown(page, &opts) {
                 let t = md.trim();
@@ -198,8 +203,8 @@ fn convert_page_text(
         if has_full_width_bot {
             let mut opts = options.clone();
             opts.include_region = Some((
-                Rect::new(0.0, 0.0, width, bot_cut),
-                RectFilterMode::MinOverlap(0.5),
+                Rect::new(0.0, 0.0, width, bot_cut + 1.0),
+                RectFilterMode::MinOverlap(0.2),
             ));
             if let Ok(md) = doc.to_markdown(page, &opts) {
                 let t = md.trim();
@@ -384,7 +389,8 @@ impl Gobble for PdfGobbler {
         let joined = join_pages_healing_dangling(&pages_md);
         let headings_fixed = suppress_false_math_headings(&joined);
         let disentangled = disentangle_margin_callouts(&headings_fixed);
-        let repaired = repair_interleaved_columns_and_blocks(&disentangled);
+        let bold_merged = merge_adjacent_bold_spans(&disentangled);
+        let repaired = repair_interleaved_columns_and_blocks(&bold_merged);
         let formatted_text = format_table_and_block_boundaries(&repaired);
         let sectioned_text = insert_semantic_section_boundaries(&formatted_text);
         let math_normalized = normalize_pdf_math_notation(&sectioned_text);
@@ -1177,6 +1183,21 @@ pub(crate) fn disentangle_margin_callouts(md: &str) -> String {
     }
 
     out.join("\n")
+}
+
+/// Merges adjacent bold spans separated only by horizontal whitespace on the same line,
+/// e.g. `**Standard**  **deduction for—**` -> `**Standard deduction for—**`.
+pub(crate) fn merge_adjacent_bold_spans(md: &str) -> String {
+    static ADJACENT_BOLD_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\*\*([^\*\n]+)\*\*[ \t]+\*\*([^\*\n]+)\*\*").unwrap()
+    });
+    let mut result = md.to_string();
+    while ADJACENT_BOLD_RE.is_match(&result) {
+        result = ADJACENT_BOLD_RE
+            .replace_all(&result, "**$1 $2**")
+            .to_string();
+    }
+    result
 }
 
 /// Untangles two-column cross-read text blocks, restores proper author-affiliation column
@@ -2188,6 +2209,15 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
         if table.rows.first().map(|r| r.len()).unwrap_or(0) > 12 {
             continue;
         }
+        let non_empty_cells: usize = table
+            .rows
+            .iter()
+            .flat_map(|r| r.iter())
+            .filter(|c| !c.text.trim().is_empty())
+            .count();
+        if non_empty_cells < 2 {
+            continue;
+        }
         let table_md = table.to_markdown().trim().to_string();
         if table_md.is_empty() {
             continue;
@@ -2284,14 +2314,18 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
 
                     let existing_chunk = &page_md[line_start..line_end];
                     let line_count = existing_chunk.lines().count();
-                    let has_headings = existing_chunk.lines().any(|l| l.trim().starts_with('#'));
 
-                    // Only replace if chunk doesn't contain headings and line count is reasonable for this table
-                    if !has_headings && line_count <= table.rows.len() * 3 + 4 {
+                    // Only replace if line count is reasonable for this table
+                    if line_count <= table.rows.len() * 3 + 4 {
+                        let mut headings: Vec<&str> = Vec::new();
                         let mut prose_paragraphs: Vec<String> = Vec::new();
                         let mut current_p = Vec::new();
                         for l in existing_chunk.lines() {
                             let trimmed = l.trim();
+                            if trimmed.starts_with('#') {
+                                headings.push(trimmed);
+                                continue;
+                            }
                             if trimmed.is_empty() {
                                 if !current_p.is_empty() {
                                     prose_paragraphs.push(current_p.join(" "));
@@ -2319,6 +2353,10 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
 
                         let mut new_md = String::with_capacity(page_md.len() + table_md.len());
                         new_md.push_str(&page_md[..line_start]);
+                        for h in &headings {
+                            new_md.push_str(h);
+                            new_md.push_str("\n\n");
+                        }
                         new_md.push_str(&table_md);
                         for p in &prose_paragraphs {
                             new_md.push_str("\n\n");

@@ -1077,7 +1077,19 @@ pub fn extract_tables_from_edges_and_words(
         {
             // Require at least 2 cells to qualify as a valid table
             let total_cells: usize = table.rows.iter().map(|r| r.len()).sum();
-            if total_cells >= 2 {
+            let non_empty_cells: usize = table
+                .rows
+                .iter()
+                .flat_map(|r| r.iter())
+                .filter(|c| !c.text.trim().is_empty())
+                .count();
+
+            // A data table must have meaningful cell content:
+            // Reject grids that are completely empty or have <= 1 non-empty cell in a multi-cell grid
+            // (e.g. empty fillable form boxes, SSN digit squares, signature boxes).
+            let is_empty_form_grid = total_cells >= 2
+                && (non_empty_cells == 0 || (total_cells >= 4 && non_empty_cells <= 1));
+            if total_cells >= 2 && !is_empty_form_grid {
                 tables.push(table);
             }
         }

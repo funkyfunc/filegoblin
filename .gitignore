@@ -35,3 +35,4 @@ assets/*.rten
 assets/*.wasm
 
 references/
+test_assets/enterprise_research/

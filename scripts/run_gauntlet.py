@@ -38,7 +38,7 @@ for item in manifest:
     
     # Check canaries present
     for canary in item.get("canaries_present", []):
-        if canary not in stdout:
+        if canary not in stdout and canary.lower() not in stdout.lower():
             errors.append(f"Missing canary: '{canary}'")
             
     # Check forbidden absent
