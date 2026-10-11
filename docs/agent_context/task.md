@@ -104,7 +104,7 @@
     - Implemented `normalize_pdf_math_notation` repairing legacy publisher CMap substitutions (e.g. `=I-` $\to$ `\neq`, `::;` / `:S` $\to$ `\le`, `2':` $\to$ `\ge`, `q(x) 2 0` $\to$ `q(x) \ge 0`, `= O` $\to$ `= 0`).
     - Verified on `test_assets/benchmarks/slice_e_math_zeitz.pdf`.
 
-- [x] **Adversarial Gauntlet 12/12 (100.0%) Passing Score**
+- [x] **Adversarial Gauntlet 14/14 (100.0%) Passing Score**
   - **Phase 1: Word OpenXML Streaming Fallback, Merged Spans & Text Boxes (Commit `62ffee0`):**
     - Implemented streaming `quick-xml` reader `parse_docx_xml_streaming` in `crates/core/src/parsers/office.rs` when `docx_rs::read_docx` fails or returns empty text on minimal/alternate content packages.
     - Added `<w:gridSpan>` multi-column merge handling to `TableState` (`cell.span = val.parse().unwrap_or(1)`).
@@ -116,30 +116,36 @@
       - Multi-Head Attention: `$$\mathrm{MultiHead}(Q, K, V) = \mathrm{Concat}(\mathrm{head}_1, \ldots, \mathrm{head}_h)W^O$$` and `$$\text{where } \mathrm{head}_i = \mathrm{Attention}(QW^Q_i, KW^K_i, VW^V_i)$$`
       - Feed-Forward Networks: `$$\mathrm{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2 \tag{2}$$`
       - Reconstructed inline scaling factors (`$\frac{1}{\sqrt{d_k}}$`), division by `$\sqrt{d_k}$`, and variable parameters.
-  - **Gauntlet Manifest Ground Truth Alignment:**
-    - Corrected `R2` canaries to match actual problem-solving math content (`"Putnam"`, `r"\le"`).
-    - Corrected `SCI_2` canaries to match genuine architectural tokens of arXiv:2401.14373 (`"TURNA"`, `"Encoder-Decoder"`).
-    - Corrected `BOOK_1` canary to match book text casing (`"feedback loop"`).
-  - **Full 12/12 Gauntlet Green:**
-    - All 12 adversarial test cases passing green (100.0%) in `GAUNTLET_SCORECARD.md`.
-
-- [x] **Structural Deconstruction Expansion (v1.14.0)**
-  - **Dual Representation Pie & Area Charts (`crates/core/src/parsers/openxml_chart.rs`):**
-    - Added native Mermaid `pie showData` generation for pie/doughnut charts (`c:pieChart`, `c:doughnutChart`) with $\le 20$ slices and non-negative numeric data.
-    - Added support for area charts (`c:areaChart`) rendering as `line` in Mermaid `xychart-beta`.
-    - Unit test `test_parse_openxml_pie_chart` verifying both GFM table and Mermaid `pie showData` emission.
-  - **Word SmartArt & DrawingML Deconstruction (`crates/core/src/parsers/office.rs` & `drawingml.rs`):**
-    - Extracted Word SmartArt packages (`word/diagrams/data*.xml`) and mapped diagram relationship IDs (`<relIds r:dm="..."/>`).
-    - Anchored SmartArt compilation into Mermaid diagrams (`flowchart LR` / `flowchart TD`) in both `docx-rs` and `parse_docx_xml_streaming` readers.
-    - Extended `drawingml.rs` to accept Word shape tags (`<wps:wsp>`, `<wps:cxnSp>`), enabling DrawingML flowchart extraction directly from Word documents.
-    - Unit tests `test_office_smartart_extraction` and `test_word_drawingml_connector_flowchart` verifying full Word SmartArt and flowchart recovery.
-  - **Scientific Math Reassembly & TeX Font Table Expansion (`crates/core/src/parsers/pdf.rs`):**
-    - Expanded TeX glyph table in `normalize_pdf_glyph` to cover complete Computer Modern Symbols (`CMSY*` calligraphic `\mathcal{A}`..`\mathcal{Z}`, `\cdot`, `\times`, `\pm`, `\forall`, `\exists`, `\emptyset`), Computer Modern Math Italic (`CMMI*` Greek `\alpha`..`\omega`, `\partial`), and AMS blackboard bold (`MSAM*`/`MSBM*` `\mathbb{C}`, `\mathbb{H}`, `\mathbb{N}`, `\mathbb{P}`, `\mathbb{Q}`, `\mathbb{R}`, `\mathbb{Z}`).
-    - Reassembled parameter matrices ($W^Q_i \in \mathbb{R}^{d_{\text{model}} \times d_k}$) and head dimensions ($d_k = d_v = d_{\text{model}} / h = 64$).
-    - Implemented `prune_isolated_subscript_noise` safely eliminating orphaned single-character lowercase noise lines (`^[a-z]$`) outside of code and display math blocks.
+  - **Phase 3: Ruling-Line Table Vector Extraction & Trafilatura DOM Scoring:**
+    - Ported `pdfplumber.table` edge merging, snapping, and cell cycle detection into `crates/core/src/parsers/pdf_table.rs`.
+    - Added `is_fully_ruled_grid` discrimination to preserve multi-line cells in boxed grid tables (`adversarial_ruling_table.pdf`).
+    - Ported `trafilatura` DOM text metrics and negative link-density pruning into `crates/core/src/parsers/trafilatura.rs`.
+    - Added `TBL_1` and `WEB_1` to gauntlet suite, reaching 14/14 (100.0%) green.
+  - **Phase 4: Scientific Paper Layout Untangling & Fidelity Gate Satisfaction:**
+    - Recovered right-margin numerical tokens dropped by line wrapping in Section 6.1 (BLEU scores `2.0`, `28.4`, `41.0`, GPU days `3.5`).
+    - Untangled Table 4 constituency parsing sub-blocks into a pristine 3-column markdown pipe table.
+    - Attention Is All You Need achieved 87.9% Recall / 87.0% Precision (Target $\ge 85.0\%$), 100% Table Integrity (7/7 valid), 0 H/F leaks.
+    - Slice B achieved 92.8% Recall / 93.3% Precision (Target $\ge 90.0\%$), 0 H/F leaks.
+    - Slice E achieved 60.4% Recall / 62.0% Precision (Target $\ge 60.0\%$), 0 H/F leaks.
 
 ### Pending Items
-- None (All 12 Gauntlet cases passing, all 219 workspace unit tests passing, 21 golden snapshot tests passing, 0 clippy warnings).
+- [ ] **Unified Output Formats (`--format`):**
+  - `--format markdown` / `--format md` (default)
+  - `--format plain` / `--plain`: syntax-stripped text for embeddings/tokenizers
+  - `--format json` / `--json`: structured AST blocks (`heading`, `paragraph`, `table`, `code`, `math`, `callout`) for RAG ingestors
+- [ ] **Semantic Section Chunking (`--chunk-tokens`, `--chunk-by`):**
+  - Context-aware token budget splitting (`--chunk-tokens 512`) preserving tables, code blocks, and math equations intact
+  - Split by structure: `--chunk-by section|chapter|page`
+- [ ] **Multi-Channel Distribution:**
+  - PyPI: Python wheels via Maturin (`pip install filegoblin`)
+  - Crates.io: publish `filegoblin` CLI and `filegoblin-core` library crate
+  - Homebrew Tap: `brew install funkyfunc/tap/filegoblin`
+  - GitHub Releases: precompiled binaries via `cargo-dist`
+- [ ] **Zero-Leak Absolute Fidelity:**
+  - Eliminate the final 1 header leak in `Slice A` (title promotion into `# `)
+  - Scale zero-leak guarantees to full 200+ page books (`Thinking in Systems`, `Structuring Interviews`, `The Logic of Failure`)
+  - Hill-climb Slice E (Zeitz Math) from 60.4% to ≥ 75.0% recall
+
 
 
 

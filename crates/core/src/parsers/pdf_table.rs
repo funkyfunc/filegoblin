@@ -664,16 +664,8 @@ pub fn cluster_words_into_cells(
             })
             .collect();
 
-        // Sort words top-to-bottom (grouped into lines within 3pt), then left-to-right
-        cell_words.sort_by(|a, b| {
-            if (a.top - b.top).abs() <= 3.0 {
-                a.x0.partial_cmp(&b.x0).unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                a.top
-                    .partial_cmp(&b.top)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }
-        });
+        // Sort words top-to-bottom, then left-to-right
+        cell_words.sort_by(|a, b| a.top.total_cmp(&b.top).then_with(|| a.x0.total_cmp(&b.x0)));
 
         let mut text_lines: Vec<String> = Vec::new();
         let mut current_line: Vec<String> = Vec::new();
@@ -811,7 +803,7 @@ pub fn words_to_edges_v(words: &[PdfWord], min_words_vertical: usize) -> Vec<Edg
 /// Synthesizes vertical column boundary edges bounded by given bounds.
 pub fn words_to_edges_v_bounded(
     words: &[PdfWord],
-    min_words_vertical: usize,
+    _min_words_vertical: usize,
     min_top: f32,
     max_bottom: f32,
     min_x0: f32,
@@ -821,50 +813,35 @@ pub fn words_to_edges_v_bounded(
         return Vec::new();
     }
 
-    let mut by_x0: BTreeMap<i32, Vec<&PdfWord>> = BTreeMap::new();
-    for w in words {
-        let key = (w.x0 * 0.25).round() as i32; // Cluster within ~4pt
-        by_x0.entry(key).or_default().push(w);
-    }
+    let mut intervals: Vec<(f32, f32)> = words.iter().map(|w| (w.x0, w.x1)).collect();
+    intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    struct ColumnInfo {
-        min_x0: f32,
-        max_x1: f32,
-    }
-
-    let mut columns: Vec<ColumnInfo> = Vec::new();
-    for (_, cluster) in by_x0 {
-        if cluster.len() >= min_words_vertical {
-            let col_min = cluster.iter().map(|w| w.x0).fold(f32::INFINITY, f32::min);
-            let col_max = cluster
-                .iter()
-                .map(|w| w.x1)
-                .fold(f32::NEG_INFINITY, f32::max);
-            columns.push(ColumnInfo {
-                min_x0: col_min,
-                max_x1: col_max,
-            });
+    let mut merged: Vec<(f32, f32)> = Vec::new();
+    for (x0, x1) in intervals {
+        if let Some(last) = merged.last_mut() {
+            // Merge words with normal inter-word spacing (<= 5.0pt)
+            if x0 <= last.1 + 5.0 {
+                last.1 = last.1.max(x1);
+            } else {
+                merged.push((x0, x1));
+            }
+        } else {
+            merged.push((x0, x1));
         }
-    }
-
-    columns.sort_by(|a, b| {
-        a.min_x0
-            .partial_cmp(&b.min_x0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    if columns.is_empty() {
-        return Vec::new();
     }
 
     let mut edges = Vec::new();
     // Outer left edge
     edges.push(Edge::vertical(min_x0, min_top, max_bottom));
 
-    // Dividing edges between columns
-    for i in 0..columns.len().saturating_sub(1) {
-        let div_x = (columns[i].max_x1 + columns[i + 1].min_x0) * 0.5;
-        edges.push(Edge::vertical(div_x, min_top, max_bottom));
+    // Dividing edges at whitespace gutters between columns (gutter width >= 5.0pt)
+    for i in 0..merged.len().saturating_sub(1) {
+        let g0 = merged[i].1;
+        let g1 = merged[i + 1].0;
+        if g1 - g0 >= 5.0 {
+            let div_x = (g0 + g1) * 0.5;
+            edges.push(Edge::vertical(div_x, min_top, max_bottom));
+        }
     }
 
     // Outer right edge
@@ -969,39 +946,61 @@ pub fn extract_tables_from_edges_and_words(
 ) -> Vec<ExtractedTable> {
     let mut all_edges = edges.to_vec();
 
-    // If vertical lines are missing, fall back to word-aligned gutters
+    let original_has_v = edges
+        .iter()
+        .any(|e| e.orientation == EdgeOrientation::Vertical);
+    let original_h_count = edges
+        .iter()
+        .filter(|e| e.orientation == EdgeOrientation::Horizontal)
+        .count();
+    let is_fully_ruled_grid = original_has_v && original_h_count >= 5;
+
     let has_v = all_edges
         .iter()
         .any(|e| e.orientation == EdgeOrientation::Vertical);
     if !has_v && !words.is_empty() {
-        let min_top = all_edges
-            .iter()
-            .map(|e| e.top)
-            .fold(f32::INFINITY, f32::min)
-            .min(words.iter().map(|w| w.top).fold(f32::INFINITY, f32::min));
-        let max_bottom = all_edges
-            .iter()
-            .map(|e| e.bottom)
-            .fold(f32::NEG_INFINITY, f32::max)
-            .max(
+        let (min_top, max_bottom, min_x0, max_x1) = if all_edges.is_empty() {
+            (
+                words.iter().map(|w| w.top).fold(f32::INFINITY, f32::min),
                 words
                     .iter()
                     .map(|w| w.bottom)
                     .fold(f32::NEG_INFINITY, f32::max),
-            );
-        let min_x0 = all_edges
+                words.iter().map(|w| w.x0).fold(f32::INFINITY, f32::min),
+                words.iter().map(|w| w.x1).fold(f32::NEG_INFINITY, f32::max),
+            )
+        } else {
+            (
+                all_edges
+                    .iter()
+                    .map(|e| e.top)
+                    .fold(f32::INFINITY, f32::min),
+                all_edges
+                    .iter()
+                    .map(|e| e.bottom)
+                    .fold(f32::NEG_INFINITY, f32::max),
+                all_edges.iter().map(|e| e.x0).fold(f32::INFINITY, f32::min),
+                all_edges
+                    .iter()
+                    .map(|e| e.x1)
+                    .fold(f32::NEG_INFINITY, f32::max),
+            )
+        };
+
+        // Filter words to table bounding box so prose outside the table doesn't inject false columns
+        let table_words: Vec<PdfWord> = words
             .iter()
-            .map(|e| e.x0)
-            .fold(f32::INFINITY, f32::min)
-            .min(words.iter().map(|w| w.x0).fold(f32::INFINITY, f32::min));
-        let max_x1 = all_edges
-            .iter()
-            .map(|e| e.x1)
-            .fold(f32::NEG_INFINITY, f32::max)
-            .max(words.iter().map(|w| w.x1).fold(f32::NEG_INFINITY, f32::max));
+            .filter(|w| {
+                w.top >= min_top - 5.0
+                    && w.bottom <= max_bottom + 5.0
+                    && w.x0 >= min_x0 - 5.0
+                    && w.x1 <= max_x1 + 5.0
+            })
+            .cloned()
+            .collect();
 
         let gutter_edges = words_to_edges_v_bounded(
-            words,
+            &table_words,
             settings.min_words_vertical,
             min_top,
             max_bottom,
@@ -1011,39 +1010,48 @@ pub fn extract_tables_from_edges_and_words(
         all_edges.extend(gutter_edges);
     }
 
-    // If horizontal lines are missing, fall back to word line edges
-    let has_h = all_edges
-        .iter()
-        .any(|e| e.orientation == EdgeOrientation::Horizontal);
-    if !has_h && !words.is_empty() {
-        let min_top = all_edges
-            .iter()
-            .map(|e| e.top)
-            .fold(f32::INFINITY, f32::min)
-            .min(words.iter().map(|w| w.top).fold(f32::INFINITY, f32::min));
-        let max_bottom = all_edges
-            .iter()
-            .map(|e| e.bottom)
-            .fold(f32::NEG_INFINITY, f32::max)
-            .max(
+    if !is_fully_ruled_grid && !words.is_empty() {
+        let (min_top, max_bottom, min_x0, max_x1) = if all_edges.is_empty() {
+            (
+                words.iter().map(|w| w.top).fold(f32::INFINITY, f32::min),
                 words
                     .iter()
                     .map(|w| w.bottom)
                     .fold(f32::NEG_INFINITY, f32::max),
-            );
-        let min_x0 = all_edges
+                words.iter().map(|w| w.x0).fold(f32::INFINITY, f32::min),
+                words.iter().map(|w| w.x1).fold(f32::NEG_INFINITY, f32::max),
+            )
+        } else {
+            (
+                all_edges
+                    .iter()
+                    .map(|e| e.top)
+                    .fold(f32::INFINITY, f32::min),
+                all_edges
+                    .iter()
+                    .map(|e| e.bottom)
+                    .fold(f32::NEG_INFINITY, f32::max),
+                all_edges.iter().map(|e| e.x0).fold(f32::INFINITY, f32::min),
+                all_edges
+                    .iter()
+                    .map(|e| e.x1)
+                    .fold(f32::NEG_INFINITY, f32::max),
+            )
+        };
+
+        let table_words: Vec<PdfWord> = words
             .iter()
-            .map(|e| e.x0)
-            .fold(f32::INFINITY, f32::min)
-            .min(words.iter().map(|w| w.x0).fold(f32::INFINITY, f32::min));
-        let max_x1 = all_edges
-            .iter()
-            .map(|e| e.x1)
-            .fold(f32::NEG_INFINITY, f32::max)
-            .max(words.iter().map(|w| w.x1).fold(f32::NEG_INFINITY, f32::max));
+            .filter(|w| {
+                w.top >= min_top - 5.0
+                    && w.bottom <= max_bottom + 5.0
+                    && w.x0 >= min_x0 - 5.0
+                    && w.x1 <= max_x1 + 5.0
+            })
+            .cloned()
+            .collect();
 
         let row_edges = words_to_edges_h_bounded(
-            words,
+            &table_words,
             settings.min_words_horizontal,
             min_top,
             max_bottom,
@@ -1180,5 +1188,29 @@ mod tests {
         assert!(md.contains("| Item | Price |"), "{md}");
         assert!(md.contains("| Apples | $1.50 |"), "{md}");
         assert!(md.contains("| Oranges | $2.00 |"), "{md}");
+    }
+
+    #[test]
+    fn test_pure_borderless_gutter_table() {
+        let settings = TableSettings::default();
+        let edges = vec![];
+        let words = vec![
+            PdfWord::new("Item", 20.0, 110.0, 40.0, 120.0),
+            PdfWord::new("Apples", 20.0, 140.0, 50.0, 150.0),
+            PdfWord::new("Oranges", 20.0, 170.0, 55.0, 180.0),
+            PdfWord::new("Qty", 70.0, 110.0, 90.0, 120.0),
+            PdfWord::new("5", 70.0, 140.0, 80.0, 150.0),
+            PdfWord::new("12", 70.0, 170.0, 85.0, 180.0),
+            PdfWord::new("Price", 120.0, 110.0, 140.0, 120.0),
+            PdfWord::new("$1.50", 120.0, 140.0, 145.0, 150.0),
+            PdfWord::new("$2.00", 120.0, 170.0, 145.0, 180.0),
+        ];
+
+        let tables = extract_tables_from_edges_and_words(&edges, &words, &settings);
+        assert_eq!(tables.len(), 1);
+        let md = tables[0].to_markdown();
+        assert!(md.contains("| Item | Qty | Price |"), "{md}");
+        assert!(md.contains("| Apples | 5 | $1.50 |"), "{md}");
+        assert!(md.contains("| Oranges | 12 | $2.00 |"), "{md}");
     }
 }

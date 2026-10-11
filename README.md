@@ -386,6 +386,23 @@ why that is off by default.
 
 ---
 
+## 🗺️ Roadmap
+
+- [ ] **Unified Output Formats (`--format`):**
+  - `--format markdown` / `--format md` (default): Clean, token-optimized Markdown for LLM context windows.
+  - `--format plain` (or `--plain`): Syntax-stripped prose for text-embedding models (OpenAI, Cohere, Voyage) and token counters.
+  - `--format json` (or `--json`): Structured AST array of typed semantic blocks (`heading`, `paragraph`, `table`, `code`, `math`, `callout`) with bounding box and page metadata for RAG ingestors.
+- [ ] **Semantic Section Chunking (`--chunk-tokens`, `--chunk-by`):**
+  - Chunk documents into LLM context-ready token budgets (`--chunk-tokens 512`) without severing tables, code blocks, or mathematical equations across chunk boundaries.
+  - Boundary-aware splitting (`--chunk-by section|chapter|page`).
+- [ ] **Multi-Channel Distribution:**
+  - **PyPI (`pip install filegoblin`):** Python wheels built via Maturin for instant drop-in use in LangChain, LlamaIndex, and PyTorch pipelines.
+  - **Crates.io (`cargo install filegoblin`):** Publish CLI binary and `filegoblin-core` library crate.
+  - **Homebrew Tap (`brew install funkyfunc/tap/filegoblin`):** Zero-dependency native macOS installation.
+  - **Precompiled Binary Releases:** Automated cross-platform release archives (Linux x64/arm64, macOS Apple Silicon/Intel, Windows x64) via `cargo-dist`.
+
+---
+
 ## 🔒 Security notes
 
 - **URLs pointing at private addresses are refused.** Loopback, private ranges,
