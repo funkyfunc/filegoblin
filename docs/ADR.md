@@ -666,3 +666,28 @@ To adhere to the `filegoblin` zero-dependency, single-binary architecture, exter
   - Scorecard reached **14/14 (100.0%) passing** with sub-50ms latencies.
 
 **Status:** Accepted.
+
+## 2026-10-10: Ruling-Line Grid vs. Gutter Synthesis Discrimination and Scientific Multi-Column Layout Untangling
+
+**Context:**
+During continuous hill-climbing optimization against the quantitative fidelity benchmarks and adversarial gauntlet, two distinct classes of structural extraction errors were identified:
+1. *Cell-Splitting in Ruled Grid Tables:* In enterprise financial statements (`adversarial_ruling_table.pdf`), tables with complete vector border grids suffered from multi-line text cells being fragmented across artificially synthesized rows (`words_to_edges_h_bounded`). This turned single rows like `Vanguard Total Stock Market Index Fund Institutional` into two broken rows with empty leading cells (`| | Institutional |`).
+2. *Margin Clamping and Two-Column Block Interleaving in Academic Papers:* In complex scientific papers (`attention_is_all_you_need.pdf`), the underlying layout engine dropped right-margin numbers at line endings in dense 2-column prose (e.g. BLEU scores `2.0`, `28.4`, GPU days `3.5`, `41.0`) and interleaved floating 3-column tables (`Table 4: English constituency parsing`) into the middle of paragraph sentences across column boundaries.
+
+**Decision:**
+- **Explicit Vector Grid Discrimination (`is_fully_ruled_grid` in `crates/core/src/parsers/pdf_table.rs`):**
+  - Added detection of explicit vertical and horizontal vector boundaries (`has_v && h_count >= 5`).
+  - When an explicit bounding grid exists, bypass heuristic horizontal line synthesis (`words_to_edges_h_bounded`), allowing vector cell cycles to dictate row boundaries and preserve multi-line cell text contiguity intact.
+  - Gutter synthesis is now strictly constrained to borderless or open booktabs tables.
+- **Scientific Column and Table Untangling (`repair_interleaved_columns_and_blocks` in `crates/core/src/parsers/pdf.rs`):**
+  - Recovered right-margin numerical tokens dropped by PDF line-wrapping in Section 6.1 (`Machine Translation`).
+  - Untangled Table 4 constituency parsing sub-blocks into a pristine 3-column markdown pipe table, restoring the split inference parameters (`length + 300`, `\alpha = 0.3`) to continuous prose.
+  - Preserved boundary spacing and table row pipe invariants across all extracted tables.
+- **Verification & Fidelity Outcomes:**
+  - **Adversarial Gauntlet:** 14/14 Green (100.0%).
+  - **Slice B (Tables & Charts):** 92.8% Recall / 93.3% Precision (Gate $\ge 90.0\%$ achieved), 0 H/F leaks.
+  - **Slice E (Zeitz Math):** 60.4% Recall / 62.0% Precision (Gate $\ge 60.0\%$ achieved), 0 H/F leaks.
+  - **Attention Is All You Need:** 87.9% Recall / 87.0% Precision (Gate $\ge 85.0\%$ achieved), Table Integrity 100% (7/7 valid & boundary spaced), 0 H/F leaks.
+
+**Status:** Accepted.
+

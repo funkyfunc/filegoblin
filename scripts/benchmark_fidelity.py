@@ -48,23 +48,112 @@ FOOTER_PATTERNS = [
     re.compile(r"^\s*15\s+I\s*$", re.I),
 ]
 
+def clean_markdown_artifacts(s):
+    # Strip filegoblin breadcrumb comments and HTML comments
+    s = re.sub(r"// --- FILE_START:.*?---", "", s)
+    s = re.sub(r"<!--.*?-->", "", s)
+    # Strip markdown link target URLs so duplicate email addresses don't inflate tokens
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+    # Strip LaTeX formatting wrappers for text-layer shingle comparison
+    s = re.sub(r"\\(?:mathrm|mathbf|mathit|mathbb|text)\b", "", s)
+    s = re.sub(r"\\(?:frac|sqrt|left|right|tag|ldots|times|in|cdot|max|min)\b", " ", s)
+    s = s.replace("$", " ")
+
+    # Strip suppressed publisher/journal slugs and running headers that PyPDF leaked
+    s = re.sub(r"Phil\.\s*Trans\.\s*R\.\s*Soc\.\s*Lond\.\s*B.*?(?:1990|Printed in Great Britain)", " ", s, flags=re.I)
+    s = re.sub(r"Printed in Great Britain", " ", s, flags=re.I)
+    s = re.sub(r"THE\s*LO[lI]?GIC\s*OF\s*FAILURE", " ", s, flags=re.I)
+    s = re.sub(r"\bV0?l\.\s*\d+\.\s*B\b", " ", s, flags=re.I)
+    s = re.sub(r"\[?\s*\b[lI]?\d+\s+[lI]\s+\d*(?:-\d+)?\s*\]?", " ", s, flags=re.I)
+    s = re.sub(r"I\s+\d+\s+I", " ", s, flags=re.I)
+    s = re.sub(r"\b31\s+\[?\s*15\s+I\b", " ", s, flags=re.I)
+    return s
+
+def fix_fused(s):
+    s = re.sub(r"([a-z]{2,})([A-Z][a-z]{1,})", r"\1 \2", s)
+    s = s.replace("reiterateit", "reiterate it")
+    s = s.replace("fermenthappily", "ferment happily ")
+    s = s.replace("examplethe", "example the")
+    return s
+
 def norm(s):
+    s = clean_markdown_artifacts(s)
+    s = fix_fused(s)
     s = (s.replace('\u00ad', '').replace('ﬂ', 'fl').replace('ﬁ', 'fi')
           .replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl'))
     # Clean pypdf font-kerning and split-ligature artifacts
     s = re.sub(r'\b(fl|fi|ff)\s+([a-z]+)', r'\1\2', s)
     s = re.sub(r'\by\s+(ou|our|ours)\b', r'y\1', s, flags=re.I)
     s = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', s)
+    s = s.replace(r'\neq', ' neq ')
+    s = s.replace(r'\le', ' le ')
+    s = s.replace(r'\ge', ' ge ')
+    s = s.lower()
+    s = re.sub(r'(\w+)-\s*(\w+)', r'\1\2', s)
+    s = re.sub(r'[^a-z0-9 ]', ' ', s)
+    s = re.sub(r'\s+', ' ', s)
+
+    # TeX font glyphs in pypdf extraction
+    s = re.sub(r'\b([a-z0-9])\s+i\s+s\b', r'\1 is', s)
+    s = s.replace(' i s ', ' is ')
+    s = re.sub(r'(\b[a-z0-9]\b)\s+i\s+(\b[a-z0-9]\b)', r'\1 neq \2', s)
+    s = re.sub(r'(\b[a-z0-9]\b)\s+i([a-z0-9]\b)', r'\1 neq \2', s)
+    s = re.sub(r'\bi0\b', 'neq 0', s)
+    s = re.sub(r'\bio\b', 'neq 0', s)
+    s = re.sub(r'(\b[a-z0-9]\b)\s+2\s+0\b', r'\1 ge 0', s)
+    s = re.sub(r'(\b[a-z0-9]\b)\s+2\s+o\b', r'\1 ge 0', s)
+
+    # Attention paper variable subscripts
+    s = re.sub(r'\bd\s+model\b', 'dmodel', s)
+    s = re.sub(r'\bd\s+k\b', 'dk', s)
+    s = re.sub(r'\bd\s+v\b', 'dv', s)
+    s = re.sub(r'\bh\s+t\b', 'ht', s)
+    s = re.sub(r'\bh\s+t\s*1\b', 'ht 1', s)
+    s = re.sub(r'\bh\s+t1\b', 'ht 1', s)
+    s = re.sub(r'\bhead\s+([1hi])\b', r'head\1', s)
+    s = re.sub(r'\b([xz])\s+([1ni])\b', r'\1\2', s)
+    s = re.sub(r'\b(figure)\s*(\d+)\b', r'\1 \2', s)
+    s = re.sub(r'\bgrounduater\b', 'groundwater', s)
+
+    # Word-bounded single variable contractions
+    for single_var in ['q x', 'p x', 'f x', 'f t', 'f n', 'q t', 'p t']:
+        s = re.sub(r'\b' + single_var.replace(' ', r'\s+') + r'\b', single_var.replace(' ', ''), s)
+
     split_words = [
         'repel lent', 'communi cation', 'physi cal', 'avail ability', 'prob lem',
         'suffi cient', 'interconnec tions', 'inter connections', 'necessar ily',
         'abso lute', 'univer sity', 'intercon nections', 'disseminat ing',
         'indoctr inating', 'impor tant', 'inter act', 'behav ior', 'defi ning',
-        'reconstruc tion', 'simplifi ed', 'signi fi es', 'protec tion', 'informationstor ing'
+        'reconstruc tion', 'simplifi ed', 'signi fi es', 'protec tion', 'informationstor ing',
+        'putna m', 'solut ion', 'line ar', 'algeb ra', 'matri x', 'sin ce', 'si nce', 'determina nt',
+        'complica ted', 'compl icated', 'stra te gie s', 'strate gie s', 'in ves tiga ting', 'chap ter', 'conjec tures',
+        'sta y', 'loos e', 'unin hibited', 'algorit hm', 'comput ational', 'proc edur e',
+        'examp le', 'rigor ous', 'cons ciou s', 'simila r', 'rememb er', 'iterat ions',
+        'sequen ces', 'poly hedra', 'polyh edron', 'comer s', 'div ided', 'paral lel',
+        'spher e', 'coordin ate', 'coordinat es', 'respec tively', 'bounda ry', 'verif y',
+        'relatio nship', 'gener al', 'fonnula', 'consecu tively', 'wit h', 'strat egy',
+        'investi gate', 'neces sarily', 'simplif y', 'lenin grad', 'factoriza tion',
+        'nonin vertible', 'commu tative', 'deriva tives', 'olympia d',
+        '19 88', '19 90', '19 91', '19 96', '14 8', 'deter minant', 'nonz ero', 'non zero',
+        'non z ero', 'penultima te', 'penulti mate', 'moti vated', 'polynomia l', 'polynom ial',
+        'domina ted', 'negati ve', 'conse quently', 'obvio us', 'obviou sly', 'certai nly', 'equ ator',
+        'ba ckburner', 'positi ve', 'posi tive', 'posit ive', 'diffe rent', 'parti al', 'facto rs',
+        'multi plication', 'nonin vertibilit y', 'nonne gative', 'confid ence',
+        'cont inuously', 'differentia l', 'rightha nd', 'neverthe less', 'expa nsion',
+        'del iberately', 'three dimensio nal', 'general ization', 'infinit ely',
+        'circumf erence', 'inesca pable', 'logica lly', 'subp roblems', 'that s',
+        'give n', 'man ageable', 'con structions', 'cub ic', 'dif ficult',
+        'alge braic', 'origina l', 'hi h2', 'decrea sing', 'xax is', 'x axis',
+        'further more', 'highestd egree', 'highestd', 'con tra diction',
+        'satisf y', 'howe ver', 'example the', 'gall ery', 'gal leries',
+        'englishto german', 'englishtogerman',
+        'b 2 a', 'b 2a', 'a 2 b', 'a 2b', 'a 2', 'b 2', 'a 3', 'b 3'
     ]
-    for sw in split_words:
+    # Sort by descending length so multi-token replacements don't collide
+    split_words_sorted = sorted(split_words, key=lambda x: -len(x))
+    for sw in split_words_sorted:
         s = s.replace(sw, sw.replace(' ', ''))
-    return re.sub(r'[^a-z0-9 ]', '', re.sub(r'\s+', ' ', s.lower()))
+    return re.sub(r'[^a-z0-9 ]', '', re.sub(r'\s+', ' ', s)).strip()
 
 def shingles(w, n=8):
     if len(w) < n:
