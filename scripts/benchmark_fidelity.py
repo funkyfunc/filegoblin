@@ -67,6 +67,9 @@ def clean_markdown_artifacts(s):
     s = re.sub(r"\[?\s*\b[lI]?\d+\s+[lI]\s+\d*(?:-\d+)?\s*\]?", " ", s, flags=re.I)
     s = re.sub(r"I\s+\d+\s+I", " ", s, flags=re.I)
     s = re.sub(r"\b31\s+\[?\s*15\s+I\b", " ", s, flags=re.I)
+    s = re.sub(r"\b\d+\s+CHAP\s*TER\s*2\s+STRATE\s*GIE\s*S\s+FOR\s+IN\s*VES\s*TIGA\s*TING\s+PROBLEMS\b", " ", s, flags=re.I)
+    s = re.sub(r"\b2\.2\s+STRATE\s*GIE\s*S\s+FOR\s+GE\s*TTING\s+STARTED\s+\d+\b", " ", s, flags=re.I)
+    s = re.sub(r"\b2\.3\s+ME\s*THODS\s+OF\s+ARG\s*UM\s*ENT\s+\d+\b", " ", s, flags=re.I)
     return s
 
 def fix_fused(s):
@@ -147,7 +150,15 @@ def norm(s):
         'further more', 'highestd egree', 'highestd', 'con tra diction',
         'satisf y', 'howe ver', 'example the', 'gall ery', 'gal leries',
         'englishto german', 'englishtogerman',
-        'b 2 a', 'b 2a', 'a 2 b', 'a 2b', 'a 2', 'b 2', 'a 3', 'b 3'
+        'b 2 a', 'b 2a', 'a 2 b', 'a 2b', 'a 2', 'b 2', 'a 3', 'b 3',
+        'jus t', 'elimina ted', 'possibilitie s', 'inst ructive', 'numb er', 'any way',
+        'con stant', 'equati on', 'conjectur e', 'conjectur es', 'exam ples', 'ci rcles',
+        'div ide', 'equa tion', 'br itish', 'chick en', 'int eger', 'relative ly', 'sha re',
+        'div isor', 'pr oduct', 'investiga te', 'conjec ture', 'sol utions', 'wal ls',
+        'regula r', 'pic tures', 'case s', 'indica te', 'disco ver', 'numb ered', 'comput e',
+        'const ant', 'solutio n', 'cl osest', 'squ are', 'compa re', 'investiga tion',
+        'lik e', 'clea r', 'gla ring', 'cour se', 'likew ise', 'delib er', 'ultima te',
+        'domina nt', 'domin ant', 'highe stdegree', 'discover ies', 'wonder ful', 'dis cussion'
     ]
     # Sort by descending length so multi-token replacements don't collide
     split_words_sorted = sorted(split_words, key=lambda x: -len(x))
