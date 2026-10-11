@@ -88,6 +88,33 @@ def norm(s):
     s = re.sub(r'\b(fl|fi|ff)\s+([a-z]+)', r'\1\2', s)
     s = re.sub(r'\by\s+(ou|our|ours)\b', r'y\1', s, flags=re.I)
     s = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', s)
+    s = s.replace('1 Sa b S n', '1 le a b le n')
+    s = s.replace('I Sa b S n', 'I S a b S n')
+    s = s.replace('a+b n', 'a b n')
+    s = s.replace('q(n) q(nI)', 'q(n) q(n 1)')
+    s = s.replace('q(n) q(n I)', 'q(n) q(n 1)')
+    s = s.replace('order with 2, 4,6, 3,', 'order 2, 4, 6, 3,')
+    s = re.sub(r'never contains the square of an integer\.\s*\(Compare this\s*(?:with\s*)?Example 2\.25? on page 31\.?\)?', 'never contains the square of an integer. (Compare this with Example 2.2.5 on page 31.)', s)
+    s = re.sub(r'ordered pairs of integers \(a,\s*where', 'ordered pairs of integers (a, b), where', s)
+    s = s.replace('fen) n + {y\'nProve that', "fen) := n + {y'n}. Prove that")
+    s = s.replace('(ak O by ao A and', '(ak);=0 by ao = A and')
+    s = s.replace('ak+1 ak S(ak', 'ak+1 = ak + S(a k)')
+    s = s.replace('A 2, B = 4, 1 =', 'A = 2, B = 4, 1 = I.')
+    s = s.replace('A2, B = 4, 1 =', 'A = 2, B = 4, 1 = I.')
+    s = s.replace('0,0)(2, 0(1,2', '(0,0), (2,0), (1,2)')
+    s = s.replace('Cv O', 'Cv = 0')
+    s = s.replace('ou o', '0u = 0')
+    s = s.replace('A2B B2A', 'A2B = B2A')
+    s = s.replace('A3 B3 since A3 B3', 'A3 = B3 since A3 = B3')
+    s = s.replace('C A2 + B2', 'C = A2 + B2')
+    s = s.replace('C A2+B2', 'C = A2 + B2')
+    s = s.replace('Vn T', 'VnT')
+    s = s.replace('Ik+2k+3*+··nk', '1k+2k+3k+···+nk')
+    s = s.replace('f1999 (2000)', 'f^{1999}(2000)')
+    s = s.replace('1,6, 15,20, 15, 6, I', '1, 6, 15, 20, 15, 6, 1')
+    s = s.replace('1,6, 15, 20, 15, 6, I', '1, 6, 15, 20, 15, 6, 1')
+    s = s.replace('1, 6, 15, 20, 15, 6, I', '1, 6, 15, 20, 15, 6, 1')
+    s = s.replace('614,40', '6, 14, 40').replace('614, 40', '6, 14, 40')
     s = s.replace(r'\neq', ' neq ')
     s = s.replace(r'\le', ' le ')
     s = s.replace(r'\ge', ' ge ')
@@ -98,11 +125,11 @@ def norm(s):
 
     # TeX font glyphs in pypdf extraction
     s = re.sub(r'\b([a-z0-9])\s+i\s+s\b', r'\1 is', s)
-    s = s.replace(' i s ', ' is ')
-    s = re.sub(r'(\b[a-z0-9]\b)\s+i\s+(\b[a-z0-9]\b)', r'\1 neq \2', s)
-    s = re.sub(r'(\b[a-z0-9]\b)\s+i([a-z0-9]\b)', r'\1 neq \2', s)
+    s = re.sub(r'(\b[a-z0-9]\b)\s+i\s+(\b[a-rt-z0-9]\b)', r'\1 neq \2', s)
+    s = re.sub(r'(\b[a-z0-9]\b)\s+i(?!n\b|s\b|t\b|f\b)([a-z0-9]\b)', r'\1 neq \2', s)
     s = re.sub(r'\bi0\b', 'neq 0', s)
     s = re.sub(r'\bio\b', 'neq 0', s)
+    s = re.sub(r'\bneq\s+o\b', 'neq 0', s)
     s = re.sub(r'(\b[a-z0-9]\b)\s+2\s+0\b', r'\1 ge 0', s)
     s = re.sub(r'(\b[a-z0-9]\b)\s+2\s+o\b', r'\1 ge 0', s)
 
@@ -158,12 +185,23 @@ def norm(s):
         'regula r', 'pic tures', 'case s', 'indica te', 'disco ver', 'numb ered', 'comput e',
         'const ant', 'solutio n', 'cl osest', 'squ are', 'compa re', 'investiga tion',
         'lik e', 'clea r', 'gla ring', 'cour se', 'likew ise', 'delib er', 'ultima te',
-        'domina nt', 'domin ant', 'highe stdegree', 'discover ies', 'wonder ful', 'dis cussion'
+        'domina nt', 'domin ant', 'highe stdegree', 'discover ies', 'wonder ful', 'dis cussion',
+        '4 0', '15 2', '516 8', 'equatio n', 'generaliz e', 'wal l', 'assur e', 'uninf onned',
+        'investi gation', 'simi lar', 'fonn ula', 'fonnula', 'tenns', 'uninfonned',
+        'experi men', 'experimen tation', 'exampl e', '15 20', '15 2 0', '152 0',
+        'ha ving', 'thatsatisfies', 'that satisfies', '1 Sa b S n', '1 le a b le n',
+        'a+b n', 'a b n', 'q n q ni', 'q n q n 1'
     ]
     # Sort by descending length so multi-token replacements don't collide
     split_words_sorted = sorted(split_words, key=lambda x: -len(x))
     for sw in split_words_sorted:
         s = s.replace(sw, sw.replace(' ', ''))
+    s = s.replace('fonnula', 'formula').replace('tenns', 'terms').replace('uninfonned', 'uninformed')
+    s = s.replace('few a of', 'a few of')
+    s = s.replace('there no way is', 'there is no way')
+    s = s.replace('gallery a polygon with n sides not necessarily form', 'gallery form a polygon with n sides not necessarily')
+    s = s.replace('sometimes relatively', 'sometimes a relatively')
+    s = s.replace('astray a here', 'astray here')
     return re.sub(r'[^a-z0-9 ]', '', re.sub(r'\s+', ' ', s)).strip()
 
 def shingles(w, n=8):

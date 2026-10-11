@@ -35,13 +35,14 @@ fn detect_two_column_bands(
         return None;
     }
 
-    let mut best_gx = None;
     let mut best_score = 0;
+    let mut best_gx_min = 0.0f32;
+    let mut best_gx_max = 0.0f32;
     let mut best_top = 0.0f32;
     let mut best_bot = 0.0f32;
 
-    let mut gx = 0.45 * width;
-    while gx <= 0.55 * width {
+    let mut gx = 0.35 * width;
+    while gx <= 0.65 * width {
         let mut col_slices = Vec::new();
         let mut y = height - 35.0;
         while y >= 35.0 {
@@ -81,8 +82,6 @@ fn detect_two_column_bands(
             for j in i..col_slices.len() {
                 if col_slices[j].1 {
                     true_count += 1;
-                } else {
-                    continue;
                 }
                 let len = j - i + 1;
                 let ratio = (true_count as f32) / (len as f32);
@@ -94,17 +93,27 @@ fn detect_two_column_bands(
             }
         }
 
-        if max_window_len >= 8 && max_window_len > best_score {
-            best_score = max_window_len;
-            best_gx = Some(gx);
-            best_top = window_top;
-            best_bot = window_bot;
+        if max_window_len >= 8 {
+            if max_window_len > best_score {
+                best_score = max_window_len;
+                best_gx_min = gx;
+                best_gx_max = gx;
+                best_top = window_top;
+                best_bot = window_bot;
+            } else if max_window_len == best_score
+                && (window_top - window_bot) >= (best_top - best_bot) - 5.0
+            {
+                best_gx_max = gx;
+            }
         }
 
         gx += 2.0;
     }
 
-    let gx = best_gx?;
+    if best_score < 8 {
+        return None;
+    }
+    let gx = (best_gx_min + best_gx_max) / 2.0;
     Some((best_top, best_bot, gx))
 }
 
@@ -125,28 +134,21 @@ fn convert_page_text(
         let words = doc.extract_words(page).unwrap_or_default();
         let has_full_width_top = top_cut < height - 50.0
             && words.iter().any(|w| {
-                w.bbox.y >= top_cut
+                w.bbox.y >= top_cut + 8.0
                     && w.bbox.y < height - 50.0
-                    && ((w.bbox.x < gx - 5.0 && (w.bbox.x + w.bbox.width) > gx + 5.0)
-                        || (w.bbox.x < gx
-                            && words.iter().any(|w2| {
-                                w2.bbox.y >= top_cut
-                                    && w2.bbox.y < height - 50.0
-                                    && w2.bbox.x > gx + 20.0
-                            })))
+                    && w.bbox.x < gx - 5.0
+                    && (w.bbox.x + w.bbox.width) > gx + 5.0
             });
         if !has_full_width_top {
-            top_cut = height;
+            top_cut = (top_cut + 15.0).min(height - 35.0);
         }
 
         let has_full_width_bot = bot_cut > 50.0
             && words.iter().any(|w| {
-                w.bbox.y < bot_cut
-                    && ((w.bbox.x < gx - 5.0 && (w.bbox.x + w.bbox.width) > gx + 5.0)
-                        || (w.bbox.x < gx
-                            && words
-                                .iter()
-                                .any(|w2| w2.bbox.y < bot_cut && w2.bbox.x > gx + 20.0)))
+                w.bbox.y < bot_cut - 8.0
+                    && w.bbox.y > 40.0
+                    && w.bbox.x < gx - 5.0
+                    && (w.bbox.x + w.bbox.width) > gx + 5.0
             });
         if !has_full_width_bot {
             bot_cut = 0.0;
@@ -158,8 +160,8 @@ fn convert_page_text(
         if has_full_width_top {
             let mut opts = options.clone();
             opts.include_region = Some((
-                Rect::new(0.0, top_cut - 1.0, width, height - top_cut + 1.0),
-                RectFilterMode::MinOverlap(0.2),
+                Rect::new(0.0, top_cut, width, height - top_cut),
+                RectFilterMode::MinOverlap(0.5),
             ));
             if let Ok(md) = doc.to_markdown(page, &opts) {
                 let t = md.trim();
@@ -172,9 +174,11 @@ fn convert_page_text(
         // 2. Left column
         {
             let mut opts = options.clone();
+            opts.reading_order_mode =
+                pdf_oxide::converters::ReadingOrderMode::TopToBottomLeftToRight;
             opts.include_region = Some((
-                Rect::new(0.0, bot_cut, gx + 2.0, top_cut - bot_cut),
-                RectFilterMode::MinOverlap(0.2),
+                Rect::new(0.0, bot_cut, gx, top_cut - bot_cut),
+                RectFilterMode::MinOverlap(0.5),
             ));
             if let Ok(md) = doc.to_markdown(page, &opts) {
                 let t = md.trim();
@@ -187,9 +191,11 @@ fn convert_page_text(
         // 3. Right column
         {
             let mut opts = options.clone();
+            opts.reading_order_mode =
+                pdf_oxide::converters::ReadingOrderMode::TopToBottomLeftToRight;
             opts.include_region = Some((
-                Rect::new(gx - 2.0, bot_cut, width - gx + 2.0, top_cut - bot_cut),
-                RectFilterMode::MinOverlap(0.2),
+                Rect::new(gx, bot_cut, width - gx, top_cut - bot_cut),
+                RectFilterMode::MinOverlap(0.5),
             ));
             if let Ok(md) = doc.to_markdown(page, &opts) {
                 let t = md.trim();
@@ -203,8 +209,8 @@ fn convert_page_text(
         if has_full_width_bot {
             let mut opts = options.clone();
             opts.include_region = Some((
-                Rect::new(0.0, 0.0, width, bot_cut + 1.0),
-                RectFilterMode::MinOverlap(0.2),
+                Rect::new(0.0, 0.0, width, bot_cut),
+                RectFilterMode::MinOverlap(0.5),
             ));
             if let Ok(md) = doc.to_markdown(page, &opts) {
                 let t = md.trim();
@@ -1200,164 +1206,91 @@ pub(crate) fn merge_adjacent_bold_spans(md: &str) -> String {
     result
 }
 
-/// Untangles two-column cross-read text blocks, restores proper author-affiliation column
-/// association, and removes duplicate pseudo-tables and artifact noise from heatmap figures.
+/// Zips multi-column academic author blocks into sequential Author-Affiliation-Email units.
+pub(crate) fn zip_academic_author_blocks(md: &str) -> String {
+    static MAILTO_CLUSTER_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?is)((?:\*\*[A-Z][^\*\n]+\*\*\s*\n*)+)(.*?)((?:\[[a-zA-Z0-9._%+-]+@[^\]]+\]\(mailto:[^\)]+\)\s*)+)").unwrap()
+    });
+    static NAME_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\*\*([A-Z][^\*\n]+)\*\*").unwrap());
+    static MAILTO_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\[[a-zA-Z0-9._%+-]+@[^\]]+\]\(mailto:[^\)]+\)").unwrap()
+    });
+
+    MAILTO_CLUSTER_RE
+        .replace_all(md, |caps: &regex::Captures| {
+            let names_block = &caps[1];
+            let mid_block = &caps[2];
+            let mailtos_block = &caps[3];
+
+            let names: Vec<&str> = NAME_RE.find_iter(names_block).map(|m| m.as_str()).collect();
+            let mailtos: Vec<&str> = MAILTO_RE
+                .find_iter(mailtos_block)
+                .map(|m| m.as_str())
+                .collect();
+
+            if names.len() >= 2 && names.len() == mailtos.len() {
+                let mid_trimmed = mid_block.trim();
+                let affil_candidates: Vec<&str> = mid_trimmed
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+
+                let mut affils: Vec<String> = Vec::new();
+                for line in affil_candidates {
+                    let words: Vec<&str> = line.split_whitespace().collect();
+                    if words.len() >= 4 && words.len().is_multiple_of(2) {
+                        let half = words.len() / 2;
+                        if words[..half] == words[half..] {
+                            affils.push(words[..half].join(" "));
+                            affils.push(words[half..].join(" "));
+                            continue;
+                        }
+                    }
+                    affils.push(line.to_string());
+                }
+
+                if affils.len() == names.len() {
+                    let mut zipped = Vec::with_capacity(names.len());
+                    for i in 0..names.len() {
+                        zipped.push(format!("{}\n{}\n{}", names[i], affils[i], mailtos[i]));
+                    }
+                    return zipped.join("\n\n");
+                }
+            }
+            caps[0].to_string()
+        })
+        .to_string()
+}
+
+/// Generic post-processing for layout continuity and cross-column repairs.
+/// Strictly document-agnostic per The Generalization Firewall.
 pub(crate) fn repair_interleaved_columns_and_blocks(md: &str) -> String {
     let mut out = md.to_string();
 
-    // 1. Slice B two-column paragraph repairs
-    // Page 3: Figure 4 caption split
-    if out.contains("are able to  4 shows the results")
-        && out.contains("Figure  of the governmental activities")
-    {
-        static P3_PAT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"(?is)are able to\s+4 shows the results\s*\n+gather further data, decide for the same or new measures, and so on\.\s*Figure\s+of the governmental activities of a good subject\.\s*It is possible to create positive living conditions\s+for the Moros over a long period of time\.").unwrap()
-        });
-        out = P3_PAT.replace(
-            &out,
-            "are able to gather further data, decide for the same or new measures, and so on. Figure 4 shows the results of the governmental activities of a good subject. It is possible to create positive living conditions for the Moros over a long period of time.",
-        ).to_string();
-    }
+    // 1. Generic academic author affiliation column zipper
+    out = zip_academic_author_blocks(&out);
 
-    // Page 4: Schaub & Strohschneider experiment paragraph
-    if out.contains("Strohschneider (I989)")
-        && out.contains("experiment conducted by Schaub")
-        && out.contains("6 shows the average results")
-    {
-        static P4_PAT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"(?is)In an\s+Strohschneider\s*\(I989\),\s*we compared the behaviour of 45\s*\n+experiment conducted by Schaub\s+executives from large German and Swiss industrial and commercial enterprises with the\s+20 years, to\s*\n+behaviour of students\.\s*Each subject had to try, over a \(simulated\) period of over\s+improve the living conditions of the Moros\.\s*In each year, the subjects were able to ask questions\s+about the \(then\) current state of the Moros and to make any decisions they wished to\.\s*They\s+could buy tractors for the Moros, sink wells, improve medical care, influence trade relations\s+6 shows the average results for the executives and the students\.\s*On the\s*\n+and so on\.\s*Figure\s+whole, the executives did far better;\s*they earned, by skilful management, more capital, their\s+herds of cattle were greater, as were their vegetation areas and human populations\.\s*There\s+were, accordingly, fewer catastrophes in their simulations\.").unwrap()
-        });
-        out = P4_PAT.replace(
-            &out,
-            "In an experiment conducted by Schaub & Strohschneider (1989), we compared the behaviour of 45 executives from large German and Swiss industrial and commercial enterprises with the behaviour of students. Each subject had to try, over a (simulated) period of over 20 years, to improve the living conditions of the Moros. In each year, the subjects were able to ask questions about the (then) current state of the Moros and to make any decisions they wished to. They could buy tractors for the Moros, sink wells, improve medical care, influence trade relations and so on. Figure 6 shows the average results for the executives and the students. On the whole, the executives did far better; they earned, by skilful management, more capital, their herds of cattle were greater, as were their vegetation areas and human populations. There were, accordingly, fewer catastrophes in their simulations.",
-        ).to_string();
-    }
+    // 2. Generic soft-hyphen line-wrap healing
+    static SOFT_HYPHEN_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(\b[a-zA-Z]{3,})[-\u{AD}]\s*\n\s*([a-z]{2,}\b)").unwrap()
+    });
+    out = SOFT_HYPHEN_RE.replace_all(&out, "$1$2").to_string();
 
-    // Page 5: Complex actions mistakes paragraph
-    if out.contains("What are  a great")
-        && out.contains("We found  variety of modes")
-        && out.contains("complex situations. Figure")
-    {
-        static P5_PAT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"(?is)Which mistakes do people make when faced with coordinating complex actions\?\s*What are\s+a great\s*\n+the reasons for catastrophes like the Moro catastrophe described above\?\s*We found\s+variety of modes of faulty behaviour that were responsible for the failure when acting in such\s+7 presents a rough overview of the various forms of faulty behaviour\.\s*\n+complex situations\.\s*Figure\s+Subjects fail, for instance, to get their goals clear and then act according to a 'repair service\s+policy'\.").unwrap()
-        });
-        out = P5_PAT.replace(
-            &out,
-            "Which mistakes do people make when faced with coordinating complex actions? What are the reasons for catastrophes like the Moro catastrophe described above? We found a great variety of modes of faulty behaviour that were responsible for the failure when acting in such complex situations. Figure 7 presents a rough overview of the various forms of faulty behaviour. Subjects fail, for instance, to get their goals clear and then act according to a 'repair service policy'.",
-        ).to_string();
-    }
+    // 3. Generic problem / exercise heading paragraph break:
+    // Ensures problem headings like '2.2.19' that follow sentence punctuation start on a new paragraph.
+    static PROBLEM_HEADING_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?m)([.!?]|\b[a-zA-Z0-9\)])[ \t]+([1-9]\d*\.\d+\.\d+\b)").unwrap()
+    });
+    out = PROBLEM_HEADING_RE.replace_all(&out, "$1\n\n$2").to_string();
 
-    // 2. Attention Is All You Need author block column reconstruction
-    if out.contains("Ashish")
-        && out.contains("Vaswani")
-        && out.contains("Noam")
-        && out.contains("Shazeer")
-    {
-        static AUTH1_PAT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"(?is)\*\*Ashish\*\*\s+\*\*Vaswani\*\*\s*\n+\*\*Noam\*\*\s+\*\*Shazeer\*\*\s*\n+\*\*Niki\*\*\s+\*\*Parmar\*\*\s*\n+\*\*Jakob\*\*\s+\*\*Uszkoreit\*\*\s+Google Brain\s*\n+Google Brain\s*\n+Google Research\s+Google Research\s+\[avaswani@google\.com\]\(mailto:avaswani@google\.com\)\s+\[noam@google\.com\]\(mailto:noam@google\.com\)\s+\[nikip@google\.com\]\(mailto:nikip@google\.com\)\s+\[usz@google\.com\]\(mailto:usz@google\.com\)").unwrap()
-        });
-        out = AUTH1_PAT.replace(
-            &out,
-            "**Ashish** **Vaswani**\nGoogle Brain\n[avaswani@google.com](mailto:avaswani@google.com)\n\n**Noam** **Shazeer**\nGoogle Brain\n[noam@google.com](mailto:noam@google.com)\n\n**Niki** **Parmar**\nGoogle Research\n[nikip@google.com](mailto:nikip@google.com)\n\n**Jakob** **Uszkoreit**\nGoogle Research\n[usz@google.com](mailto:usz@google.com)",
-        ).to_string();
-
-        static AUTH2_PAT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"(?is)\*\*Llion\*\*\s+\*\*Jones\*\*\s*\n+\*\*Aidan\*\*\s+\*\*N\.\*\*\s+\*\*Gomez\*\*[∗*†\s]*\n+\*\*Łukasz\*\*\s+\*\*Kaiser\*\*\s+Google Research\s*\n+University of Toronto\s*\n+Google Brain\s+\[lukaszkaiser@google\.com\]\(mailto:lukaszkaiser@google\.com\)\s*\n+\[llion@google\.com\]\(mailto:llion@google\.com\)\s+\[aidan@cs\.toronto\.edu\]\(mailto:aidan@cs\.toronto\.edu\)").unwrap()
-        });
-        out = AUTH2_PAT.replace(
-            &out,
-            "**Llion** **Jones**\nGoogle Research\n[llion@google.com](mailto:llion@google.com)\n\n**Aidan** **N.** **Gomez**∗ †\nUniversity of Toronto\n[aidan@cs.toronto.edu](mailto:aidan@cs.toronto.edu)\n\n**Łukasz** **Kaiser**\nGoogle Brain\n[lukaszkaiser@google.com](mailto:lukaszkaiser@google.com)",
-        ).to_string();
-    }
-
-    // 3. Attention Table 3 deduplication of fused sub-rows
-    if out.contains("Variations on the Transformer architecture") {
-        out = out.replace(
-            "| (A) |  | 4 128 128 16 32 32 |  | 5.00 4.91 | 25.5 25.8 |\n",
-            "",
-        );
-        out = out.replace(
-            "| (B) |  | 16 32 |  | 5.16 5.01 | 25.1 25.4 | 58 60 |\n",
-            "",
-        );
-        out = out.replace("| (D) |  | 0.2 0.0 |  | 4.95 4.67 | 25.5 25.3 |\n", "");
-        out = out.replace(
-            "|  | N | d h d d P ϵ | train | PPL | BLEU | params |\n|---|---|---|---|---|---|---|\n|  | N | dmodel d h d d P ϵ ff k v drop ls | train steps | PPL (dev) | BLEU (dev) | params ×106 |\n",
-            "",
-        );
-        out = out.replace(
-            "|  | N | dmodel d h d d P ϵ ff k v drop ls | steps | (dev) | (dev) | ×106 |\n",
-            "|  | N | dmodel d h d d P ϵ ff k v drop ls | steps | (dev) | (dev) | ×106 |\n|---|---|---|---|---|---|---|\n",
-        );
-    }
-
-    // 4. Attention Section 6.1 right margin tokens recovery
-    if out.contains("English-to-German translation task, the big transformer model")
-        && out.contains("by more than BLEU")
-    {
-        let sec61_old = "On the WMT 2014 English-to-German translation task, the big transformer model (Transformer (big) in Table 2) outperforms the best previously reported models (including ensembles) by more than BLEU, establishing a new state-of-the-art BLEU score of listed in the bottom line of Table 3. Training took surpasses all previously published models and ensembles, at a fraction of the training cost of any of the competitive models.\n\nOn the WMT 2014 English-to-French translation task, our big model achieves a BLEU score of outperforming all of the previously published single models, at less than previous state-of-the-art model. The Transformer (big) model trained for English-to-French used dropout rate P = 0 1, instead of 0 3\n\ndrop For the base models, we used a single model obtained by averaging the last 5 checkpoints, which were written at 10-minute intervals. For the big models, we averaged the last 20 checkpoints. We used beam search with a beam size of were chosen after experimentation on the development set. We set the maximum output length during inference to input length + 50, but terminate early when possible [38].";
-
-        let sec61_new = "On the WMT 2014 English-to-German translation task, the big transformer model (Transformer (big) in Table 2) outperforms the best previously reported models (including ensembles) by more than 2.0 BLEU, establishing a new state-of-the-art BLEU score of 28.4. The configuration of this model is listed in the bottom line of Table 3. Training took 3.5 days on 8 P100 GPUs. Even our base model surpasses all previously published models and ensembles, at a fraction of the training cost of any of the competitive models.\n\nOn the WMT 2014 English-to-French translation task, our big model achieves a BLEU score of 41.0, outperforming all of the previously published single models, at less than 1/4 the training cost of the previous state-of-the-art model. The Transformer (big) model trained for English-to-French used dropout rate P_drop = 0.1, instead of 0.3.\n\nFor the base models, we used a single model obtained by averaging the last 5 checkpoints, which were written at 10-minute intervals. For the big models, we averaged the last 20 checkpoints. We used beam search with a beam size of 4 and length penalty alpha = 0.6 [38]. These hyperparameters were chosen after experimentation on the development set. We set the maximum output length during inference to input length + 50, but terminate early when possible [38].";
-
-        out = out.replace(sec61_old, sec61_new);
-    }
-
-    // 5. Attention Table 4 constituency parsing table column untangling
-    if let Some(t4_start) =
-        out.find("Table 4: The Transformer generalizes well to English constituency parsing")
-    {
-        if let Some(t4_rel_end) = out[t4_start..].find("**7** **Conclusion**") {
-            let t4_end = t4_start + t4_rel_end;
-            let mut new_out = String::with_capacity(out.len() + 200);
-            new_out.push_str(&out[..t4_start]);
-            new_out.push_str("Table 4: The Transformer generalizes well to English constituency parsing (Results are on Section 23 of WSJ)\n\n| Parser | Training | WSJ 23 F1 |\n|---|---|---|\n| Vinyals & Kaiser el al. (2014) [37] | WSJ only, discriminative | 88.3 |\n| Petrov et al. (2006) [29] | WSJ only, discriminative | 90.4 |\n| Zhu et al. (2013) [40] | WSJ only, discriminative | 90.4 |\n| Dyer et al. (2016) [8] | WSJ only, discriminative | 91.7 |\n| Transformer (4 layers) | WSJ only, discriminative | 91.3 |\n| Zhu et al. (2013) [40] | semi-supervised | 91.3 |\n| Huang & Harper (2009) [14] | semi-supervised | 91.3 |\n| McClosky et al. (2006) [26] | semi-supervised | 92.1 |\n| Vinyals & Kaiser el al. (2014) [37] | semi-supervised | 92.1 |\n| Transformer (4 layers) | semi-supervised | 92.7 |\n| Luong et al. (2015) [23] | multi-task | 93.0 |\n| Dyer et al. (2016) [8] | generative | 93.3 |\n\nDuring inference, we increased the maximum output length to input length + 300. We used a beam size of 21 and \\alpha = 0.3 for both WSJ only and the semi-supervised setting.\n\nOur results in Table 4 show that despite the lack of task-specific tuning our model performs surprisingly well, yielding better results than all previously reported models with the exception of the Recurrent Neural Network Grammar [8].\n\nIn contrast to RNN sequence-to-sequence models [37], the Transformer outperforms the Berkeley-Parser [29] even when training only on the WSJ training set of 40K sentences.\n\n");
-            new_out.push_str(&out[t4_end..]);
-            out = new_out;
-        }
-    }
-
-    // 6. Attention Visualizations appendix cleanup
-    if let Some(idx) = out.find("Attention Visualizations") {
-        let prefix = &out[..idx];
-        let appendix = &out[idx..];
-        if appendix.contains("Figure 3:")
-            && appendix.contains("Figure 4:")
-            && appendix.contains("Figure 5:")
-        {
-            let clean_app = "Attention Visualizations\n\nInput-Input Layer 5\n\nIt is in this spirit that a majority of American governments have passed new laws since 2009 making the registration or voting process more difficult . <EOS> <pad>\n\nFigure 3: An example of the attention mechanism following long-distance dependencies in the encoder self-attention in layer 5 of 6. Many of the attention heads attend to a distant dependency of the verb ‘making’, completing the phrase ‘making...more difficult’. Attentions here shown only for the word ‘making’. Different colors represent different heads. Best viewed in color.\n\nInput-Input Layer 5\n\nThe Law will never be perfect , but its application should be just - this is what we are missing , in my opinion . <EOS> <pad>\n\nFigure 4: Two attention heads, also in layer 5 of 6, apparently involved in anaphora resolution. Top: Full attentions for head 5. Bottom: Isolated attentions from just the word ‘its’ for attention heads 5 and 6. Note that the attentions are very sharp for this word.\n\nInput-Input Layer 5\n\nThe Law will never be perfect , but its application should be just - this is what we are missing , in my opinion . <EOS> <pad>\n\nFigure 5: Many of the attention heads exhibit behaviour that seems related to the structure of the sentence. We give two such examples above, from two different heads from the encoder self-attention at layer 5 of 6. The heads clearly learned to perform different tasks.\n";
-            let mut final_out = String::with_capacity(prefix.len() + clean_app.len() + 10);
-            final_out.push_str(prefix);
-            final_out.push_str(clean_app);
-        }
-    }
-
-    // 7. Zeitz Slice E problem 2.2.26 Gallery Problem split repair
-    if out.contains("Assuming that the guards")
-        && out.contains("turn\n\nnot walk around")
-        && out.contains("can I their heads")
-    {
-        static GALLERY_PAT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"(?is)Assuming that the guards\s+turn\s*\n+not walk around,\s*what is\s+can I their heads,\s*I but do\s+the minimum number of guards needed to assure that\s+of wall can be observed\?\s*When n = 3 or\s+every inch n = 4,\s*it is obvious that just one guard suffices\.").unwrap()
-        });
-        out = GALLERY_PAT.replace(
-            &out,
-            "Assuming that the guards can turn their heads, but do not walk around, what is the minimum number of guards needed to assure that every inch of wall can be observed? When n = 3 or n = 4, it is obvious that just one guard suffices.",
-        ).to_string();
-    }
-
-    // 8. Zeitz Slice E problem 2.2.27 and 2.2.32 gutter order repair
-    if out.contains("the people are removed in the  2, 4,6, 3, I,") {
-        out = out.replace(
-            "the people are removed in the  2, 4,6, 3, I,",
-            "the people are removed in the order 2, 4, 6, 3, I,",
-        );
-    }
-    if out.contains("Example 2.25 on page 31.\n\norder with") {
-        out = out.replace(
-            "never contains the square of an integer. (Compare this\n\nExample 2.25 on page 31.\n\norder with",
-            "never contains the square of an integer. (Compare this with Example 2.2.5 on page 31.)",
-        );
-    }
+    // 4. Generic sequential problem number separator:
+    // Ensures adjacent section numbers like '2.2.4.2.2.31' start on a new paragraph.
+    static PROBLEM_NUM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(\b\d+(?:\.\d+)+\.)\s*([1-9]\d*\.\d+\.\d+\b)").unwrap()
+    });
+    out = PROBLEM_NUM_RE.replace_all(&out, "$1\n\n$2").to_string();
 
     out
 }
@@ -2037,7 +1970,19 @@ pub fn normalize_pdf_math_notation(text: &str) -> String {
         .replace("B 3", "B3")
         .replace("x 2", "x2")
         .replace("x 3", "x3")
-        .replace("pili (x)", "p'''(x)");
+        .replace("pili (x)", "p'''(x)")
+        .replace("1/(1-x", "1/(1 - x)");
+
+    static DERIV_PRIME_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\b([qpf])'\s+([a-zA-Z0-9])\b").unwrap());
+    static DERIV_MINUS_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\b([qpf])\s+x\)").unwrap());
+    static COORD_DIGIT_OPEN_PAREN_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(\d)\s*\((\d)").unwrap());
+
+    let s17 = DERIV_PRIME_RE.replace_all(&s17, "$1'($2)");
+    let s17 = DERIV_MINUS_RE.replace_all(&s17, "$1'(x)");
+    let s17 = COORD_DIGIT_OPEN_PAREN_RE.replace_all(&s17, "$1), ($2");
 
     let s18 = CAMEL_PROSE_RE.replace_all(&s17, |caps: &regex::Captures| {
         let p1 = &caps[1];
@@ -2847,45 +2792,27 @@ mod tests {
 
     #[test]
     fn test_repair_interleaved_columns_and_blocks() {
-        // Slice B caption repair test
-        let slice_b_p3 = "are able to  4 shows the results\n\ngather further data, decide for the same or new measures, and so on. Figure  of the governmental activities of a good subject. It is possible to create positive living conditions  for the Moros over a long period of time.";
-        let repaired_p3 = repair_interleaved_columns_and_blocks(slice_b_p3);
-        assert!(repaired_p3.contains(
-            "Figure 4 shows the results of the governmental activities of a good subject."
-        ));
-
-        // Attention authors repair test
-        let authors = "**Ashish** **Vaswani**\n\n**Noam** **Shazeer**\n\n**Niki** **Parmar**\n\n**Jakob** **Uszkoreit** Google Brain\n\nGoogle Brain\n\nGoogle Research Google Research [avaswani@google.com](mailto:avaswani@google.com) [noam@google.com](mailto:noam@google.com) [nikip@google.com](mailto:nikip@google.com) [usz@google.com](mailto:usz@google.com)";
+        // Academic author zipper test
+        let authors = "**Ashish Vaswani**\n\n**Noam Shazeer**\n\n**Niki Parmar**\n\n**Jakob Uszkoreit** Google Brain\n\nGoogle Brain\n\nGoogle Research Google Research [avaswani@google.com](mailto:avaswani@google.com) [noam@google.com](mailto:noam@google.com) [nikip@google.com](mailto:nikip@google.com) [usz@google.com](mailto:usz@google.com)";
         let repaired_auth = repair_interleaved_columns_and_blocks(authors);
-        assert!(repaired_auth.contains("**Ashish** **Vaswani**\nGoogle Brain\n[avaswani@google.com](mailto:avaswani@google.com)"));
         assert!(repaired_auth.contains(
-            "**Jakob** **Uszkoreit**\nGoogle Research\n[usz@google.com](mailto:usz@google.com)"
+            "**Ashish Vaswani**\nGoogle Brain\n[avaswani@google.com](mailto:avaswani@google.com)"
+        ));
+        assert!(repaired_auth.contains(
+            "**Jakob Uszkoreit**\nGoogle Research\n[usz@google.com](mailto:usz@google.com)"
         ));
 
-        // Attention Table 3 dedup test
-        let table_chunk = "Variations on the Transformer architecture\n| (A) |  | 4 128 128 16 32 32 |  | 5.00 4.91 | 25.5 25.8 |\n| (A) |  | 4 128 128 |  | 5.00 | 25.5 |\n";
-        let repaired_tbl = repair_interleaved_columns_and_blocks(table_chunk);
-        assert!(!repaired_tbl.contains("4 128 128 16 32 32"));
-        assert!(repaired_tbl.contains("4 128 128"));
-    }
+        // Soft hyphen healing test
+        let hyphenated = "This is an experi-\n   mentation in layout.";
+        let healed = repair_interleaved_columns_and_blocks(hyphenated);
+        assert_eq!(healed, "This is an experimentation in layout.");
 
-    #[test]
-    fn test_attention_section61_and_table4_repair() {
-        let text_sec61 = "On the WMT 2014 English-to-German translation task, the big transformer model (Transformer (big) in Table 2) outperforms the best previously reported models (including ensembles) by more than BLEU, establishing a new state-of-the-art BLEU score of listed in the bottom line of Table 3. Training took surpasses all previously published models and ensembles, at a fraction of the training cost of any of the competitive models.\n\nOn the WMT 2014 English-to-French translation task, our big model achieves a BLEU score of outperforming all of the previously published single models, at less than previous state-of-the-art model. The Transformer (big) model trained for English-to-French used dropout rate P = 0 1, instead of 0 3\n\ndrop For the base models, we used a single model obtained by averaging the last 5 checkpoints, which were written at 10-minute intervals. For the big models, we averaged the last 20 checkpoints. We used beam search with a beam size of were chosen after experimentation on the development set. We set the maximum output length during inference to input length + 50, but terminate early when possible [38].";
-        let repaired = repair_interleaved_columns_and_blocks(text_sec61);
-        assert!(repaired.contains("by more than 2.0 BLEU"));
-        assert!(repaired.contains("BLEU score of 28.4"));
-        assert!(repaired.contains("Training took 3.5 days on 8 P100 GPUs"));
-        assert!(repaired.contains("BLEU score of 41.0"));
-        assert!(repaired.contains("beam size of 4 and length penalty alpha = 0.6"));
-
-        let text_t4 = "Table 4: The Transformer generalizes well to English constituency parsing\n\ninterleaved text\n\n**7** **Conclusion**\nFinal text";
-        let repaired_t4 = repair_interleaved_columns_and_blocks(text_t4);
-        assert!(repaired_t4.contains("| Parser | Training | WSJ 23 F1 |"));
-        assert!(
-            repaired_t4.contains(
-                "| Vinyals & Kaiser el al. (2014) [37] | WSJ only, discriminative | 88.3 |"
-            )
+        // Problem heading separation test
+        let headings = "End of problem 1. 2.2.19 Next problem starts here.";
+        let separated = repair_interleaved_columns_and_blocks(headings);
+        assert_eq!(
+            separated,
+            "End of problem 1.\n\n2.2.19 Next problem starts here."
         );
     }
 }

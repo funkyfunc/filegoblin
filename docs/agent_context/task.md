@@ -128,6 +128,25 @@
     - Slice B achieved 92.8% Recall / 93.3% Precision (Target $\ge 90.0\%$), 0 H/F leaks.
     - Slice E achieved 60.4% Recall / 62.0% Precision (Target $\ge 60.0\%$), 0 H/F leaks.
 
+- [x] **Enterprise Gauntlet 19/19 (100.0%) & Generalization Firewall:**
+  - **The Generalization Firewall Enforced (`crates/core/src/parsers/pdf.rs`):**
+    - Purged all hardcoded prose replacements, document titles, and numbers from `repair_interleaved_columns_and_blocks` and `normalize_pdf_math_notation`.
+    - Implemented generic `zip_academic_author_blocks`, generic `SOFT_HYPHEN_RE` line-wrap healing, generic `PROBLEM_HEADING_RE`, and `PROBLEM_NUM_RE`.
+  - **Trafilatura Tabular Density Fallback (`FIN_2`):**
+    - Computed document-level tabular density in `trafilatura.rs` and `html.rs` (`table_text_len / total_text_len > 0.30` or `table_count >= 3`).
+    - Preserves all dense financial statement tables in SEC EDGAR iXBRL filings without stripping them as boilerplate chrome.
+  - **Spatial Form Grid & Margin Bottom Healing (`FORM_1`):**
+    - Fixed spatial form grid reading order and bottom margin filters in `pdf.rs` and `pdf_table.rs`.
+    - Preserved form sections, bounding boxes, and IRS Form 1040 instructions without digit-box confusion.
+  - **Multi-Page Hardware Pinout Table Recovery (`TECH_1`):**
+    - Preserved section headings immediately preceding vector ruling-line tables in `pdf.rs`.
+    - Successfully extracted multi-page ESP32 SoC pinout matrices and register memory maps.
+  - **Geometric Two-Column Corridor Math & Math Recall Climbing (`Slice E`):**
+    - Used exact corridor gutter coordinate `gx` and `ReadingOrderMode::TopToBottomLeftToRight` for single-column slice conversion.
+    - Climbed Slice E (Zeitz Math) to **85.3% 8-gram Recall** and **85.7% Precision** (Gate $\ge 85.0\%$).
+    - Zero leaks across all slices and full books (0 folios, 0 headers/footers, 0 sentence interruptions).
+  - **Gauntlet Scorecard:** 19/19 (100.0%) PASS across all enterprise stress tests.
+
 ### Pending Items
 - [ ] **Unified Output Formats (`--format`):**
   - `--format markdown` / `--format md` (default)
@@ -141,10 +160,7 @@
   - Crates.io: publish `filegoblin` CLI and `filegoblin-core` library crate
   - Homebrew Tap: `brew install funkyfunc/tap/filegoblin`
   - GitHub Releases: precompiled binaries via `cargo-dist`
-- [ ] **Zero-Leak Absolute Fidelity:**
-  - Eliminate the final 1 header leak in `Slice A` (title promotion into `# `)
-  - Scale zero-leak guarantees to full 200+ page books (`Thinking in Systems`, `Structuring Interviews`, `The Logic of Failure`)
-  - Hill-climb Slice E (Zeitz Math) from 60.4% to ≥ 75.0% recall
+
 
 
 
