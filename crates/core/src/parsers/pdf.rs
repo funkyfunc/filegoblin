@@ -186,6 +186,66 @@ fn convert_page_text(
     doc.to_markdown(page, options).map_err(|e| e.to_string())
 }
 
+/// Joins per-page markdown chunks, healing dangling sentence fragments and hyphenated words
+/// across page boundaries.
+fn join_pages_healing_dangling(pages: &[String]) -> String {
+    let mut out = String::new();
+    for p in pages.iter() {
+        let p_trimmed = p.trim();
+        if p_trimmed.is_empty() {
+            continue;
+        }
+        if out.is_empty() {
+            out.push_str(p_trimmed);
+            continue;
+        }
+        let last_line = out
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("");
+        let first_line = p_trimmed
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("");
+        let last_trimmed = last_line.trim();
+        let first_trimmed = first_line.trim();
+        let ends_dangling = !last_trimmed.is_empty()
+            && !last_trimmed.ends_with(['.', '!', '?', ':', ';', '#'])
+            && !last_trimmed.starts_with('#')
+            && !last_trimmed.contains('|')
+            && !last_trimmed.starts_with("```")
+            && !last_trimmed.starts_with("$$");
+        let last_ends_hyphen = last_trimmed.ends_with('-');
+        let starts_lower = !first_trimmed.is_empty()
+            && (first_trimmed
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_lowercase())
+                || first_trimmed.starts_with("**"))
+            && !first_trimmed.starts_with('#')
+            && !first_trimmed.contains('|')
+            && !first_trimmed.starts_with("```")
+            && !first_trimmed.starts_with("$$");
+
+        if ends_dangling && starts_lower {
+            // Heal dangling sentence across page boundary
+            let trimmed_len = out.trim_end().len();
+            out.truncate(trimmed_len);
+            if last_ends_hyphen {
+                out.truncate(trimmed_len - 1);
+            } else {
+                out.push(' ');
+            }
+            out.push_str(p_trimmed);
+        } else {
+            out.push_str("\n\n");
+            out.push_str(p_trimmed);
+        }
+    }
+    out
+}
+
 /// PDF → markdown via `pdf_oxide`: native markdown conversion (headings, tables,
 /// reading order, hyphenation) with per-page scanned/text classification. A page
 /// classified as a scan is OCR'd from its largest embedded image — on macOS via
@@ -290,7 +350,7 @@ impl Gobble for PdfGobbler {
         filter_running_headers_and_footers(&mut pages_md);
         pages_md.retain(|p| !p.trim().is_empty());
 
-        let joined = pages_md.join("\n\n");
+        let joined = join_pages_healing_dangling(&pages_md);
         let headings_fixed = suppress_false_math_headings(&joined);
         let disentangled = disentangle_margin_callouts(&headings_fixed);
         let repaired = repair_interleaved_columns_and_blocks(&disentangled);
@@ -399,11 +459,12 @@ pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
 
     for p in pages.iter() {
         let lines: Vec<String> = p.lines().map(str::to_string).collect();
+        let margin_lines = (lines.len() * 8 / 100).max(3);
         let mut top_indices = Vec::new();
         for (i, l) in lines.iter().enumerate() {
             if !l.trim().is_empty() {
                 top_indices.push(i);
-                if top_indices.len() >= 3 {
+                if top_indices.len() >= margin_lines {
                     break;
                 }
             }
@@ -413,7 +474,7 @@ pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
         for (i, l) in lines.iter().enumerate().rev() {
             if !l.trim().is_empty() {
                 bot_indices.push(i);
-                if bot_indices.len() >= 3 {
+                if bot_indices.len() >= margin_lines {
                     break;
                 }
             }
@@ -626,10 +687,16 @@ fn levenshtein_dist(a: &str, b: &str) -> usize {
     prev[b_chars.len()]
 }
 
+static HYPHEN_FOLIO_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^\s*\*{0,2}\d+[-–]\d+\*{0,2}\s*$").unwrap());
+
 /// True if a line at a page boundary is an isolated page number/folio.
 fn is_isolated_folio(s: &str) -> bool {
     if s.contains('|') || s.starts_with('#') {
         return false;
+    }
+    if HYPHEN_FOLIO_RE.is_match(s) {
+        return true;
     }
     let clean: String = s
         .chars()
@@ -1882,7 +1949,7 @@ pub fn normalize_pdf_math_notation(text: &str) -> String {
 /// Prunes isolated single-letter lowercase noise lines (e.g. detached subscripts like 'k', 'v', 'i')
 /// that appear on their own lines outside of code fences and display math blocks.
 pub fn prune_isolated_subscript_noise(text: &str) -> String {
-    let mut result = Vec::new();
+    let mut result: Vec<String> = Vec::new();
     let mut in_code_fence = false;
     let mut in_math_block = false;
 
@@ -1891,19 +1958,19 @@ pub fn prune_isolated_subscript_noise(text: &str) -> String {
         let trimmed = line.trim();
         if trimmed.starts_with("```") {
             in_code_fence = !in_code_fence;
-            result.push(*line);
+            result.push((*line).to_string());
             continue;
         }
         if trimmed.starts_with("$$") {
             if trimmed == "$$" || (trimmed.ends_with("$$") && trimmed.len() > 2) {
                 in_math_block = !in_math_block;
             }
-            result.push(*line);
+            result.push((*line).to_string());
             continue;
         }
 
         if in_code_fence || in_math_block {
-            result.push(*line);
+            result.push((*line).to_string());
             continue;
         }
 
@@ -1917,21 +1984,35 @@ pub fn prune_isolated_subscript_noise(text: &str) -> String {
             }
         }
 
-        // Check if line is an isolated folio, chart tick, or stray number (1-4 digits, optionally bold)
+        // Check if line is an isolated folio, chart tick, or stray number (optionally bold)
         let clean_num = trimmed.trim_matches('*').trim();
-        if !clean_num.is_empty()
-            && clean_num.len() <= 4
-            && clean_num.chars().all(|c| c.is_ascii_digit())
-        {
+        let is_digits = !clean_num.is_empty() && clean_num.chars().all(|c| c.is_ascii_digit());
+        let is_folio = is_digits || HYPHEN_FOLIO_RE.is_match(trimmed);
+        if is_folio {
             let prev_blank = i == 0 || lines[i - 1].trim().is_empty();
             let next_blank = i + 1 >= lines.len() || lines[i + 1].trim().is_empty();
             if prev_blank && next_blank {
                 // Drop isolated folio / chart tick
                 continue;
             }
+            if is_digits {
+                // Standalone number line preceded by text (not heading, not table, not code, not math)
+                if let Some(prev) = result.iter_mut().rev().find(|l| !l.trim().is_empty()) {
+                    let prev_t = prev.trim();
+                    if !prev_t.starts_with('#')
+                        && !prev_t.contains('|')
+                        && !prev_t.starts_with("```")
+                        && !prev_t.starts_with("$$")
+                    {
+                        prev.push(' ');
+                        prev.push_str(clean_num);
+                        continue;
+                    }
+                }
+            }
         }
 
-        result.push(*line);
+        result.push((*line).to_string());
     }
 
     result.join("\n")
