@@ -531,6 +531,7 @@ pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
             }
         }
 
+        let mut promoted_title = false;
         let filtered: Vec<String> = p_info
             .lines
             .iter()
@@ -538,6 +539,14 @@ pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
             .filter_map(|(i, l)| {
                 if drop_indices.contains(&i) {
                     None
+                } else if page_idx == 0
+                    && !promoted_title
+                    && !l.trim().is_empty()
+                    && is_document_title_block(&p_info.lines, i)
+                    && !l.trim().starts_with('#')
+                {
+                    promoted_title = true;
+                    Some(format!("# {}", l.trim()))
                 } else {
                     Some(l.clone())
                 }
@@ -875,17 +884,19 @@ fn is_false_heading(body: &str) -> bool {
 
 /// Returns true if a line on page 0 is part of the document title / author header block.
 fn is_document_title_block(lines: &[String], idx: usize) -> bool {
-    if idx + 1 < lines.len() {
-        let next = lines[idx + 1].trim();
-        if next.contains("Author")
-            || next.contains("University")
-            || next.contains("Department")
-            || next.contains("Institute")
-            || next.contains("By ")
-            || next.contains("BY ")
-            || next.starts_with("During ")
-        {
-            return true;
+    for lookahead in 1..=3 {
+        if idx + lookahead < lines.len() {
+            let next = lines[idx + lookahead].trim();
+            if next.contains("Author")
+                || next.contains("University")
+                || next.contains("Department")
+                || next.contains("Institute")
+                || next.contains("By ")
+                || next.contains("BY ")
+                || next.starts_with("During ")
+            {
+                return true;
+            }
         }
     }
     false
