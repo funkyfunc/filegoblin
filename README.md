@@ -86,7 +86,7 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, OpenDocument, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
 - [x] PDF → markdown via `pdf_oxide`: headings, pipe tables, reading order, hyphenation — with per-page scanned-vs-text classification
 - [x] **Scanned PDFs and images OCR automatically on macOS** (Apple Vision, zero setup; parallelized page conversion, 30+ pages/s); Linux/Windows via `--features ocr`
-- [x] **PDF TeX Math Font Recovery**: Computer Modern and AMS Math glyph code restoration, CMap normalization (`\neq`, `\le`, `\ge`), scientific equation reassembly, and subscript noise elimination
+- [x] **Geometric PDF page furniture removal**: running headers/footers, page numbers, and line-number gutters (pleading paper, patents) are identified from position, cross-page recurrence, font size and alignment — before conversion — so prose, numbers and headings are never rewritten by text heuristics. Line-break hyphenation and words run together across visible gaps are repaired from page geometry plus the document's own vocabulary
 - [x] **Semantic Chapter Boundaries**: Automated detection and injection of thematic dividers and XML section markers (`<!-- filegoblin:section ... -->`)
 - [x] Word → real markdown: heading levels, nested lists, bold/italic, hyperlinks with URLs, and equations
 - [x] **Word Resilient Fallback**: Streaming OpenXML reader handling `<w:gridSpan>` merged tables and `<mc:AlternateContent>` floating text boxes

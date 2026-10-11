@@ -1,39 +1,71 @@
+//! PDF → markdown.
+//!
+//! The pipeline has three stages, and the order matters:
+//!
+//! 1. **Geometry** (per page, parallel): classify each page and collect its
+//!    words and lines with their boxes and font sizes.
+//! 2. **Furniture** (whole document): decide which lines are running headers,
+//!    footers, page numbers, or line-number gutters — from position, recurrence,
+//!    size and alignment ([`pdf_furniture`]) — and exclude those regions.
+//! 3. **Conversion** (per page, parallel): `pdf_oxide` turns the remaining text
+//!    into markdown (headings, tables, reading order); ruling-line tables are
+//!    recovered from vector paths; scanned pages go to OCR.
+//!
+//! After that the markdown is only *tidied* — page joins, block spacing, false
+//! headings. No pass in this file rewrites words, numbers, or punctuation inside
+//! prose. That rule exists because an earlier version did exactly that to pass a
+//! benchmark, and corrupted drug doses, legal citations and form references in
+//! every other PDF (see `docs/agent_context/AUDIT_REPORT.md`).
+
 use crate::parsers::gobble::{Gobble, ParseOptions};
+use crate::parsers::pdf_furniture::{self, PageGeom};
 use anyhow::{Context, Result};
 use pdf_oxide::PdfDocument;
 use pdf_oxide::extractors::PageKind;
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::RectFilterMode;
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-/// Detects a vertical contiguous 2-column band on pages with mixed layouts (e.g. single-column
-/// top/bottom with a 2-column problem section in between).
-/// Returns Some((y_top, y_bot, gutter_x)) in page coordinates.
+/// Detects a vertical two-column band on pages with mixed layouts (e.g. a
+/// single-column top and bottom with a two-column section in between).
+/// Returns `Some((y_top, y_bot, gutter_x))` in page coordinates.
+///
+/// Works on the page's words *after* furniture removal, so a line-number
+/// gutter between the columns (patents) does not read as text crossing it.
+/// Scan resolution follows the body font size rather than fixed points.
 fn detect_two_column_bands(
     doc: &PdfDocument,
     page: usize,
-    width: f32,
-    height: f32,
+    geom: &PageGeom,
+    excluded: &[Rect],
+    body: f32,
 ) -> Option<(f32, f32, f32)> {
-    // If the page has vector or extracted tables, do not attempt 2-column band slicing
+    // Pages with tables are left to the table extractor.
     if !doc.extract_tables(page).unwrap_or_default().is_empty() {
         return None;
     }
-
-    let lines = doc.extract_text_lines(page).unwrap_or_default();
-    if lines
-        .iter()
-        .any(|l| l.text.contains('|') || l.text.to_lowercase().starts_with("table "))
-    {
+    if geom.lines.iter().any(|l| l.text.contains('|')) {
         return None;
     }
 
-    let words = doc.extract_words(page).ok()?;
+    let words: Vec<&pdf_furniture::GWord> = geom
+        .words
+        .iter()
+        .filter(|w| !pdf_furniture::excluded(excluded, w.x0, w.y0, w.x1, w.y1))
+        .collect();
     if words.len() < 40 {
         return None;
     }
+
+    let (bx0, by0, bx1, by1) = geom.bx;
+    let width = bx1 - bx0;
+    let height = by1 - by0;
+    // One scan slice ≈ 1.5 text lines; margins ≈ 4.5% of the page.
+    let slice = (body * 1.6).clamp(9.0, 30.0);
+    let margin = 0.045 * height;
+    let min_gap = (body * 0.5).max(4.0);
 
     let mut best_score = 0;
     let mut best_gx_min = 0.0f32;
@@ -41,33 +73,31 @@ fn detect_two_column_bands(
     let mut best_top = 0.0f32;
     let mut best_bot = 0.0f32;
 
-    let mut gx = 0.35 * width;
-    while gx <= 0.65 * width {
+    let mut gx = bx0 + 0.35 * width;
+    while gx <= bx0 + 0.65 * width {
         let mut col_slices = Vec::new();
-        let mut y = height - 35.0;
-        while y >= 35.0 {
+        let mut y = by1 - margin;
+        while y >= by0 + margin {
             let sw: Vec<_> = words
                 .iter()
-                .filter(|w| w.bbox.y >= y - 18.0 && w.bbox.y < y)
+                .filter(|w| w.y0 >= y - slice && w.y0 < y)
                 .collect();
             let max_l = sw
                 .iter()
-                .filter(|w| w.bbox.x + w.bbox.width <= gx + 1.0)
-                .map(|w| w.bbox.x + w.bbox.width)
+                .filter(|w| w.x1 <= gx + 1.0)
+                .map(|w| w.x1)
                 .fold(0.0f32, f32::max);
             let min_r = sw
                 .iter()
-                .filter(|w| w.bbox.x >= gx - 1.0)
-                .map(|w| w.bbox.x)
+                .filter(|w| w.x0 >= gx - 1.0)
+                .map(|w| w.x0)
                 .fold(f32::INFINITY, f32::min);
-            let has_mid = sw
-                .iter()
-                .any(|w| w.bbox.x < gx - 5.0 && (w.bbox.x + w.bbox.width) > gx + 5.0);
+            let has_mid = sw.iter().any(|w| w.x0 < gx - 5.0 && w.x1 > gx + 5.0);
 
             let is_2col =
-                max_l > 0.0 && min_r < f32::INFINITY && !has_mid && (min_r - max_l) >= 6.0;
+                max_l > 0.0 && min_r < f32::INFINITY && !has_mid && (min_r - max_l) >= min_gap;
             col_slices.push((y, is_2col));
-            y -= 18.0;
+            y -= slice;
         }
 
         let mut max_window_len = 0;
@@ -88,7 +118,7 @@ fn detect_two_column_bands(
                 if len >= 8 && ratio >= 0.75 && true_count > max_window_len {
                     max_window_len = true_count;
                     window_top = col_slices[i].0;
-                    window_bot = (col_slices[j].0 - 18.0).max(30.0);
+                    window_bot = (col_slices[j].0 - slice).max(by0 + margin * 0.8);
                 }
             }
         }
@@ -117,69 +147,63 @@ fn detect_two_column_bands(
     Some((best_top, best_bot, gx))
 }
 
-/// Converts page text to markdown, slicing mixed 2-column problem bands if detected.
+/// Converts one page's text to markdown, slicing a mixed two-column band into
+/// top / left / right / bottom regions when one is detected.
 fn convert_page_text(
     doc: &PdfDocument,
     page: usize,
     options: &pdf_oxide::converters::ConversionOptions,
+    geom: Option<&PageGeom>,
+    excluded: &[Rect],
+    body: f32,
 ) -> Result<String, String> {
-    let mb = doc
-        .get_page_media_box(page)
-        .unwrap_or((0.0, 0.0, 612.0, 792.0));
-    let width = mb.2;
-    let height = mb.3;
-
-    if let Some((mut top_cut, mut bot_cut, gx)) = detect_two_column_bands(doc, page, width, height)
+    if let Some(geom) = geom
+        && let Some((mut top_cut, mut bot_cut, gx)) =
+            detect_two_column_bands(doc, page, geom, excluded, body)
     {
-        let words = doc.extract_words(page).unwrap_or_default();
-        let has_full_width_top = top_cut < height - 50.0
-            && words.iter().any(|w| {
-                w.bbox.y >= top_cut + 8.0
-                    && w.bbox.y < height - 50.0
-                    && w.bbox.x < gx - 5.0
-                    && (w.bbox.x + w.bbox.width) > gx + 5.0
-            });
+        let (bx0, by0, bx1, by1) = geom.bx;
+        let width = bx1 - bx0;
+        let height = by1 - by0;
+        let edge = 0.06 * height;
+        let crosses = |w: &&&pdf_furniture::GWord| w.x0 < gx - 5.0 && w.x1 > gx + 5.0;
+        let kept: Vec<&pdf_furniture::GWord> = geom
+            .words
+            .iter()
+            .filter(|w| !pdf_furniture::excluded(excluded, w.x0, w.y0, w.x1, w.y1))
+            .collect();
+        let has_full_width_top = top_cut < by1 - edge
+            && kept
+                .iter()
+                .filter(crosses)
+                .any(|w| w.y0 >= top_cut + 8.0 && w.y0 < by1 - edge);
         if !has_full_width_top {
-            top_cut = (top_cut + 15.0).min(height - 35.0);
+            top_cut = by1;
+        }
+        let has_full_width_bot = bot_cut > by0 + edge
+            && kept
+                .iter()
+                .filter(crosses)
+                .any(|w| w.y0 < bot_cut - 8.0 && w.y0 > by0 + 0.8 * edge);
+        if !has_full_width_bot {
+            bot_cut = by0;
         }
 
-        let has_full_width_bot = bot_cut > 50.0
-            && words.iter().any(|w| {
-                w.bbox.y < bot_cut - 8.0
-                    && w.bbox.y > 40.0
-                    && w.bbox.x < gx - 5.0
-                    && (w.bbox.x + w.bbox.width) > gx + 5.0
-            });
-        if !has_full_width_bot {
-            bot_cut = 0.0;
+        let mut regions: Vec<Rect> = Vec::new();
+        if has_full_width_top {
+            regions.push(Rect::new(bx0, top_cut, width, by1 - top_cut));
+        }
+        regions.push(Rect::new(bx0, bot_cut, gx - bx0, top_cut - bot_cut));
+        regions.push(Rect::new(gx, bot_cut, bx1 - gx, top_cut - bot_cut));
+        if has_full_width_bot {
+            regions.push(Rect::new(bx0, by0, width, bot_cut - by0));
         }
 
         let mut parts = Vec::new();
-
-        // 1. Top band (if there is significant full-width content above top_cut)
-        if has_full_width_top {
-            let mut opts = options.clone();
-            opts.include_region = Some((
-                Rect::new(0.0, top_cut, width, height - top_cut),
-                RectFilterMode::MinOverlap(0.5),
-            ));
-            if let Ok(md) = doc.to_markdown(page, &opts) {
-                let t = md.trim();
-                if !t.is_empty() {
-                    parts.push(t.to_string());
-                }
-            }
-        }
-
-        // 2. Left column
-        {
+        for r in regions {
             let mut opts = options.clone();
             opts.reading_order_mode =
                 pdf_oxide::converters::ReadingOrderMode::TopToBottomLeftToRight;
-            opts.include_region = Some((
-                Rect::new(0.0, bot_cut, gx, top_cut - bot_cut),
-                RectFilterMode::MinOverlap(0.5),
-            ));
+            opts.include_region = Some((r, RectFilterMode::MinOverlap(0.5)));
             if let Ok(md) = doc.to_markdown(page, &opts) {
                 let t = md.trim();
                 if !t.is_empty() {
@@ -187,49 +211,40 @@ fn convert_page_text(
                 }
             }
         }
-
-        // 3. Right column
-        {
-            let mut opts = options.clone();
-            opts.reading_order_mode =
-                pdf_oxide::converters::ReadingOrderMode::TopToBottomLeftToRight;
-            opts.include_region = Some((
-                Rect::new(gx, bot_cut, width - gx, top_cut - bot_cut),
-                RectFilterMode::MinOverlap(0.5),
-            ));
-            if let Ok(md) = doc.to_markdown(page, &opts) {
-                let t = md.trim();
-                if !t.is_empty() {
-                    parts.push(t.to_string());
-                }
-            }
-        }
-
-        // 4. Bottom band (if there is significant full-width content below bot_cut)
-        if has_full_width_bot {
-            let mut opts = options.clone();
-            opts.include_region = Some((
-                Rect::new(0.0, 0.0, width, bot_cut),
-                RectFilterMode::MinOverlap(0.5),
-            ));
-            if let Ok(md) = doc.to_markdown(page, &opts) {
-                let t = md.trim();
-                if !t.is_empty() {
-                    parts.push(t.to_string());
-                }
-            }
-        }
-
         if !parts.is_empty() {
             return Ok(parts.join("\n\n"));
         }
     }
 
+    // Single-column pages read top-to-bottom; anything else goes to the
+    // converter's column-aware (XY-cut) ordering.
+    if let Some(geom) = geom {
+        let (bx0, _, bx1, _) = geom.bx;
+        let width = bx1 - bx0;
+        let lines: Vec<_> = geom
+            .lines
+            .iter()
+            .filter(|l| !pdf_furniture::excluded(excluded, l.x0, l.y0, l.x1, l.y1))
+            .collect();
+        let straddle = lines
+            .iter()
+            .filter(|l| {
+                (l.x0 < bx0 + 0.45 * width && l.x1 > bx0 + 0.55 * width)
+                    || (l.x1 - l.x0) > 0.50 * width
+            })
+            .count();
+        if !lines.is_empty() && straddle * 100 / lines.len() >= 25 {
+            let mut opts = options.clone();
+            opts.reading_order_mode =
+                pdf_oxide::converters::ReadingOrderMode::TopToBottomLeftToRight;
+            return doc.to_markdown(page, &opts).map_err(|e| e.to_string());
+        }
+    }
     doc.to_markdown(page, options).map_err(|e| e.to_string())
 }
 
-/// Joins per-page markdown chunks, healing dangling sentence fragments and hyphenated words
-/// across page boundaries.
+/// Joins per-page markdown, healing a sentence that a page break cut in two:
+/// the previous page ends mid-sentence and the next begins in lowercase.
 fn join_pages_healing_dangling(pages: &[String]) -> String {
     let mut out = String::new();
     for p in pages.iter() {
@@ -252,30 +267,34 @@ fn join_pages_healing_dangling(pages: &[String]) -> String {
             .unwrap_or("");
         let last_trimmed = last_line.trim();
         let first_trimmed = first_line.trim();
+        let is_structural = |s: &str| {
+            s.starts_with('#')
+                || s.starts_with('|')
+                || s.starts_with('>')
+                || s.starts_with("```")
+                || s.starts_with("$$")
+                || s.starts_with("- ")
+                || s.starts_with("* ")
+        };
         let ends_dangling = !last_trimmed.is_empty()
-            && !last_trimmed.ends_with(['.', '!', '?', ':', ';', '#'])
-            && !last_trimmed.starts_with('#')
-            && !last_trimmed.contains('|')
-            && !last_trimmed.starts_with("```")
-            && !last_trimmed.starts_with("$$");
-        let last_ends_hyphen = last_trimmed.ends_with('-');
+            && !is_structural(last_trimmed)
+            && last_trimmed
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_alphanumeric() || matches!(c, ',' | '-' | '–'));
         let starts_lower = !first_trimmed.is_empty()
-            && (first_trimmed
+            && !is_structural(first_trimmed)
+            && first_trimmed
                 .chars()
                 .next()
-                .is_some_and(|c| c.is_lowercase())
-                || first_trimmed.starts_with("**"))
-            && !first_trimmed.starts_with('#')
-            && !first_trimmed.contains('|')
-            && !first_trimmed.starts_with("```")
-            && !first_trimmed.starts_with("$$");
+                .is_some_and(|c| c.is_lowercase());
 
         if ends_dangling && starts_lower {
-            // Heal dangling sentence across page boundary
             let trimmed_len = out.trim_end().len();
             out.truncate(trimmed_len);
-            if last_ends_hyphen {
-                out.truncate(trimmed_len - 1);
+            // A syllable hyphen at the page break joins the halves.
+            if out.ends_with('-') && out[..out.len() - 1].ends_with(|c: char| c.is_alphabetic()) {
+                out.pop();
             } else {
                 out.push(' ');
             }
@@ -289,9 +308,9 @@ fn join_pages_healing_dangling(pages: &[String]) -> String {
 }
 
 /// PDF → markdown via `pdf_oxide`: native markdown conversion (headings, tables,
-/// reading order, hyphenation) with per-page scanned/text classification. A page
-/// classified as a scan is OCR'd from its largest embedded image — on macOS via
-/// Apple Vision with no setup at all; elsewhere with `--features ocr`.
+/// reading order) with per-page scanned/text classification. A page classified
+/// as a scan is OCR'd from its embedded images — on macOS via Apple Vision with
+/// no setup at all; elsewhere with `--features ocr`.
 pub struct PdfGobbler;
 
 impl Gobble for PdfGobbler {
@@ -309,53 +328,100 @@ impl Gobble for PdfGobbler {
             anyhow::bail!("Mischievous PDF Error: the document has no pages");
         }
 
-        let options = pdf_oxide::converters::ConversionOptions {
-            detect_headings: true,
-            extract_tables: true,
-            include_images: false,
-            include_artifacts: false,
-            expand_ligatures: true,
-            ..Default::default()
-        };
-
-        let page_results: Vec<(String, bool)> = (0..page_count)
+        // Stage 1: classify pages and collect geometry for those with text.
+        let kinds: Vec<PageKind> = (0..page_count)
             .into_par_iter()
             .map(|page| {
                 // Cheap preflight: signals only, no rasterization. On any
                 // classification error, assume a text layer and let extraction try.
-                let kind = doc
-                    .classify_page(page)
+                doc.classify_page(page)
                     .map(|c| c.kind)
-                    .unwrap_or(PageKind::TextLayer);
+                    .unwrap_or(PageKind::TextLayer)
+            })
+            .collect();
+        let geoms: Vec<Option<PageGeom>> = (0..page_count)
+            .into_par_iter()
+            .map(|page| match kinds[page] {
+                PageKind::Empty => None,
+                _ => pdf_furniture::collect_page_geom(&doc, page),
+            })
+            .collect();
+
+        // Stage 2: furniture, decided across the whole document.
+        let pdf_furniture::Furniture {
+            rects: furniture,
+            gutters,
+        } = pdf_furniture::detect_furniture(&geoms);
+        let body = pdf_furniture::body_font_size(&geoms);
+
+        let base_options = pdf_oxide::converters::ConversionOptions {
+            detect_headings: true,
+            extract_tables: true,
+            include_images: false,
+            // Keep pdf_oxide's own artifact heuristics out of it: for untagged
+            // PDFs they drop any top/bottom-band line whose digit-stripped text
+            // recurs — which deletes real headings like "Section 3: Overview"
+            // on every page after the first. Furniture is decided above,
+            // geometrically, instead.
+            include_artifacts: true,
+            expand_ligatures: true,
+            ..Default::default()
+        };
+
+        // Stage 3: convert each page with its furniture excluded.
+        // (markdown, unreadable, came_from_ocr)
+        let page_results: Vec<(String, bool, bool)> = (0..page_count)
+            .into_par_iter()
+            .map(|page| {
+                let excluded = &furniture[page];
+                let geom = geoms[page].as_ref();
+                let mut options = base_options.clone();
+                options.exclude_regions = excluded.clone();
+                options.exclude_regions_mode = RectFilterMode::MinOverlap(0.5);
+                let kind = kinds[page];
 
                 match kind {
-                    PageKind::Empty => (String::new(), false),
+                    PageKind::Empty => (String::new(), false, false),
                     PageKind::Scanned => match ocr_scanned_page(&doc, page) {
-                        Some(text) if !text.trim().is_empty() => (text.trim().to_string(), false),
+                        Some(text) if !text.trim().is_empty() => {
+                            (text.trim().to_string(), false, true)
+                        }
                         _ => {
-                            let (mut md, unreadable) = match convert_page_text(&doc, page, &options)
-                            {
-                                Ok(text) if !text.trim().is_empty() => {
-                                    (text.trim().to_string(), false)
-                                }
-                                _ => (scanned_page_marker(page + 1), true),
-                            };
+                            let (mut md, unreadable) =
+                                match convert_page_text(&doc, page, &options, geom, excluded, body)
+                                {
+                                    Ok(text) if !text.trim().is_empty() => {
+                                        (text.trim().to_string(), false)
+                                    }
+                                    _ => (scanned_page_marker(page + 1), true),
+                                };
                             if !unreadable && !md.is_empty() {
-                                md = recover_page_vector_tables(&doc, page, md);
+                                md = recover_page_vector_tables(&doc, page, md, geom, excluded);
                             }
-                            (md, unreadable)
+                            (md, unreadable, false)
                         }
                     },
                     // TextLayer / ImageText / Mixed: the native converter. For
                     // hybrids, also OCR the page's image so figure text isn't lost.
                     _ => {
-                        let (mut md, unreadable) = match convert_page_text(&doc, page, &options) {
-                            Ok(text) => (text.trim().to_string(), false),
-                            Err(e) => (failed_page_marker(page + 1, &e.to_string()), true),
-                        };
+                        let (mut md, unreadable) =
+                            match convert_page_text(&doc, page, &options, geom, excluded, body) {
+                                Ok(text) => (
+                                    rejoin_letter_spacing(
+                                        &pdf_furniture::remove_gutter_numbers(
+                                            text.trim(),
+                                            &gutters[page],
+                                        ),
+                                        geom,
+                                    ),
+                                    false,
+                                ),
+                                Err(e) => (failed_page_marker(page + 1, &e), true),
+                            };
                         if !unreadable && !md.is_empty() {
-                            md = recover_page_vector_tables(&doc, page, md);
+                            md = recover_page_vector_tables(&doc, page, md, geom, excluded);
                         }
+                        let mut from_ocr = false;
                         if matches!(kind, PageKind::ImageText)
                             && md.split_whitespace().count() < 40
                             && let Some(ocr) = ocr_scanned_page(&doc, page)
@@ -366,42 +432,50 @@ impl Gobble for PdfGobbler {
                         {
                             if md.is_empty() {
                                 md = ocr.trim().to_string();
+                                from_ocr = true;
                             } else {
                                 md.push_str("\n\n> **Text from embedded image:**\n> ");
                                 md.push_str(&ocr.trim().replace('\n', "\n> "));
                             }
                         }
-                        (md, unreadable)
+                        (md, unreadable, from_ocr)
                     }
                 }
             })
             .collect();
 
         let mut pages_md: Vec<String> = Vec::with_capacity(page_results.len());
+        let mut ocr_flags: Vec<bool> = Vec::with_capacity(page_results.len());
         let mut unreadable_pages = 0usize;
-
-        for (page_md, unreadable) in page_results {
+        for (page_md, unreadable, from_ocr) in page_results {
             if unreadable {
                 unreadable_pages += 1;
             }
             if !page_md.trim().is_empty() {
-                pages_md.push(suppress_false_math_headings(&page_md));
+                pages_md.push(page_md);
+                ocr_flags.push(from_ocr);
             }
         }
 
-        filter_running_headers_and_footers(&mut pages_md);
+        // OCR'd pages carry no geometry here, so their furniture is found from
+        // the text alone (outermost lines, recurrence, page-number sequence).
+        pdf_furniture::strip_text_furniture(&mut pages_md, &ocr_flags);
         pages_md.retain(|p| !p.trim().is_empty());
 
-        let joined = join_pages_healing_dangling(&pages_md);
-        let headings_fixed = suppress_false_math_headings(&joined);
-        let disentangled = disentangle_margin_callouts(&headings_fixed);
-        let bold_merged = merge_adjacent_bold_spans(&disentangled);
-        let repaired = repair_interleaved_columns_and_blocks(&bold_merged);
-        let formatted_text = format_table_and_block_boundaries(&repaired);
-        let sectioned_text = insert_semantic_section_boundaries(&formatted_text);
-        let math_normalized = normalize_pdf_math_notation(&sectioned_text);
-        let final_text = math_normalized.trim().to_string();
-        if final_text.is_empty() {
+        let hyphen_breaks: HashSet<(String, String)> = geoms
+            .iter()
+            .zip(furniture.iter())
+            .filter_map(|(g, f)| g.as_ref().map(|g| pdf_furniture::hyphen_breaks(g, f)))
+            .flatten()
+            .collect();
+        let glued: HashMap<String, String> = geoms
+            .iter()
+            .flatten()
+            .flat_map(|g| g.glued.iter().cloned())
+            .collect();
+        let joined = split_glued_tokens(&join_pages_healing_dangling(&pages_md), &glued);
+        let tidy = tidy_markdown(&joined, &hyphen_breaks);
+        if tidy.is_empty() {
             if unreadable_pages > 0 {
                 anyhow::bail!(
                     "All {} page(s) are scanned images and OCR is unavailable in this build \
@@ -411,8 +485,81 @@ impl Gobble for PdfGobbler {
             }
             anyhow::bail!("No text could be extracted from this PDF (corrupt or encrypted?)");
         }
-        Ok(final_text)
+        Ok(tidy)
     }
+}
+
+/// Repairs word spacing from the page geometry: rejoins letter-spaced
+/// headings (`S U M M A R Y` → `SUMMARY`) and splits words the converter ran
+/// together across a visible gap (`theUnionPacific` → `the Union Pacific`).
+fn rejoin_letter_spacing(md: &str, geom: Option<&PageGeom>) -> String {
+    let Some(geom) = geom else {
+        return md.to_string();
+    };
+    let mut out = md.to_string();
+    let mut runs = pdf_furniture::letter_spaced_runs(geom);
+    runs.sort_by_key(|r| std::cmp::Reverse(r.0.len()));
+    for (spaced, joined) in runs {
+        out = out.replace(&spaced, &joined);
+    }
+    out
+}
+
+/// Splits tokens the converter ran together across visible word gaps
+/// (`theUnionPacificRailroad` → `the Union Pacific Railroad`). A token is
+/// split only when it equals a gap-separated run of words on its page
+/// (`glued`) *and* every split point is also visible in the characters: a
+/// lowercase→uppercase change, a letter↔digit change, punctuation followed by
+/// a letter or digit, or an acronym running into a lowercase word. Word boxes
+/// alone are not trusted — some fonts (ligatures, bad width tables) give the
+/// extractor gaps inside "feedback" or "coffee".
+fn split_glued_tokens(md: &str, glued: &HashMap<String, String>) -> String {
+    if glued.is_empty() {
+        return md.to_string();
+    }
+    fn boundary_visible(left: &str, right: &str) -> bool {
+        let (Some(a), Some(b)) = (left.chars().last(), right.chars().next()) else {
+            return false;
+        };
+        let acronym = left.chars().filter(|c| c.is_alphabetic()).count() >= 2
+            && left
+                .chars()
+                .filter(|c| c.is_alphabetic())
+                .all(|c| c.is_uppercase());
+        (a.is_lowercase() && b.is_uppercase())
+            || (a.is_alphabetic() && b.is_ascii_digit())
+            || (a.is_ascii_digit() && b.is_alphabetic())
+            || (matches!(a, '.' | ',' | ';' | ':' | ')' | '”') && b.is_alphanumeric())
+            || (acronym && b.is_lowercase())
+    }
+    static TOKEN_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"[^\s|*_`()\[\]]{6,}").unwrap());
+    TOKEN_RE
+        .replace_all(md, |c: &regex::Captures| {
+            let tok = &c[0];
+            let Some(spaced) = glued.get(tok) else {
+                return tok.to_string();
+            };
+            let parts: Vec<&str> = spaced.split(' ').collect();
+            let ok = parts
+                .iter()
+                .all(|p| p.chars().any(|ch| ch.is_alphanumeric()))
+                && parts.windows(2).all(|w| boundary_visible(w[0], w[1]));
+            if ok { spaced.clone() } else { tok.to_string() }
+        })
+        .into_owned()
+}
+
+/// Structure-only clean-up of the joined markdown. Each pass leaves the words
+/// of the document untouched.
+pub(crate) fn tidy_markdown(md: &str, hyphen_breaks: &HashSet<(String, String)>) -> String {
+    let headings_fixed = suppress_false_headings(md);
+    let bold_merged = merge_adjacent_bold_spans(&headings_fixed);
+    let unwrapped = unwrap_false_prose_code_blocks(&bold_merged);
+    let dehyphenated = dehyphenate_line_breaks(&unwrapped, hyphen_breaks);
+    let formatted = format_table_and_block_boundaries(&dehyphenated);
+    let sectioned = insert_semantic_section_boundaries(&formatted);
+    prune_isolated_letter_lines(&sectioned).trim().to_string()
 }
 
 /// Lowercased, whitespace-collapsed prefix for cheap "already present" checks.
@@ -439,438 +586,10 @@ fn failed_page_marker(display_page: usize, err: &str) -> String {
     )
 }
 
-/// Strips running headers, page folios, and publisher/production slugs at page boundaries.
-///
-/// Deterministic two-pass filter:
-/// 1. Collect candidate header lines (top 1-3 non-empty lines) and footer lines
-///    (bottom 1-3 non-empty lines) across all pages.
-/// 2. Count frequency of normalized header/footer candidates (stripping numbers/folios).
-/// 3. Strip lines matching:
-///    - Standalone folios/page numbers at page boundaries (e.g. `14`, `**15**`, `I 18 I`, `[17]`).
-///    - Known publisher/production slugs (e.g. `TIS final pgs`, `CCC 0884-8173`, `INTERNATIONAL JOURNAL OF`, `Phil. Trans.`).
-///    - Repeated running headers/footers occurring on multiple pages (>= 2 pages).
-///    - Header lines with embedded folios where the text matches another page's header.
-pub(crate) fn filter_running_headers_and_footers(pages: &mut [String]) {
-    if pages.is_empty() {
-        return;
-    }
-    if pages.len() == 1 {
-        // Single-page document: only strip standalone folios and slugs at top/bottom
-        if let Some(p) = pages.first_mut() {
-            let mut lines: Vec<String> = p.lines().map(str::to_string).collect();
-            let mut drop = HashSet::new();
-            for (i, l) in lines.iter().enumerate().take(2) {
-                if l.starts_with('#') || l.contains('|') {
-                    continue;
-                }
-                if is_isolated_folio(l) || is_publisher_or_production_slug(l) {
-                    drop.insert(i);
-                }
-            }
-            let len = lines.len();
-            if len > 2 {
-                for (i, l) in lines.iter().enumerate().skip(len - 2) {
-                    if l.starts_with('#') || l.contains('|') {
-                        continue;
-                    }
-                    if is_isolated_folio(l) || is_publisher_or_production_slug(l) {
-                        drop.insert(i);
-                    }
-                }
-            }
-            if !drop.is_empty() {
-                lines = lines
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(i, l)| if drop.contains(&i) { None } else { Some(l) })
-                    .collect();
-                *p = lines.join("\n").trim().to_string();
-            }
-        }
-        return;
-    }
-
-    struct PageLines {
-        lines: Vec<String>,
-        top_indices: Vec<usize>,
-        bot_indices: Vec<usize>,
-    }
-
-    let mut parsed: Vec<PageLines> = Vec::with_capacity(pages.len());
-    let mut top_candidates_per_page: Vec<Vec<(usize, String)>> = Vec::with_capacity(pages.len());
-    let mut bot_candidates_per_page: Vec<Vec<(usize, String)>> = Vec::with_capacity(pages.len());
-
-    for p in pages.iter() {
-        let lines: Vec<String> = p.lines().map(str::to_string).collect();
-        let margin_lines = (lines.len() * 8 / 100).max(3);
-        let mut top_indices = Vec::new();
-        for (i, l) in lines.iter().enumerate() {
-            if !l.trim().is_empty() {
-                top_indices.push(i);
-                if top_indices.len() >= margin_lines {
-                    break;
-                }
-            }
-        }
-
-        let mut bot_indices = Vec::new();
-        for (i, l) in lines.iter().enumerate().rev() {
-            if !l.trim().is_empty() {
-                bot_indices.push(i);
-                if bot_indices.len() >= margin_lines {
-                    break;
-                }
-            }
-        }
-
-        let mut page_top = Vec::new();
-        for &i in &top_indices {
-            let l = &lines[i];
-            let clean = l.trim().trim_start_matches('#').trim();
-            if !clean.contains('|') && clean.split_whitespace().count() <= 12 && clean.len() <= 80 {
-                let norm = normalize_header_candidate(clean);
-                if norm.len() >= 4 {
-                    page_top.push((i, norm));
-                }
-            }
-        }
-
-        let mut page_bot = Vec::new();
-        for &i in &bot_indices {
-            let l = &lines[i];
-            let clean = l.trim().trim_start_matches('#').trim();
-            if !clean.contains('|') && clean.split_whitespace().count() <= 12 && clean.len() <= 80 {
-                let norm = normalize_header_candidate(clean);
-                if norm.len() >= 4 {
-                    page_bot.push((i, norm));
-                }
-            }
-        }
-
-        parsed.push(PageLines {
-            lines,
-            top_indices,
-            bot_indices,
-        });
-        top_candidates_per_page.push(page_top);
-        bot_candidates_per_page.push(page_bot);
-    }
-
-    // Determine which top candidates repeat across distinct pages
-    let num_pages = pages.len();
-    let mut repeating_top: HashSet<(usize, usize)> = HashSet::new(); // (page_idx, line_idx)
-    for p1 in 0..num_pages {
-        for &(idx1, ref cand1) in &top_candidates_per_page[p1] {
-            for (p2, cand2_list) in top_candidates_per_page.iter().enumerate().skip(p1 + 1) {
-                for &(idx2, ref cand2) in cand2_list {
-                    if headers_match(cand1, cand2) {
-                        repeating_top.insert((p1, idx1));
-                        repeating_top.insert((p2, idx2));
-                    }
-                }
-            }
-        }
-    }
-
-    let mut repeating_bot: HashSet<(usize, usize)> = HashSet::new(); // (page_idx, line_idx)
-    for p1 in 0..num_pages {
-        for &(idx1, ref cand1) in &bot_candidates_per_page[p1] {
-            for (p2, cand2_list) in bot_candidates_per_page.iter().enumerate().skip(p1 + 1) {
-                for &(idx2, ref cand2) in cand2_list {
-                    if headers_match(cand1, cand2) {
-                        repeating_bot.insert((p1, idx1));
-                        repeating_bot.insert((p2, idx2));
-                    }
-                }
-            }
-        }
-    }
-
-    for (page_idx, p_info) in parsed.iter_mut().enumerate() {
-        let mut drop_indices = HashSet::new();
-
-        // Pre-pass: clean or drop trailing slugs in boundary lines
-        for &idx in p_info.top_indices.iter().chain(p_info.bot_indices.iter()) {
-            let line = &p_info.lines[idx];
-            if let Some(cleaned) = clean_trailing_production_slug(line) {
-                p_info.lines[idx] = cleaned;
-            }
-        }
-
-        for &idx in &p_info.top_indices {
-            let line = p_info.lines[idx].trim();
-            if line.is_empty() {
-                drop_indices.insert(idx);
-                continue;
-            }
-            if line.starts_with('#') || line.contains('|') {
-                continue;
-            }
-            if is_isolated_folio(line) || is_publisher_or_production_slug(line) {
-                drop_indices.insert(idx);
-                continue;
-            }
-            if repeating_top.contains(&(page_idx, idx))
-                && (page_idx > 0 || !is_document_title_block(&p_info.lines, idx))
-            {
-                drop_indices.insert(idx);
-            }
-        }
-
-        for &idx in &p_info.bot_indices {
-            let line = p_info.lines[idx].trim();
-            if line.is_empty() {
-                drop_indices.insert(idx);
-                continue;
-            }
-            if line.starts_with('#') || line.contains('|') {
-                continue;
-            }
-            if is_isolated_folio(line) || is_publisher_or_production_slug(line) {
-                drop_indices.insert(idx);
-                continue;
-            }
-            if repeating_bot.contains(&(page_idx, idx)) {
-                drop_indices.insert(idx);
-            }
-        }
-
-        let mut promoted_title = false;
-        let filtered: Vec<String> = p_info
-            .lines
-            .iter()
-            .enumerate()
-            .filter_map(|(i, l)| {
-                if drop_indices.contains(&i) {
-                    None
-                } else if page_idx == 0
-                    && !promoted_title
-                    && !l.trim().is_empty()
-                    && is_document_title_block(&p_info.lines, i)
-                    && !l.trim().starts_with('#')
-                {
-                    promoted_title = true;
-                    Some(format!("# {}", l.trim()))
-                } else {
-                    Some(l.clone())
-                }
-            })
-            .collect();
-        pages[page_idx] = filtered.join("\n").trim().to_string();
-    }
-}
-
-static TRAILING_SLUG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"(?i)(?:\s+(?:[A-Za-z0-9_-]+\s+)?final\s+pgs.*?|\s+\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?|\s+\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?)+$").unwrap()
-});
-
-static STANDALONE_SLUG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"(?i)^\s*(?:(?:[A-Za-z0-9_-]+\s+)?final\s+pgs.*?|\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?|\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?)\s*$").unwrap()
-});
-
-fn clean_trailing_production_slug(s: &str) -> Option<String> {
-    if STANDALONE_SLUG_RE.is_match(s) {
-        return Some(String::new());
-    }
-    if let Some(m) = TRAILING_SLUG_RE.find(s) {
-        let clean = s[..m.start()].trim_end();
-        return Some(clean.to_string());
-    }
-    None
-}
-
-/// Matches two candidate header strings with exact match, substring, or bounded Levenshtein distance.
-fn headers_match(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    // Compare compact versions with all whitespace removed to bridge kerning splits
-    let a_compact: String = a.chars().filter(|c| !c.is_whitespace()).collect();
-    let b_compact: String = b.chars().filter(|c| !c.is_whitespace()).collect();
-    if a_compact.len() >= 6 && b_compact.len() >= 6 {
-        if a_compact == b_compact
-            || a_compact.contains(&b_compact)
-            || b_compact.contains(&a_compact)
-        {
-            return true;
-        }
-        let max_len = a_compact.len().max(b_compact.len());
-        if max_len >= 8 && levenshtein_dist(&a_compact, &b_compact) <= 2 {
-            return true;
-        }
-    }
-    if a.len() >= 4 && b.len() >= 4 {
-        let max_len = a.len().max(b.len());
-        let min_len = a.len().min(b.len());
-        if (min_len as f64) >= (max_len as f64) * 0.6 {
-            if a.contains(b) || b.contains(a) {
-                return true;
-            }
-            if max_len >= 8 && levenshtein_dist(a, b) <= 2 {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Simple edit distance for OCR glyph variation tolerance.
-fn levenshtein_dist(a: &str, b: &str) -> usize {
-    let b_chars: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b_chars.len()).collect();
-    let mut curr = vec![0; b_chars.len() + 1];
-    for (i, ca) in a.chars().enumerate() {
-        curr[0] = i + 1;
-        for (j, &cb) in b_chars.iter().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        prev.copy_from_slice(&curr);
-    }
-    prev[b_chars.len()]
-}
-
-static HYPHEN_FOLIO_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^\s*\*{0,2}\d+[-–]\d+\*{0,2}\s*$").unwrap());
-
-/// True if a line at a page boundary is an isolated page number/folio.
-fn is_isolated_folio(s: &str) -> bool {
-    if s.contains('|') || s.starts_with('#') {
-        return false;
-    }
-    if HYPHEN_FOLIO_RE.is_match(s) {
-        return true;
-    }
-    let clean: String = s
-        .chars()
-        .filter(|c| !matches!(c, '*' | '_' | '[' | ']' | '(' | ')' | '{' | '}' | '`'))
-        .collect();
-    let trimmed = clean.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    // Pure ASCII digits: "14", "72"
-    if trimmed.chars().all(|c| c.is_ascii_digit()) {
-        return true;
-    }
-    // OCR folios with glyph confusions: 'l' -> '1', 'I' -> '1', 'O' -> '0'
-    let folded = trimmed.replace(['l', 'I'], "1").replace('O', "0");
-    let parts: Vec<&str> = folded.split_whitespace().collect();
-    let has_digit = parts.iter().any(|p| p.chars().any(|c| c.is_ascii_digit()));
-    if has_digit
-        && parts.iter().all(|p| {
-            p.chars()
-                .all(|c| c.is_ascii_digit() || c == '-' || c == '–' || c == '—')
-        })
-    {
-        return true;
-    }
-    // Roman numerals (up to 8 chars) e.g. "xv", "xvi", "iv", "ix"
-    let lower = trimmed.to_lowercase();
-    if !lower.is_empty()
-        && lower.len() <= 8
-        && lower
-            .chars()
-            .all(|c| matches!(c, 'i' | 'v' | 'x' | 'l' | 'c' | 'd' | 'm'))
-    {
-        return true;
-    }
-    // "Page 14" / "Page 14 of 20" / "pg 14"
-    if lower.starts_with("page ") || lower.starts_with("pg ") || lower.starts_with("pg. ") {
-        return true;
-    }
-    false
-}
-
-/// True if a line matches known publisher/production slugs or metadata markings at page boundaries.
-fn is_publisher_or_production_slug(s: &str) -> bool {
-    let lower = s.to_lowercase();
-    // Book production marks e.g. "TIS final pgs 14 5/2/09 10:37:35"
-    if lower.contains("final pgs") {
-        return true;
-    }
-    // Journal publication slugs
-    if lower.contains("international journal of") || lower.contains("phil. trans. r. soc") {
-        return true;
-    }
-    // Copyright clearance codes e.g. "CCC 0884-8173"
-    if lower.contains("ccc 0884-") || (lower.contains("ccc ") && s.contains('-')) {
-        return true;
-    }
-    // Corresponding author footnote at page bottom
-    if lower.contains("corresponding author") || lower.contains("reprint requests") {
-        return true;
-    }
-    // JSTOR header / footer
-    if lower.contains("stable url:")
-        || (lower.contains("jstor") && lower.contains("terms and conditions"))
-    {
-        return true;
-    }
-    // Volume / issue line at bottom/top e.g. "Vol. 327. B" or "Printed in Great Britain"
-    let clean = s
-        .trim()
-        .trim_matches(|c| matches!(c, '*' | '_' | '#' | '`'))
-        .trim();
-    if clean.starts_with("Vol.")
-        || clean.starts_with("V0l.")
-        || clean.starts_with("Printed in Great Britain")
-    {
-        return true;
-    }
-    false
-}
-
-/// Normalizes a candidate header line for cross-page recurrence matching.
-/// Strips folios, numbers, punctuation, markdown markers, folds OCR glyphs,
-/// and repairs kerning gaps.
-fn normalize_header_candidate(s: &str) -> String {
-    let despaced = despace_uppercase_kerning(s);
-    let clean = despaced
-        .trim()
-        .trim_matches(|c| matches!(c, '*' | '_' | '#' | '`' | '|'))
-        .trim();
-    // Fold OCR glyph confusions (l <-> i)
-    let folded = clean.to_lowercase().replace('l', "i");
-    // Strip leading/trailing digits, folios, dashes, dots, colons
-    let chars: Vec<char> = folded.chars().collect();
-    let start = chars
-        .iter()
-        .position(|c| {
-            !c.is_ascii_digit() && !c.is_whitespace() && *c != '-' && *c != '.' && *c != ':'
-        })
-        .unwrap_or(0);
-    let end = chars
-        .iter()
-        .rposition(|c| {
-            !c.is_ascii_digit() && !c.is_whitespace() && *c != '-' && *c != '.' && *c != ':'
-        })
-        .map(|p| p + 1)
-        .unwrap_or(chars.len());
-    if start >= end {
-        return String::new();
-    }
-    chars[start..end]
-        .iter()
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-static KERNING_UPPERCASE_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"\b[A-Z](?:\s+[A-Z])+\b").unwrap());
-
-pub(crate) fn despace_uppercase_kerning(s: &str) -> String {
-    KERNING_UPPERCASE_RE
-        .replace_all(s, |caps: &regex::Captures| caps[0].replace(' ', ""))
-        .into_owned()
-}
-
-/// Suppresses false markdown heading promotions (e.g. mathematical formulas,
-/// balanced parentheses with matrix operations, dangling open parens, lowercase continuations)
-/// that pdf_oxide misclassifies as headings based on font size or styling.
-pub(crate) fn suppress_false_math_headings(md: &str) -> String {
+/// Demotes markdown headings that cannot be headings. `pdf_oxide` promotes text
+/// to a heading from font size alone, so a large formula, a big KPI number, or a
+/// paragraph set in a display face can arrive as `#`.
+pub(crate) fn suppress_false_headings(md: &str) -> String {
     let mut out = Vec::new();
     let mut in_code_fence = false;
 
@@ -888,7 +607,6 @@ pub(crate) fn suppress_false_math_headings(md: &str) -> String {
 
         let level = trimmed.chars().take_while(|&c| c == '#').count();
         let body = trimmed[level..].trim();
-
         if is_false_heading(body) {
             out.push(body.to_string());
         } else {
@@ -899,117 +617,28 @@ pub(crate) fn suppress_false_math_headings(md: &str) -> String {
 }
 
 fn is_false_heading(body: &str) -> bool {
-    if body.is_empty() {
+    let plain = body.trim_matches(|c| matches!(c, '*' | '_' | '`')).trim();
+    if plain.is_empty() {
         return true;
     }
-
-    // 1. Lowercase start is NEVER a legitimate heading in extracted documents;
-    // it indicates a broken sentence continuation (e.g. "say about q(x)", "and is always nonnegative", "ten)?")
-    if let Some(first_char) = body.chars().next() {
-        if first_char.is_lowercase() {
-            return true;
-        }
-    }
-
-    // 2. Open delimiter or dangling operator at end of line (e.g. "Prove that if p(")
-    if body.ends_with('(')
-        || body.ends_with('[')
-        || body.ends_with('{')
-        || body.ends_with('+')
-        || body.ends_with('-')
-        || body.ends_with('=')
-        || body.ends_with('\\')
-        || body.ends_with(',')
-        || body.ends_with(")?")
-    {
+    // No letters at all: a number, date, or symbol run ("52,000", "2023").
+    if !plain.chars().any(|c| c.is_alphabetic()) {
         return true;
     }
-
-    // 3. Mathematical operators: =, \neq, \le, \ge, \times, \cdot, \pm, \approx, \sim
-    if body.contains('=')
-        || body.contains(r"\neq")
-        || body.contains(r"\le")
-        || body.contains(r"\ge")
-        || body.contains(r"\times")
-        || body.contains(r"\cdot")
-        || body.contains(r"\pm")
-        || body.contains(r"\approx")
-        || body.contains(r"\sim")
-        || body.contains(r"\partial")
-    {
+    // A heading does not start mid-sentence…
+    if plain.chars().next().is_some_and(|c| c.is_lowercase()) {
         return true;
     }
-
-    // 4. Standalone short variable / matrix expressions (<= 4 chars without standard words, e.g. "AB2")
-    if body.len() <= 4 && !body.chars().any(|c| c.is_whitespace()) {
-        let is_all_caps_or_digits = body
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-        if is_all_caps_or_digits {
-            return true;
-        }
-    }
-
-    // 5. Primed variables or function notation like p', f', q', or nested math parens
-    if body.contains("''")
-        || body.contains("((")
-        || body.contains("))")
-        || body.contains("p'")
-        || body.contains("q'")
-        || body.contains("f'")
-        || body.contains("x'")
-    {
+    // …or stop on a dangling operator / open bracket / comma.
+    if plain.ends_with(['(', '[', '{', '+', '=', '\\', ',']) {
         return true;
     }
-
-    // 6. Math function syntax like p(x), q(x), f(x), t(I)
-    if body.contains("p(")
-        || body.contains("q(")
-        || body.contains("f(")
-        || body.contains("t(")
-        || body.contains("q(x")
-        || body.contains("p(x")
-    {
+    // Equations and formulas.
+    if plain.contains('=') || plain.contains('\\') {
         return true;
     }
-
-    // 7. Math operators + or - embedded in expressions
-    if body.contains('+')
-        || body.contains(" - ")
-        || body.contains(" -B")
-        || body.contains(" -p")
-        || body.contains("+B")
-        || body.contains("+b")
-    {
-        return true;
-    }
-
-    // 8. OCR corrupted formula fragments like "# q(n)ll JJ (n=I,2" or "# IIto 2.2.24"
-    if body.contains("ll JJ") || body.contains("IIto") {
-        return true;
-    }
-
-    false
-}
-
-/// Returns true if a line on page 0 is part of the document title / author header block.
-fn is_document_title_block(lines: &[String], idx: usize) -> bool {
-    for lookahead in 1..=3 {
-        if idx + lookahead < lines.len() {
-            let next = lines[idx + lookahead].trim();
-            if next.contains("Author")
-                || next.contains("University")
-                || next.contains("Department")
-                || next.contains("Institute")
-                || next.contains("By ")
-                || next.contains("BY ")
-                || next.starts_with("During ")
-            {
-                return true;
-            }
-        }
-    }
-    false
+    // A whole paragraph set in a large face.
+    plain.split_whitespace().count() > 25
 }
 
 /// OCRs a scanned page from its **embedded images** rather than rasterizing —
@@ -1081,116 +710,6 @@ fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
 /// hundreds of similarly-sized tiles; OCR is the slowest thing this tool does.
 const MAX_OCR_IMAGES_PER_PAGE: usize = 8;
 
-/// Disentangles bold margin callout / pull-quote fragments that were horizontally merged
-/// into the start of body text lines by PDF text stream ordering.
-pub(crate) fn disentangle_margin_callouts(md: &str) -> String {
-    static INTERLEAVED_START_RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"^\*\*[A-Z][^*]+\*\*\s+[a-z]").unwrap());
-    static CALLOUT_SPLIT_RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"(\*\*[^*]+\*\*)").unwrap());
-    static PUNCT_SPACE_RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"\s+([.,;:!?])").unwrap());
-    static HYPHEN_MERGE_RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"(\w+)-\s+(\w+)").unwrap());
-
-    let lines: Vec<&str> = md.lines().collect();
-    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 8);
-    let mut i = 0;
-
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed = line.trim();
-
-        let is_interleaved = INTERLEAVED_START_RE.is_match(trimmed)
-            || (trimmed.starts_with("**A stock is the memory of**"));
-
-        if is_interleaved {
-            let mut block_lines = vec![line];
-            let mut j = i + 1;
-
-            while j < lines.len() {
-                let nl = lines[j].trim();
-                if nl.is_empty() {
-                    if j + 1 < lines.len() && lines[j + 1].trim().starts_with("**") {
-                        j += 1;
-                        continue;
-                    } else {
-                        break;
-                    }
-                }
-                if nl.starts_with("**") {
-                    block_lines.push(lines[j]);
-                    j += 1;
-                } else {
-                    break;
-                }
-            }
-
-            let mut all_bolds: Vec<String> = Vec::new();
-            let mut all_plains: Vec<&str> = Vec::new();
-
-            for bl in block_lines {
-                let mut last = 0;
-                for mat in CALLOUT_SPLIT_RE.find_iter(bl) {
-                    let before = &bl[last..mat.start()];
-                    let before_trimmed = before.trim();
-                    if before_trimmed == "." {
-                        if let Some(last_bold) = all_bolds.last_mut() {
-                            last_bold.push('.');
-                        }
-                    } else if !before_trimmed.is_empty() {
-                        all_plains.push(before_trimmed);
-                    }
-
-                    let token = mat.as_str();
-                    let clean = token.trim_matches('*').trim();
-                    if (clean == "flow" || clean == "stock" || clean == "flows")
-                        && bl.contains("actions of")
-                    {
-                        all_plains.push(token);
-                    } else if !clean.is_empty() {
-                        all_bolds.push(clean.to_string());
-                    }
-
-                    last = mat.end();
-                }
-
-                if last < bl.len() {
-                    let rem = bl[last..].trim();
-                    if rem == "." {
-                        if let Some(last_bold) = all_bolds.last_mut() {
-                            last_bold.push('.');
-                        }
-                    } else if !rem.is_empty() {
-                        all_plains.push(rem);
-                    }
-                }
-            }
-
-            let raw_bold = all_bolds.join(" ");
-            let dehyphen_bold = HYPHEN_MERGE_RE.replace_all(&raw_bold, "$1$2");
-            let clean_bold = PUNCT_SPACE_RE.replace_all(&dehyphen_bold, "$1");
-
-            let raw_plain = all_plains.join(" ");
-            let dehyphen_plain = HYPHEN_MERGE_RE.replace_all(&raw_plain, "$1$2");
-            let clean_plain = PUNCT_SPACE_RE.replace_all(&dehyphen_plain, "$1");
-
-            out.push(clean_plain.to_string());
-            out.push(String::new());
-            out.push(format!("> **{}**", clean_bold));
-            out.push(String::new());
-
-            i = j;
-            continue;
-        }
-
-        out.push(line.to_string());
-        i += 1;
-    }
-
-    out.join("\n")
-}
-
 /// Merges adjacent bold spans separated only by horizontal whitespace on the same line,
 /// e.g. `**Standard**  **deduction for—**` -> `**Standard deduction for—**`.
 pub(crate) fn merge_adjacent_bold_spans(md: &str) -> String {
@@ -1206,92 +725,167 @@ pub(crate) fn merge_adjacent_bold_spans(md: &str) -> String {
     result
 }
 
-/// Zips multi-column academic author blocks into sequential Author-Affiliation-Email units.
-pub(crate) fn zip_academic_author_blocks(md: &str) -> String {
-    static MAILTO_CLUSTER_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?is)((?:\*\*[A-Z][^\*\n]+\*\*\s*\n*)+)(.*?)((?:\[[a-zA-Z0-9._%+-]+@[^\]]+\]\(mailto:[^\)]+\)\s*)+)").unwrap()
+/// Joins words split by a hyphen at a line break (`infor-` / `mation`).
+///
+/// Which hyphens were line breaks is known from the page geometry: a line
+/// ending in `word-` followed by a line starting with a lowercase word
+/// (`hyphen_breaks`, collected per page). In the markdown those pairs may
+/// already be glued back together by the converter (`infor-mation`) or still
+/// sit across a newline. A hyphen that was *not* at a line end is a real
+/// compound and is never touched; across a markdown newline every pair is a
+/// candidate.
+///
+/// To tell a syllable break from a compound broken at its hyphen, the
+/// document's own vocabulary decides:
+/// * the joined form occurs elsewhere in the document → join (`information`);
+/// * the hyphenated form occurs elsewhere, both halves occur as words of their
+///   own, or the left part is already a compound (`state-of-the-`) → keep the
+///   hyphen (`well-known`, `state-of-the-art`);
+/// * otherwise → join, since syllable breaks are far more common.
+pub(crate) fn dehyphenate_line_breaks(
+    md: &str,
+    hyphen_breaks: &HashSet<(String, String)>,
+) -> String {
+    static BREAK_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"([\p{L}][\p{L}-]*)([ \t]?)-([ \t]*\n?[ \t]*)(\p{Ll}[\p{L}]*)").unwrap()
     });
-    static NAME_RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"\*\*([A-Z][^\*\n]+)\*\*").unwrap());
-    static MAILTO_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"\[[a-zA-Z0-9._%+-]+@[^\]]+\]\(mailto:[^\)]+\)").unwrap()
-    });
-
-    MAILTO_CLUSTER_RE
-        .replace_all(md, |caps: &regex::Captures| {
-            let names_block = &caps[1];
-            let mid_block = &caps[2];
-            let mailtos_block = &caps[3];
-
-            let names: Vec<&str> = NAME_RE.find_iter(names_block).map(|m| m.as_str()).collect();
-            let mailtos: Vec<&str> = MAILTO_RE
-                .find_iter(mailtos_block)
-                .map(|m| m.as_str())
-                .collect();
-
-            if names.len() >= 2 && names.len() == mailtos.len() {
-                let mid_trimmed = mid_block.trim();
-                let affil_candidates: Vec<&str> = mid_trimmed
-                    .lines()
-                    .map(|l| l.trim())
-                    .filter(|l| !l.is_empty())
-                    .collect();
-
-                let mut affils: Vec<String> = Vec::new();
-                for line in affil_candidates {
-                    let words: Vec<&str> = line.split_whitespace().collect();
-                    if words.len() >= 4 && words.len().is_multiple_of(2) {
-                        let half = words.len() / 2;
-                        if words[..half] == words[half..] {
-                            affils.push(words[..half].join(" "));
-                            affils.push(words[half..].join(" "));
-                            continue;
-                        }
-                    }
-                    affils.push(line.to_string());
-                }
-
-                if affils.len() == names.len() {
-                    let mut zipped = Vec::with_capacity(names.len());
-                    for i in 0..names.len() {
-                        zipped.push(format!("{}\n{}\n{}", names[i], affils[i], mailtos[i]));
-                    }
-                    return zipped.join("\n\n");
+    static WORD_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"[\p{L}]+(?:-[\p{L}]+)*").unwrap());
+    // Vocabulary of the document, counting each hyphenated token whole and
+    // by its parts — except the tokens that are line-break candidates.
+    let mut vocab: HashMap<String, usize> = HashMap::new();
+    for line in md.lines() {
+        for m in WORD_RE.find_iter(line) {
+            let w = m.as_str().to_lowercase();
+            if let Some((l, r)) = w.rsplit_once('-')
+                && hyphen_breaks
+                    .contains(&(l.rsplit('-').next().unwrap_or(l).to_string(), r.to_string()))
+            {
+                continue;
+            }
+            for part in w.split('-') {
+                if part.chars().count() > 1 {
+                    *vocab.entry(part.to_string()).or_default() += 1;
                 }
             }
-            caps[0].to_string()
-        })
-        .to_string()
+            *vocab.entry(w).or_default() += 1;
+        }
+    }
+    let count = |w: &str| vocab.get(w).copied().unwrap_or(0);
+    let seen = |w: &str| count(w) > 0;
+
+    let mut out = String::with_capacity(md.len());
+    let mut in_code = false;
+    // Process paragraph-sized chunks so a match can span a single newline but
+    // never a code fence or table row.
+    let mut buf = String::new();
+    let flush = |buf: &mut String, out: &mut String| {
+        if buf.is_empty() {
+            return;
+        }
+        let fixed = BREAK_RE.replace_all(buf, |caps: &regex::Captures| {
+            let left = &caps[1];
+            let pre = &caps[2];
+            let space = &caps[3];
+            let right = &caps[4];
+            let last_part = left.rsplit('-').next().unwrap_or(left);
+            let key = (last_part.to_lowercase(), right.to_lowercase());
+            let geometric = hyphen_breaks.contains(&key);
+            // A spaced hyphen ("a - b") is a dash unless geometry says it was
+            // a line break; an in-line hyphen is a compound unless geometry
+            // says so too.
+            if !geometric && (!pre.is_empty() || !space.contains('\n')) {
+                return caps[0].to_string();
+            }
+            let joined = format!("{}{}", key.0, key.1);
+            let hyphenated = format!("{}-{}", key.0, key.1);
+            let keep_hyphen = !seen(&joined)
+                && (seen(&hyphenated)
+                    || left.contains('-')
+                    || (key.0.chars().count() >= 3
+                        && key.1.chars().count() >= 3
+                        && seen(&key.0)
+                        && seen(&key.1)));
+            if keep_hyphen {
+                format!("{}-{}", left, right)
+            } else {
+                format!("{}{}", left, right)
+            }
+        });
+        out.push_str(&join_split_words(&fixed, hyphen_breaks, &count));
+        buf.clear();
+    };
+    for line in md.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with("```") {
+            flush(&mut buf, &mut out);
+            in_code = !in_code;
+            out.push_str(line);
+            continue;
+        }
+        if in_code || t.starts_with('|') || t.is_empty() {
+            flush(&mut buf, &mut out);
+            out.push_str(line);
+            continue;
+        }
+        buf.push_str(line);
+    }
+    flush(&mut buf, &mut out);
+    out
 }
 
-/// Generic post-processing for layout continuity and cross-column repairs.
-/// Strictly document-agnostic per The Generalization Firewall.
-pub(crate) fn repair_interleaved_columns_and_blocks(md: &str) -> String {
-    let mut out = md.to_string();
-
-    // 1. Generic academic author affiliation column zipper
-    out = zip_academic_author_blocks(&out);
-
-    // 2. Generic soft-hyphen line-wrap healing
-    static SOFT_HYPHEN_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(\b[a-zA-Z]{3,})[-\u{AD}]\s*\n\s*([a-z]{2,}\b)").unwrap()
+/// Rejoins words that reached the text split in two (`limita tions`,
+/// `represen tation`) — converters and OCR text layers drop line-end hyphens
+/// or break words around a gutter. Two kinds of evidence, never a word list:
+///
+/// * **geometry**: the pair was recorded as a hyphenated line break; or
+/// * **the document's own vocabulary**: the joined word occurs elsewhere in
+///   the document more often than either fragment does on its own — which a
+///   real two-word phrase ("in to", "every one", "the rapist") never shows,
+///   because its parts are common words.
+fn join_split_words(
+    text: &str,
+    hyphen_breaks: &HashSet<(String, String)>,
+    count: &dyn Fn(&str) -> usize,
+) -> String {
+    static PAIR_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(\p{L}+)([ \t]+\n?[ \t]*|\n[ \t]*)(\p{Ll}\p{L}*)").unwrap()
     });
-    out = SOFT_HYPHEN_RE.replace_all(&out, "$1$2").to_string();
-
-    // 3. Generic problem / exercise heading paragraph break:
-    // Ensures problem headings like '2.2.19' that follow sentence punctuation start on a new paragraph.
-    static PROBLEM_HEADING_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?m)([.!?]|\b[a-zA-Z0-9\)])[ \t]+([1-9]\d*\.\d+\.\d+\b)").unwrap()
-    });
-    out = PROBLEM_HEADING_RE.replace_all(&out, "$1\n\n$2").to_string();
-
-    // 4. Generic sequential problem number separator:
-    // Ensures adjacent section numbers like '2.2.4.2.2.31' start on a new paragraph.
-    static PROBLEM_NUM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(\b\d+(?:\.\d+)+\.)\s*([1-9]\d*\.\d+\.\d+\b)").unwrap()
-    });
-    out = PROBLEM_NUM_RE.replace_all(&out, "$1\n\n$2").to_string();
-
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    while let Some(c) = PAIR_RE.captures_at(text, pos) {
+        let whole = c.get(0).unwrap();
+        let (l, r) = (&c[1], &c[3]);
+        let key = (l.to_lowercase(), r.to_lowercase());
+        let joined = format!("{}{}", key.0, key.1);
+        // The pair set is document-wide, so geometry only vouches for a
+        // split that also *looks* like a dropped line break: a newline or a
+        // widened gap. "to the" with one space is just two words.
+        let gap = &c[2];
+        let break_shaped =
+            gap.contains('\n') || gap.chars().filter(|c| *c == ' ' || *c == '\t').count() >= 2;
+        let geometric = break_shaped
+            && hyphen_breaks.contains(&key)
+            && count(&format!("{}-{}", key.0, key.1)) == 0;
+        let lexical = key.0.chars().count() >= 2
+            && key.1.chars().count() >= 2
+            && joined.chars().count() >= 6
+            && count(&joined) >= 2
+            && count(&key.0) < count(&joined)
+            && count(&key.1) < count(&joined);
+        if geometric || lexical {
+            out.push_str(&text[pos..whole.start()]);
+            out.push_str(l);
+            out.push_str(r);
+            pos = whole.end();
+        } else {
+            // Advance past the left word only, so "a b c" also tries "b c".
+            let next = c.get(2).unwrap().start();
+            out.push_str(&text[pos..next]);
+            pos = next;
+        }
+    }
+    out.push_str(&text[pos..]);
     out
 }
 
@@ -1494,6 +1088,70 @@ fn collapse_blank_lines(lines: &[String]) -> String {
     result.trim().to_string()
 }
 
+/// Unwraps fenced blocks with no language tag whose content reads as prose.
+/// `pdf_oxide` fences text it sees as preformatted (monospace or deeply
+/// indented), which also catches indented legal and claim paragraphs.
+fn unwrap_false_prose_code_blocks(md: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let lines: Vec<&str> = md.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if let Some(rest) = trimmed.strip_prefix("```") {
+            let has_lang = !rest.trim().is_empty();
+            let mut j = i + 1;
+            while j < lines.len() && !lines[j].trim().starts_with("```") {
+                j += 1;
+            }
+            if j < lines.len() && !has_lang {
+                let block_lines = &lines[i + 1..j];
+                if looks_like_prose(block_lines) {
+                    for &bl in block_lines {
+                        out.push(bl.trim().to_string());
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(lines[i].to_string());
+        i += 1;
+    }
+    out.join("\n")
+}
+
+/// Prose, not code: mostly dictionary-shaped words, very few code symbols, and
+/// sentences that end in punctuation.
+fn looks_like_prose(lines: &[&str]) -> bool {
+    let text = lines.join(" ");
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 10 {
+        return false;
+    }
+    let wordlike = words
+        .iter()
+        .filter(|w| {
+            let core = w.trim_matches(|c: char| !c.is_alphanumeric());
+            !core.is_empty()
+                && core
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == '\'' || c == '-')
+        })
+        .count();
+    let chars = text.chars().filter(|c| !c.is_whitespace()).count().max(1);
+    let code_syms = text
+        .chars()
+        .filter(|c| {
+            matches!(
+                c,
+                '{' | '}' | ';' | '=' | '<' | '>' | '[' | ']' | '_' | '$' | '#' | '&'
+            )
+        })
+        .count();
+    let has_sentence_end = text.contains(". ") || text.trim_end().ends_with('.');
+    wordlike * 100 >= words.len() * 75 && code_syms * 100 <= chars && has_sentence_end
+}
+
 /// Inserts clean thematic dividers (`---`) and structural semantic section anchors
 /// before top-level chapter, part, and appendix headings in markdown text.
 ///
@@ -1614,9 +1272,10 @@ fn detect_section_heading(
     }
 
     if !is_heading {
-        // Without '#' marker, require all-uppercase or title-case label, short line, no trailing period
-        let is_caps =
-            plain == plain.to_uppercase() || plain.chars().next().is_some_and(|c| c.is_uppercase());
+        // Without a '#' marker only an all-caps short label qualifies; a
+        // title-case line is too often the start of a wrapped sentence
+        // ("Part of the problem is…").
+        let is_caps = plain == plain.to_uppercase();
         if !is_caps || plain.len() > 60 || plain.ends_with('.') || plain.ends_with(',') {
             return None;
         }
@@ -1668,339 +1327,17 @@ fn is_section_boundary(s: &str, prefix_len: usize) -> bool {
         || rest.starts_with('\t')
 }
 
+/// "Chapter 3" or "PART TWO": a label with no title of its own.
 fn is_bare_section_label(s: &str) -> bool {
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.len() <= 2 {
-        return true;
-    }
-    if parts.len() == 3 && (parts[1].ends_with(':') || parts[1].ends_with('.')) {
-        return false;
-    }
-    parts.len() <= 2
+    s.split_whitespace().count() <= 2
 }
 
-/// Deterministic TeX Symbol Recovery Table for Computer Modern and AMS Math fonts
-/// when /ToUnicode CMap is absent or corrupted.
-pub fn normalize_pdf_glyph(base_font: &str, raw_byte: u8) -> Option<&'static str> {
-    if base_font.contains("CMSY") {
-        match raw_byte {
-            0x00 => Some(r"-"),
-            0x01 => Some(r"\cdot "),
-            0x02 => Some(r"\times "),
-            0x03 => Some(r"\ast "),
-            0x04 => Some(r"\div "),
-            0x0F => Some(r"\circ "),
-            0x11 => Some(r"\pm "),
-            0x14 => Some(r"\forall "),
-            0x15 => Some(r"\exists "),
-            0x20 => Some(r"\emptyset "),
-            0x21 => Some(r"\bullet "),
-            0x22 => Some(r"\top "),
-            0x24 => Some(r"\aleph "),
-            0x30 => Some(r"\le "),
-            0x31 => Some(r"\ge "),
-            0x32 => Some(r"\ge "),
-            0x33 => Some(r"\le "),
-            0x38 => Some(r"\sim "),
-            0x39 => Some(r"\approx "),
-            0x61 => Some(r"\mathcal{A}"),
-            0x62 => Some(r"\mathcal{B}"),
-            0x63 => Some(r"\mathcal{C}"),
-            0x64 => Some(r"\mathcal{D}"),
-            0x65 => Some(r"\mathcal{E}"),
-            0x66 => Some(r"\mathcal{F}"),
-            0x67 => Some(r"\mathcal{G}"),
-            0x68 => Some(r"\mathcal{H}"),
-            0x69 => Some(r"\mathcal{I}"),
-            0x6A => Some(r"\mathcal{J}"),
-            0x6B => Some(r"\mathcal{K}"),
-            0x6C => Some(r"\mathcal{L}"),
-            0x6D => Some(r"\mathcal{M}"),
-            0x6E => Some(r"\mathcal{N}"),
-            0x6F => Some(r"\mathcal{O}"),
-            0x70 => Some(r"\mathcal{P}"),
-            0x71 => Some(r"\mathcal{Q}"),
-            0x72 => Some(r"\mathcal{R}"),
-            0x73 => Some(r"\mathcal{S}"),
-            0x74 => Some(r"\mathcal{T}"),
-            0x75 => Some(r"\mathcal{U}"),
-            0x76 => Some(r"\mathcal{V}"),
-            0x77 => Some(r"\mathcal{W}"),
-            0x78 => Some(r"\mathcal{X}"),
-            0x79 => Some(r"\mathcal{Y}"),
-            0x7A => Some(r"\mathcal{Z}"),
-            _ => None,
-        }
-    } else if base_font.contains("CMMI") {
-        match raw_byte {
-            0x0B => Some(r"\alpha "),
-            0x0C => Some(r"\beta "),
-            0x0D => Some(r"\gamma "),
-            0x0E => Some(r"\delta "),
-            0x0F => Some(r"\epsilon "),
-            0x10 => Some(r"\zeta "),
-            0x11 => Some(r"\eta "),
-            0x12 => Some(r"\theta "),
-            0x13 => Some(r"\iota "),
-            0x14 => Some(r"\kappa "),
-            0x15 => Some(r"\lambda "),
-            0x16 => Some(r"\mu "),
-            0x17 => Some(r"\nu "),
-            0x18 => Some(r"\xi "),
-            0x19 => Some(r"\pi "),
-            0x1A => Some(r"\rho "),
-            0x1B => Some(r"\sigma "),
-            0x1C => Some(r"\tau "),
-            0x1D => Some(r"\upsilon "),
-            0x1E => Some(r"\phi "),
-            0x1F => Some(r"\chi "),
-            0x20 => Some(r"\psi "),
-            0x21 => Some(r"\omega "),
-            0x3B => Some(r"\partial "),
-            _ => None,
-        }
-    } else if base_font.contains("MSBM") || base_font.contains("MSAM") {
-        match raw_byte {
-            0x43 => Some(r"\mathbb{C}"),
-            0x48 => Some(r"\mathbb{H}"),
-            0x4E => Some(r"\mathbb{N}"),
-            0x50 => Some(r"\mathbb{P}"),
-            0x51 => Some(r"\mathbb{Q}"),
-            0x52 => Some(r"\mathbb{R}"),
-            0x5A => Some(r"\mathbb{Z}"),
-            _ => None,
-        }
-    } else {
-        None
-    }
-}
-
-/// Normalizes common math font encoding artifacts, ASCII approximations,
-/// and scattered multi-line scientific equations into standard LaTeX math blocks.
-pub fn normalize_pdf_math_notation(text: &str) -> String {
-    use regex::Regex;
-    use std::sync::LazyLock;
-
-    static NEQ_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"=\s*I\s*-\s*").unwrap());
-    static LE_SEMI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"::;\s*").unwrap());
-    static LE_S_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+:S\s+").unwrap());
-    static GE_COLON_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"2':\s*").unwrap());
-    static GE_ZERO_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(\)|\]|[a-zA-Z0-9])\s+2\s+([0O])\b").unwrap());
-    static EQ_ZERO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"=\s*O\b").unwrap());
-    static NEQ_ZERO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\neq\s+O\b").unwrap());
-    static GE_LE_O_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(\\(?:ge|le|neq))\s+O\b").unwrap());
-    static SECTION_NUM_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\b(\d+(?:\.\d+)+\.)\s+(\d+)\b").unwrap());
-
-    // Reassembly of Attention equation
-    static ATTENTION_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"(?i)QKT\s+Attention\s*\(\s*Q,\s*K,\s*V\s*\)\s*=\s*softmax\s*\(\s*V\s*\(1\)\s*dk",
-        )
-        .unwrap()
-    });
-
-    // Reassembly of Multi-Head Attention equation
-    static MULTIHEAD_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"MultiHead\s*\(\s*Q,\s*K,\s*V\s*\)\s*=\s*Concat\s*\(\s*head\s*\.\.\.,\s*head\s*\)WO\s*1\s*\n+\s*h\s*\n+\s*where\s+head\s*=\s*Attention\s*\(\s*QWQ\s*KWK\s*V\s*WV(?:\s*\n+\s*i)+\s*\n+\s*i\s+i").unwrap()
-    });
-
-    // Reassembly of Feed-Forward Network equation
-    static FFN_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"FFN\(x\)\s*=\s*max\(0\s+xW\s+b\s+W\s+b\s+\(2\)\s*\n+\s*1\s+1\s+2\s+2").unwrap()
-    });
-
-    // Inline scale factor in prose
-    static SCALE_FACTOR_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"scaling factor of\s+1\s*\.\s+Additive\s+attention\s+computes\s+the\s+compatibility\s+function\s+using\s+a\s+feed-forward\s+network\s+with\b").unwrap()
-    });
-    static SCALE_DOT_PROD_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"scale the dot products by\s+1\s+dk\b").unwrap());
-    static DIVIDE_DK_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"divide each by\s+d\s*,\s*and apply a softmax function to obtain the weights on thek values\b").unwrap()
-    });
-
-    // Reassembly of Attention parameter matrices
-    static PARAM_MATRICES_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"Where the projections are parameter matrices WQ[\s\S]*?and\s+WO\s+Rhdv\s*(?:dmodel)?",
-        )
-        .unwrap()
-    });
-
-    // Sub-layer head dimension
-    static DK_DV_DMODEL_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"d\s+d\s+d\s*/h\s*=\s*64").unwrap());
-
-    // Inline queries and keys dimension
-    static QUERIES_KEYS_DIM_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"queries and keys of dimension d\s*,\s*and values of dimension d\s*\.\s*(?:We compute the dot products of the\s*\n+\s*[kv]\s*\n+\s*[kv] query)?").unwrap()
-    });
-
-    // Hidden states recurrent formula
-    static HIDDEN_STATES_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"sequence of hidden states h\s*,\s*as a function of the previous hidden state h\s*and the input for position t\.\s*This inherently\s*\n+\s*t\s*\n+\s*t 1 sequential nature").unwrap()
-    });
-
-    // Residual subscripts from head dimension split
-    static KV_MODEL_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"k\s+v\s+model\s+is\s+similar\s+to\s+that\s+of\s+single-head\s+attention")
-            .unwrap()
-    });
-
-    // Positional Encoding equations
-    static PE_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"P\s+E\s*\n+\s*sin\s+pos/100002i/d\s*\n+\s*pos,\s*2i\s*\n+\s*model\s*\n+\s*P\s+E\s*\n+\s*cos\s+pos/100002i/d\s*\n+\s*pos,\s*2i\+1\)").unwrap()
-    });
-
-    // Learning rate schedule formula
-    static LRATE_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"min\(step\s+num\s+0\s+step\s+num\s+warmup\s+steps\s+1\s+\(3\)\s*\n+\s*lrate\s+d\s+0model").unwrap()
-    });
-
-    // Symbol representations mapping
-    static SEQ_MAP_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"representations\s+x\s*,\s*\.\.\.,\s*x\s+to\s+another\s+sequence\s+of\s+equal\s+length\s+z\s*,\s*\.\.\.,\s*z\s*,\s*with\s+x\s*,\s*z\s+Rd,\s*such\s+as\s+a\s+hidden\s*\n+\s*1\s+n\s*\n+\s*1\s+n\s*\n+\s*i\s+i\s+layer\b").unwrap()
-    });
-
-    let s1 = NEQ_RE.replace_all(text, r"\neq ");
-    let s2 = LE_SEMI_RE.replace_all(&s1, r"\le ");
-    let s3 = LE_S_RE.replace_all(&s2, r" \le ");
-    let s4 = GE_COLON_RE.replace_all(&s3, r"\ge ");
-    let s5 = GE_ZERO_RE.replace_all(&s4, r"$1 \ge 0");
-    let s6 = EQ_ZERO_RE.replace_all(&s5, "= 0");
-    let s7 = NEQ_ZERO_RE.replace_all(&s6, r"\neq 0");
-    let s7b = GE_LE_O_RE.replace_all(&s7, "$1 0");
-    let s7c = SECTION_NUM_RE.replace_all(&s7b, "$1$2");
-
-    let s8 = ATTENTION_RE.replace_all(&s7c, |_: &regex::Captures| {
-        "$$\n\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}\\left(\\frac{QK^T}{\\sqrt{d_k}}\\right)V \\tag{1}\n$$"
-    });
-    let s9 = MULTIHEAD_RE.replace_all(&s8, |_: &regex::Captures| {
-        "$$\n\\mathrm{MultiHead}(Q, K, V) = \\mathrm{Concat}(\\mathrm{head}_1, \\ldots, \\mathrm{head}_h)W^O\n$$\n\n$$\n\\text{where } \\mathrm{head}_i = \\mathrm{Attention}(QW^Q_i, KW^K_i, VW^V_i)\n$$"
-    });
-    let s10 = FFN_RE.replace_all(
-        &s9,
-        |_: &regex::Captures| "$$\n\\mathrm{FFN}(x) = \\max(0, xW_1 + b_1)W_2 + b_2 \\tag{2}\n$$",
-    );
-    let s11 = SCALE_FACTOR_RE.replace_all(&s10, |_: &regex::Captures| {
-        "scaling factor of $\\frac{1}{\\sqrt{d_k}}$. Additive attention computes the compatibility function using a feed-forward network with"
-    });
-    let s12 = SCALE_DOT_PROD_RE.replace_all(
-        &s11,
-        |_: &regex::Captures| "scale the dot products by $\\frac{1}{\\sqrt{d_k}}$",
-    );
-    let s13 = DIVIDE_DK_RE.replace_all(&s12, |_: &regex::Captures| {
-        "divide each by $\\sqrt{d_k}$, and apply a softmax function to obtain the weights on the values"
-    });
-    let s14 = PARAM_MATRICES_RE.replace_all(&s13, |_: &regex::Captures| {
-        "Where the projections are parameter matrices $W^Q_i \\in \\mathbb{R}^{d_{\\text{model}} \\times d_k}$, $W^K_i \\in \\mathbb{R}^{d_{\\text{model}} \\times d_k}$, $W^V_i \\in \\mathbb{R}^{d_{\\text{model}} \\times d_v}$ and $W^O \\in \\mathbb{R}^{hd_v \\times d_{\\text{model}}}.\n\n"
-    });
-    let s14b = DK_DV_DMODEL_RE.replace_all(
-        &s14,
-        |_: &regex::Captures| "$d_k = d_v = d_{\\text{model}} / h = 64$",
-    );
-    let s14c = KV_MODEL_RE.replace_all(
-        &s14b,
-        |_: &regex::Captures| "is similar to that of single-head attention",
-    );
-    let s15 = QUERIES_KEYS_DIM_RE.replace_all(&s14c, |_: &regex::Captures| {
-        "queries and keys of dimension $d_k$, and values of dimension $d_v$. We compute the dot products of the query"
-    });
-    let s16 = HIDDEN_STATES_RE.replace_all(&s15, |_: &regex::Captures| {
-        "sequence of hidden states $h_t$, as a function of the previous hidden state $h_{t-1}$ and the input for position $t$. This inherently sequential nature"
-    });
-    let s16b = PE_RE.replace_all(&s16, |_: &regex::Captures| {
-        "$$\n\\mathrm{PE}_{(pos, 2i)} = \\sin\\left(pos / 10000^{2i/d_{\\text{model}}}\\right)\n$$\n\n$$\n\\mathrm{PE}_{(pos, 2i+1)} = \\cos\\left(pos / 10000^{2i/d_{\\text{model}}}\\right)\n$$"
-    });
-    let s16c = LRATE_RE.replace_all(&s16b, |_: &regex::Captures| {
-        "$$\n\\text{lrate} = d_{\\text{model}}^{-0.5} \\cdot \\min(\\text{step\\_num}^{-0.5}, \\text{step\\_num} \\cdot \\text{warmup\\_steps}^{-1.5}) \\tag{3}\n$$"
-    });
-    let s16d = SEQ_MAP_RE.replace_all(&s16c, |_: &regex::Captures| {
-        "representations $(x_1, \\ldots, x_n)$ to another sequence of equal length $(z_1, \\ldots, z_n)$, with $x_i, z_i \\in \\mathbb{R}^{d_{\\text{model}}}$, such as a hidden layer"
-    });
-
-    static CAMEL_PROSE_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\b([a-z]{3,})([A-Z][a-z]{2,})\b").unwrap());
-
-    let s17 = s16d
-        .replace("outperformsk", "outperforms")
-        .replace("ofk d", "of $d_k$")
-        .replace("hask ", "has ")
-        .replace("queries,model", "queries, model")
-        .replace("dimensionalv", "dimensional")
-        .replace("modelis", "model is")
-        .replace("hardsince", "hard since")
-        .replace("mUltiplication", "multiplication")
-        .replace("zeroOnce", "zero. Once")
-        .replace("invertibleEither", "invertible. Either")
-        .replace("non-zeroThat", "non-zero. That")
-        .replace("p(x)So", "p(x). So")
-        .replace("thereasons", "the reasons")
-        .replace("hypo theses", "hypotheses")
-        .replace("examplethe", "example the")
-        .replace("reiterateit", "reiterate it")
-        .replace("howe ver", "however")
-        .replace("contaIt ins", "contains")
-        .replace("personproceeding", "person, proceeding")
-        .replace("coursesometimes", "course, sometimes")
-        .replace("Certainlyyou", "Certainly, you")
-        .replace("soningThis", "soning. This")
-        .replace("#2we", "#2, we")
-        .replace("#5Let", "#5. Let")
-        .replace("m2where", "m2 where")
-        .replace("2has", "2 has")
-        .replace("5let", "5 let")
-        .replace("nprove", "n prove")
-        .replace("bersin", "bers in")
-        .replace("happilyintoxicating", "happily intoxicating")
-        .replace("edgeswhile", "edges while")
-        .replace("solutionsn", "solutions n")
-        .replace("conjecturesDo", "conjectures. Do")
-        .replace("pointThe", "point. The")
-        .replace("themWe", "them. We")
-        .replace("proofsBut", "proofs. But")
-        .replace("ha ving", "having")
-        .replace("investigategeneralize", "investigate, generalize")
-        .replace("A 2", "A2")
-        .replace("B 2", "B2")
-        .replace("A 3", "A3")
-        .replace("B 3", "B3")
-        .replace("x 2", "x2")
-        .replace("x 3", "x3")
-        .replace("pili (x)", "p'''(x)")
-        .replace("1/(1-x", "1/(1 - x)");
-
-    static DERIV_PRIME_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\b([qpf])'\s+([a-zA-Z0-9])\b").unwrap());
-    static DERIV_MINUS_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\b([qpf])\s+x\)").unwrap());
-    static COORD_DIGIT_OPEN_PAREN_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(\d)\s*\((\d)").unwrap());
-
-    let s17 = DERIV_PRIME_RE.replace_all(&s17, "$1'($2)");
-    let s17 = DERIV_MINUS_RE.replace_all(&s17, "$1'(x)");
-    let s17 = COORD_DIGIT_OPEN_PAREN_RE.replace_all(&s17, "$1), ($2");
-
-    let s18 = CAMEL_PROSE_RE.replace_all(&s17, |caps: &regex::Captures| {
-        let p1 = &caps[1];
-        let p2 = &caps[2];
-        if p1 == "mathrm" || p1 == "mathbf" || p1 == "mathbb" || p1 == "mathit" {
-            caps[0].to_string()
-        } else {
-            format!("{} {}", p1, p2)
-        }
-    });
-
-    prune_isolated_subscript_noise(&s18)
-}
-
-/// Prunes isolated single-letter lowercase noise lines (e.g. detached subscripts like 'k', 'v', 'i')
-/// that appear on their own lines outside of code fences and display math blocks.
-pub fn prune_isolated_subscript_noise(text: &str) -> String {
-    let mut result: Vec<String> = Vec::new();
+/// Drops a lone lowercase letter on its own line next to a blank line — the
+/// debris of subscripts and superscripts that the converter set apart from
+/// their formula (`k`, `v`, `i`). Code and display math are left alone, and no
+/// digits or words are ever removed.
+pub fn prune_isolated_letter_lines(text: &str) -> String {
+    let mut result: Vec<&str> = Vec::new();
     let mut in_code_fence = false;
     let mut in_math_block = false;
 
@@ -2009,84 +1346,67 @@ pub fn prune_isolated_subscript_noise(text: &str) -> String {
         let trimmed = line.trim();
         if trimmed.starts_with("```") {
             in_code_fence = !in_code_fence;
-            result.push((*line).to_string());
+            result.push(line);
             continue;
         }
         if trimmed.starts_with("$$") {
             if trimmed == "$$" || (trimmed.ends_with("$$") && trimmed.len() > 2) {
                 in_math_block = !in_math_block;
             }
-            result.push((*line).to_string());
+            result.push(line);
             continue;
         }
-
-        if in_code_fence || in_math_block {
-            result.push((*line).to_string());
-            continue;
-        }
-
-        // Check if line is a single isolated lowercase ASCII letter
-        if trimmed.len() == 1 && trimmed.chars().all(|c| c.is_ascii_lowercase()) {
+        if !in_code_fence
+            && !in_math_block
+            && trimmed.len() == 1
+            && trimmed.chars().all(|c| c.is_ascii_lowercase())
+        {
             let prev_blank = i == 0 || lines[i - 1].trim().is_empty();
             let next_blank = i + 1 >= lines.len() || lines[i + 1].trim().is_empty();
             if prev_blank || next_blank {
-                // Drop this orphaned subscript noise line
                 continue;
             }
         }
-
-        // Check if line is an isolated folio, chart tick, or stray number (optionally bold)
-        let clean_num = trimmed.trim_matches('*').trim();
-        let is_digits = !clean_num.is_empty() && clean_num.chars().all(|c| c.is_ascii_digit());
-        let is_folio = is_digits || HYPHEN_FOLIO_RE.is_match(trimmed);
-        if is_folio {
-            let prev_blank = i == 0 || lines[i - 1].trim().is_empty();
-            let next_blank = i + 1 >= lines.len() || lines[i + 1].trim().is_empty();
-            if prev_blank && next_blank {
-                // Drop isolated folio / chart tick
-                continue;
-            }
-            if is_digits {
-                // Standalone number line preceded by text (not heading, not table, not code, not math)
-                if let Some(prev) = result.iter_mut().rev().find(|l| !l.trim().is_empty()) {
-                    let prev_t = prev.trim();
-                    if !prev_t.starts_with('#')
-                        && !prev_t.contains('|')
-                        && !prev_t.starts_with("```")
-                        && !prev_t.starts_with("$$")
-                    {
-                        prev.push(' ');
-                        prev.push_str(clean_num);
-                        continue;
-                    }
-                }
-            }
-        }
-
-        result.push((*line).to_string());
+        result.push(line);
     }
-
     result.join("\n")
 }
 
-/// Recovers high-fidelity GFM tables from vector ruling lines and spatial word clusters
-/// using the ported pdfplumber table extraction algorithm.
-fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: String) -> String {
+/// Largest char boundary at or below `i`.
+fn floor_boundary(s: &str, mut i: usize) -> usize {
+    i = i.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Recovers GFM tables from vector ruling lines and spatial word clusters
+/// (the ported pdfplumber algorithm) and splices them into the page markdown
+/// in place of the converter's rendering of the same table.
+fn recover_page_vector_tables(
+    doc: &PdfDocument,
+    page: usize,
+    mut page_md: String,
+    geom: Option<&PageGeom>,
+    excluded: &[Rect],
+) -> String {
     let Ok(paths) = doc.extract_paths(page) else {
         return page_md;
     };
-    let Ok(words) = doc.extract_words(page) else {
+    let Some(geom) = geom else {
         return page_md;
     };
-    if paths.is_empty() || words.is_empty() {
+    if paths.is_empty() || geom.words.is_empty() {
         return page_md;
     }
 
-    let page_height = doc.get_page_media_box(page).map(|m| m.3).unwrap_or(792.0);
+    // pdfplumber works top-down from the page's top edge.
+    let page_top = geom.bx.3;
     let mut edges = Vec::new();
     for p in &paths {
-        let top = page_height - (p.bbox.y + p.bbox.height);
-        let bottom = page_height - p.bbox.y;
+        let top = page_top - (p.bbox.y + p.bbox.height);
+        let bottom = page_top - p.bbox.y;
         if p.is_horizontal_line(3.0) || (p.bbox.height <= 2.5 && p.bbox.width >= 10.0) {
             edges.push(crate::parsers::pdf_table::Edge::horizontal(
                 p.bbox.x,
@@ -2123,17 +1443,17 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
         return page_md;
     }
 
-    let pdf_words: Vec<crate::parsers::pdf_table::PdfWord> = words
+    let pdf_words: Vec<crate::parsers::pdf_table::PdfWord> = geom
+        .words
         .iter()
+        .filter(|w| !pdf_furniture::excluded(excluded, w.x0, w.y0, w.x1, w.y1))
         .map(|w| {
-            let top = page_height - (w.bbox.y + w.bbox.height);
-            let bottom = page_height - w.bbox.y;
             crate::parsers::pdf_table::PdfWord::new(
                 w.text.clone(),
-                w.bbox.x,
-                top,
-                w.bbox.x + w.bbox.width,
-                bottom,
+                w.x0,
+                page_top - w.y1,
+                w.x1,
+                page_top - w.y0,
             )
         })
         .collect();
@@ -2143,12 +1463,12 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
         &edges, &pdf_words, &settings,
     );
 
-    if tables.is_empty() {
-        return page_md;
-    }
-
+    let word_gap = median_word_gap(geom);
     for table in tables {
         if table.rows.len() < 2 || table.rows.iter().all(|r| r.len() < 2) {
+            continue;
+        }
+        if !table_columns_are_real(&table, &edges, &pdf_words, word_gap) {
             continue;
         }
         if table.rows.first().map(|r| r.len()).unwrap_or(0) > 12 {
@@ -2164,12 +1484,7 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
             continue;
         }
         let table_md = table.to_markdown().trim().to_string();
-        if table_md.is_empty() {
-            continue;
-        }
-
-        // If page_md already contains this table, skip
-        if page_md.contains(&table_md) {
+        if table_md.is_empty() || page_md.contains(&table_md) {
             continue;
         }
 
@@ -2193,46 +1508,24 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
             .filter(|s| !s.is_empty())
             .collect();
 
+        // Case 1: the converter already emitted a pipe table for this region —
+        // replace it with the ruling-line version.
         if let Some((start, end)) = find_pipe_table_span(&page_md, &sample_words) {
             let existing_table = &page_md[start..end];
             if existing_table.trim() != table_md.trim() {
-                // Find if there is a redundant heading line immediately preceding start
-                let prefix = &page_md[..start];
-                let mut trim_start = start;
-                for header in &table.rows[0] {
-                    let h_text = header.text.trim();
-                    if h_text.len() >= 4 {
-                        let bold_h = format!("**{}**", h_text);
-                        if let Some(pos) = prefix.rfind(&bold_h) {
-                            if prefix[pos + bold_h.len()..].trim().is_empty() {
-                                trim_start = pos;
-                                break;
-                            }
-                        }
-                    }
-                }
-
                 let mut new_md = String::with_capacity(page_md.len() + table_md.len());
-                new_md.push_str(&page_md[..trim_start]);
+                new_md.push_str(&page_md[..start]);
                 new_md.push_str(&table_md);
                 new_md.push('\n');
                 new_md.push_str(&page_md[end..]);
-
-                // Also clean up any displaced header that pdf_oxide dropped at the end
-                for header in &table.rows[0] {
-                    let h_text = header.text.trim();
-                    if h_text.len() >= 4 {
-                        let bold_h = format!("**{}**", h_text);
-                        new_md = new_md.replace(&format!("\n\n{}\n", bold_h), "");
-                        new_md = new_md.replace(&format!("\n\n{}", bold_h), "");
-                    }
-                }
-
                 page_md = new_md;
             }
             continue;
         }
 
+        // Case 2: the table's text came out as loose lines — find the span
+        // from its first header cell to its last cell and replace it, keeping
+        // any headings and genuine prose lines found inside that span.
         let first_header = table.rows[0].first().map(|c| c.text.trim()).unwrap_or("");
         let last_cell = table
             .rows
@@ -2245,72 +1538,76 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
         let mut replaced = false;
 
         if !first_header.is_empty() && !last_cell.is_empty() {
-            if let Some(start_idx) = page_md.find(first_header) {
-                // Search for last_cell within max_table_char_span forward from start_idx
-                let search_window_end = (start_idx + max_table_char_span).min(page_md.len());
-                let window = &page_md[start_idx..search_window_end];
-                if let Some(rel_end) = window.rfind(last_cell) {
-                    let end_idx = start_idx + rel_end + last_cell.len();
-                    let line_start = page_md[..start_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
-                    let line_end = page_md[end_idx..]
-                        .find('\n')
-                        .map(|i| end_idx + i)
-                        .unwrap_or(page_md.len());
+            // The first occurrence of the header that is followed by the last
+            // cell within the table's plausible span.
+            let span = page_md
+                .match_indices(first_header)
+                .find_map(|(start_idx, _)| {
+                    let window_end =
+                        floor_boundary(&page_md, start_idx + max_table_char_span).max(start_idx);
+                    page_md[start_idx..window_end]
+                        .rfind(last_cell)
+                        .map(|rel_end| (start_idx, start_idx + rel_end + last_cell.len()))
+                });
+            if let Some((start_idx, end_idx)) = span {
+                let line_start = page_md[..start_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let line_end = page_md[end_idx..]
+                    .find('\n')
+                    .map(|i| end_idx + i)
+                    .unwrap_or(page_md.len());
 
-                    let existing_chunk = &page_md[line_start..line_end];
-                    let line_count = existing_chunk.lines().count();
+                let existing_chunk = &page_md[line_start..line_end];
+                let line_count = existing_chunk.lines().count();
 
-                    // Only replace if line count is reasonable for this table
-                    if line_count <= table.rows.len() * 3 + 4 {
-                        let mut headings: Vec<&str> = Vec::new();
-                        let mut prose_paragraphs: Vec<String> = Vec::new();
-                        let mut current_p = Vec::new();
-                        for l in existing_chunk.lines() {
-                            let trimmed = l.trim();
-                            if trimmed.starts_with('#') {
-                                headings.push(trimmed);
-                                continue;
+                if line_count <= table.rows.len() * 3 + 4 {
+                    let mut headings: Vec<&str> = Vec::new();
+                    let mut prose_paragraphs: Vec<String> = Vec::new();
+                    let mut current_p = Vec::new();
+                    for l in existing_chunk.lines() {
+                        let trimmed = l.trim();
+                        if trimmed.starts_with('#') {
+                            headings.push(trimmed);
+                            continue;
+                        }
+                        if trimmed.is_empty() {
+                            if !current_p.is_empty() {
+                                prose_paragraphs.push(current_p.join(" "));
+                                current_p.clear();
                             }
-                            if trimmed.is_empty() {
-                                if !current_p.is_empty() {
-                                    prose_paragraphs.push(current_p.join(" "));
-                                    current_p.clear();
-                                }
-                                continue;
-                            }
-                            let words: Vec<&str> = trimmed.split_whitespace().collect();
-                            let non_table = words
-                                .iter()
-                                .filter(|w| {
-                                    let clean = w
-                                        .trim_matches(|c: char| !c.is_alphanumeric())
-                                        .to_lowercase();
-                                    !clean.is_empty() && !table_tokens.contains(&clean)
-                                })
-                                .count();
-                            if words.len() >= 5 && non_table * 2 > words.len() {
-                                current_p.push(trimmed);
-                            }
+                            continue;
                         }
-                        if !current_p.is_empty() {
-                            prose_paragraphs.push(current_p.join(" "));
+                        let words: Vec<&str> = trimmed.split_whitespace().collect();
+                        let non_table = words
+                            .iter()
+                            .filter(|w| {
+                                let clean = w
+                                    .trim_matches(|c: char| !c.is_alphanumeric())
+                                    .to_lowercase();
+                                !clean.is_empty() && !table_tokens.contains(&clean)
+                            })
+                            .count();
+                        if non_table * 2 > words.len() {
+                            current_p.push(trimmed);
                         }
-
-                        let mut new_md = String::with_capacity(page_md.len() + table_md.len());
-                        new_md.push_str(&page_md[..line_start]);
-                        for h in &headings {
-                            new_md.push_str(h);
-                            new_md.push_str("\n\n");
-                        }
-                        new_md.push_str(&table_md);
-                        for p in &prose_paragraphs {
-                            new_md.push_str("\n\n");
-                            new_md.push_str(p);
-                        }
-                        new_md.push_str(&page_md[line_end..]);
-                        page_md = new_md;
-                        replaced = true;
                     }
+                    if !current_p.is_empty() {
+                        prose_paragraphs.push(current_p.join(" "));
+                    }
+
+                    let mut new_md = String::with_capacity(page_md.len() + table_md.len());
+                    new_md.push_str(&page_md[..line_start]);
+                    for h in &headings {
+                        new_md.push_str(h);
+                        new_md.push_str("\n\n");
+                    }
+                    new_md.push_str(&table_md);
+                    for p in &prose_paragraphs {
+                        new_md.push_str("\n\n");
+                        new_md.push_str(p);
+                    }
+                    new_md.push_str(&page_md[line_end..]);
+                    page_md = new_md;
+                    replaced = true;
                 }
             }
         }
@@ -2328,6 +1625,79 @@ fn recover_page_vector_tables(doc: &PdfDocument, page: usize, mut page_md: Strin
     }
 
     page_md
+}
+
+/// Median horizontal gap between consecutive words on a line: the page's
+/// word spacing.
+fn median_word_gap(geom: &PageGeom) -> f32 {
+    let mut gaps: Vec<f32> = geom
+        .lines
+        .iter()
+        .flat_map(|l| l.words.windows(2).map(|w| w[1].x0 - w[0].x1))
+        .filter(|g| *g > 0.0)
+        .collect();
+    if gaps.is_empty() {
+        return 2.5;
+    }
+    gaps.sort_by(f32::total_cmp);
+    gaps[gaps.len() / 2]
+}
+
+/// A table recovered from page geometry is kept only if its columns are
+/// real: every interior column boundary is either drawn (a vertical ruling
+/// line spanning most of the table) or a gap clearly wider than the page's
+/// word spacing. Otherwise the "columns" are just the spaces between words of
+/// ordinary lines — e.g. bullets on a slide whose background rectangles made
+/// the extractor look for a grid.
+fn table_columns_are_real(
+    table: &crate::parsers::pdf_table::ExtractedTable,
+    edges: &[crate::parsers::pdf_table::Edge],
+    words: &[crate::parsers::pdf_table::PdfWord],
+    word_gap: f32,
+) -> bool {
+    use crate::parsers::pdf_table::EdgeOrientation;
+    let t = &table.bbox;
+    let ruled = |x: f32| {
+        edges.iter().any(|e| {
+            e.orientation == EdgeOrientation::Vertical
+                && (e.x0 - x).abs() <= 3.0
+                && (e.bottom.min(t.bottom) - e.top.max(t.top)) >= 0.6 * (t.bottom - t.top)
+        })
+    };
+    let mut unruled_gaps: Vec<f32> = Vec::new();
+    for row in &table.rows {
+        let filled: Vec<&crate::parsers::pdf_table::TableCell> =
+            row.iter().filter(|c| !c.text.trim().is_empty()).collect();
+        for pair in filled.windows(2) {
+            let (a, b) = (&pair[0].bbox, &pair[1].bbox);
+            if ruled(a.x1) || ruled(b.x0) {
+                continue;
+            }
+            let inside = |w: &&crate::parsers::pdf_table::PdfWord,
+                          c: &crate::parsers::pdf_table::CellBbox| {
+                let (mx, my) = w.midpoint();
+                mx >= c.x0 && mx <= c.x1 && my >= c.top && my <= c.bottom
+            };
+            let left_end = words
+                .iter()
+                .filter(|w| inside(w, a))
+                .map(|w| w.x1)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let right_start = words
+                .iter()
+                .filter(|w| inside(w, b))
+                .map(|w| w.x0)
+                .fold(f32::INFINITY, f32::min);
+            if left_end.is_finite() && right_start.is_finite() {
+                unruled_gaps.push(right_start - left_end);
+            }
+        }
+    }
+    if unruled_gaps.is_empty() {
+        return true;
+    }
+    unruled_gaps.sort_by(f32::total_cmp);
+    unruled_gaps[unruled_gaps.len() / 2] >= 2.5 * word_gap.max(1.0)
 }
 
 /// Locates the byte span of a pipe table block in markdown containing matching words.
@@ -2540,57 +1910,6 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_running_headers_and_footers_alternating() {
-        let mut pages = vec![
-            "**14**\n**PART ONE: SYSTEM STRUCTURE AND BEHAVIOR**\nBody text on page one.\nTIS final pgs 14 5/2/09 10:37:35".to_string(),
-            "**CHAPTER ONE: THE BASICS**\n**15**\nBody text on page two.\nTIS final pgs 15 5/2/09 10:37:35".to_string(),
-            "**16**\n**PART ONE: SYSTEM STRUCTURE AND BEHAVIOR**\nBody text on page three.\nTIS final pgs 16 5/2/09 10:37:35".to_string(),
-            "**CHAPTER ONE: THE BASICS**\n**17**\nBody text on page four.\nTIS final pgs 17 5/2/09 10:37:35".to_string(),
-        ];
-
-        filter_running_headers_and_footers(&mut pages);
-
-        assert_eq!(pages[0], "Body text on page one.");
-        assert_eq!(pages[1], "Body text on page two.");
-        assert_eq!(pages[2], "Body text on page three.");
-        assert_eq!(pages[3], "Body text on page four.");
-    }
-
-    #[test]
-    fn test_filter_preserves_document_title_on_first_page() {
-        let mut pages = vec![
-            "Structuring Interviews with Experts\nDuring Knowledge Elicitation\nBy Larry E. Wood\nAbstract text here.".to_string(),
-            "72 WOOD AND FORD\nSecond page content.".to_string(),
-            "STRUCTURING INTERVIEWS WITH EXPERTS 73\nThird page content.".to_string(),
-            "74 WOOD AND FORD\nFourth page content.".to_string(),
-        ];
-
-        filter_running_headers_and_footers(&mut pages);
-
-        assert!(pages[0].contains("Structuring Interviews with Experts"));
-        assert!(pages[0].contains("During Knowledge Elicitation"));
-        assert_eq!(pages[1], "Second page content.");
-        assert_eq!(pages[2], "Third page content.");
-        assert_eq!(pages[3], "Fourth page content.");
-    }
-
-    #[test]
-    fn test_isolated_folio_detection() {
-        assert!(is_isolated_folio("14"));
-        assert!(is_isolated_folio("**14**"));
-        assert!(is_isolated_folio("I **18** I"));
-        assert!(is_isolated_folio("**l7** 1"));
-        assert!(is_isolated_folio("31-2"));
-        assert!(is_isolated_folio("Page 5 of 20"));
-        assert!(is_isolated_folio("xv"));
-
-        // Normal text should not be detected as folios
-        assert!(!is_isolated_folio("Introduction"));
-        assert!(!is_isolated_folio("| Date | Revenue |"));
-        assert!(!is_isolated_folio("# 14 Principles"));
-    }
-
-    #[test]
     fn test_format_table_and_block_boundaries() {
         let input = "Preceding paragraph.\n| Date | Revenue | Expenses |\n|---|---|\n| 2026-01-01 | $10M | $8M |\nFollowing paragraph.";
         let formatted = format_table_and_block_boundaries(input);
@@ -2646,21 +1965,6 @@ mod tests {
             "Code sample:\n\n```python\n# Chapter 1 in code\nprint('hello')\n```\n\nFollow up.";
         let output = insert_semantic_section_boundaries(input);
         assert_eq!(output, input);
-    }
-
-    #[test]
-    fn test_clean_trailing_production_slug() {
-        let line = "Within the university, the purpose of a student may be to get good grades, the purpose of a professor 5/2/09 10:37:35";
-        let cleaned = clean_trailing_production_slug(line).expect("should clean trailing slug");
-        assert_eq!(
-            cleaned,
-            "Within the university, the purpose of a student may be to get good grades, the purpose of a professor"
-        );
-
-        let standalone = "5/2/09 10:37:35";
-        let cleaned_standalone =
-            clean_trailing_production_slug(standalone).expect("should match standalone slug");
-        assert!(cleaned_standalone.is_empty());
     }
 
     #[test]
@@ -2726,38 +2030,9 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_pdf_glyph() {
-        assert_eq!(normalize_pdf_glyph("CMSY10", 0x32), Some(r"\ge "));
-        assert_eq!(normalize_pdf_glyph("CMSY10", 0x33), Some(r"\le "));
-        assert_eq!(normalize_pdf_glyph("CMMI10", 0x0B), Some(r"\alpha "));
-        assert_eq!(normalize_pdf_glyph("CMMI10", 0x0C), Some(r"\beta "));
-        assert_eq!(normalize_pdf_glyph("MSBM10", 0x52), Some(r"\mathbb{R}"));
-    }
-
-    #[test]
-    fn test_normalize_pdf_math_notation() {
-        let input = "A =I- B and q(x) 2 0 with q'(x) ::; q(x) where C = O";
-        let output = normalize_pdf_math_notation(input);
-        assert!(output.contains(r"A \neq B"));
-        assert!(output.contains(r"q(x) \ge 0"));
-        assert!(output.contains(r"q'(x) \le q(x)"));
-        assert!(output.contains("C = 0"));
-
-        let att_input = "QKT Attention(Q, K, V ) = softmax( V (1) dk";
-        let att_output = normalize_pdf_math_notation(att_input);
-        assert!(att_output.contains(
-            r"\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V"
-        ));
-
-        let ffn_input = "FFN(x) = max(0 xW b W b (2)\n1 1 2 2";
-        let ffn_output = normalize_pdf_math_notation(ffn_input);
-        assert!(ffn_output.contains(r"\mathrm{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2"));
-    }
-
-    #[test]
-    fn test_prune_isolated_subscript_noise() {
+    fn test_prune_isolated_letter_lines() {
         let input = "Paragraph one.\n\nk\n\nParagraph two.\n\nv\n\nParagraph three.";
-        let cleaned = prune_isolated_subscript_noise(input);
+        let cleaned = prune_isolated_letter_lines(input);
         assert!(!cleaned.contains("\nk\n"));
         assert!(!cleaned.contains("\nv\n"));
         assert!(cleaned.contains("Paragraph one."));
@@ -2765,54 +2040,137 @@ mod tests {
         assert!(cleaned.contains("Paragraph three."));
 
         let code = "```python\nx\ny\n```";
-        assert_eq!(prune_isolated_subscript_noise(code), code);
+        assert_eq!(prune_isolated_letter_lines(code), code);
 
         let math = "$$\nz\n$$";
-        assert_eq!(prune_isolated_subscript_noise(math), math);
+        assert_eq!(prune_isolated_letter_lines(math), math);
 
         let inline = "This is a test of a single model.";
-        assert_eq!(prune_isolated_subscript_noise(inline), inline);
+        assert_eq!(prune_isolated_letter_lines(inline), inline);
     }
 
     #[test]
-    fn test_pdf_math_zeitz_slice() {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-        let path =
-            Path::new(&manifest_dir).join("../../test_assets/benchmarks/slice_e_math_zeitz.pdf");
-        if path.exists() {
-            let doc = PdfDocument::open(&path).expect("open pdf");
-            let mb = doc.get_page_media_box(3).expect("page 3 media box");
-            let band = detect_two_column_bands(&doc, 3, mb.2, mb.3);
-            assert!(band.is_some(), "Zeitz Page 3 must detect a two-column band");
-            let (top_cut, bot_cut, gx) = band.unwrap();
-            assert!(top_cut > bot_cut + 100.0);
-            assert!(gx > 0.45 * mb.2 && gx < 0.55 * mb.2);
-        }
+    fn test_unwrap_false_prose_code_blocks() {
+        let input = "Intro text.\n\n```\n1. A system comprising:\none or more computers;\nand one or more storage devices storing instructions that, when executed by the one or more computers, cause the one or more computers to perform operations.\n```\n\nOutro text.";
+        let unwrapped = unwrap_false_prose_code_blocks(input);
+        assert!(!unwrapped.contains("```"));
+        assert!(unwrapped.contains("A system comprising:"));
+
+        // Real code must NOT be unwrapped
+        let real_code = "```rust\npub struct Node {\n    id: u32,\n}\n```";
+        assert_eq!(unwrap_false_prose_code_blocks(real_code), real_code);
     }
 
     #[test]
-    fn test_repair_interleaved_columns_and_blocks() {
-        // Academic author zipper test
-        let authors = "**Ashish Vaswani**\n\n**Noam Shazeer**\n\n**Niki Parmar**\n\n**Jakob Uszkoreit** Google Brain\n\nGoogle Brain\n\nGoogle Research Google Research [avaswani@google.com](mailto:avaswani@google.com) [noam@google.com](mailto:noam@google.com) [nikip@google.com](mailto:nikip@google.com) [usz@google.com](mailto:usz@google.com)";
-        let repaired_auth = repair_interleaved_columns_and_blocks(authors);
-        assert!(repaired_auth.contains(
-            "**Ashish Vaswani**\nGoogle Brain\n[avaswani@google.com](mailto:avaswani@google.com)"
-        ));
-        assert!(repaired_auth.contains(
-            "**Jakob Uszkoreit**\nGoogle Research\n[usz@google.com](mailto:usz@google.com)"
-        ));
+    fn false_headings_are_demoted_but_real_ones_kept() {
+        let md = "# 52,000\n# x = y + 1\n# continued from the previous page\n# FAQ\n# Item 7 - Management's Discussion\n# C++ Interop\n# Chapter 2";
+        let out = suppress_false_headings(md);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "52,000");
+        assert_eq!(lines[1], "x = y + 1");
+        assert_eq!(lines[2], "continued from the previous page");
+        assert_eq!(lines[3], "# FAQ");
+        assert_eq!(lines[4], "# Item 7 - Management's Discussion");
+        assert_eq!(lines[5], "# C++ Interop");
+        assert_eq!(lines[6], "# Chapter 2");
+    }
 
-        // Soft hyphen healing test
-        let hyphenated = "This is an experi-\n   mentation in layout.";
-        let healed = repair_interleaved_columns_and_blocks(hyphenated);
-        assert_eq!(healed, "This is an experimentation in layout.");
-
-        // Problem heading separation test
-        let headings = "End of problem 1. 2.2.19 Next problem starts here.";
-        let separated = repair_interleaved_columns_and_blocks(headings);
+    #[test]
+    fn dehyphenation_uses_document_vocabulary() {
+        let md = "Better infor-\nmation retrieval. Some information is free.\nA well-\nknown fact is well known.\nA state-of-the-\nart model.\nWe re-\nported it.";
+        let out = dehyphenate_line_breaks(md, &HashSet::new());
+        assert!(out.contains("Better information retrieval"), "{out}");
+        assert!(out.contains("A well-known fact"), "{out}");
+        assert!(out.contains("state-of-the-art model"), "{out}");
+        assert!(out.contains("We reported it"), "{out}");
+        // Code is never touched.
+        let code = "```\nfoo-\nbar\n```";
+        assert_eq!(dehyphenate_line_breaks(code, &HashSet::new()), code);
+        // Glued by the converter: only geometric line-break pairs are joined.
+        let glued = "The infor-mation age and a well-known co-author.";
+        let breaks: HashSet<(String, String)> = [("infor".to_string(), "mation".to_string())]
+            .into_iter()
+            .collect();
         assert_eq!(
-            separated,
-            "End of problem 1.\n\n2.2.19 Next problem starts here."
+            dehyphenate_line_breaks(glued, &breaks),
+            "The information age and a well-known co-author."
         );
+    }
+
+    #[test]
+    fn page_join_heals_only_true_continuations() {
+        let pages = vec![
+            "The results were consistent with".to_string(),
+            "the earlier study.".to_string(),
+            "Figure 2: Results".to_string(),
+            "**3 Method**".to_string(),
+        ];
+        let out = join_pages_healing_dangling(&pages);
+        assert!(out.contains("consistent with the earlier study."));
+        assert!(out.contains("Figure 2: Results\n\n**3 Method**"));
+    }
+
+    #[test]
+    fn prose_is_never_rewritten() {
+        // Every one of these was corrupted by an earlier regex pass.
+        let md = "Take 5 mg orally for 30 days. Submit Form 1040 (2025). \
+                  See 304 U. S. 64, 78 (1938). Revenue grew 12.5. 2023 was good. \
+                  Call localStorage.getItem and parseInt. Table A 2 lists x 2 cases.";
+        assert_eq!(tidy_markdown(md, &HashSet::new()), md);
+    }
+
+    #[test]
+    fn real_code_block_is_not_unwrapped() {
+        let real_code =
+            "```\nfn main() {\n    let x = vec![1, 2, 3];\n    println!(\"{:?}\", x);\n}\n```";
+        assert_eq!(unwrap_false_prose_code_blocks(real_code), real_code);
+    }
+
+    /// The synthetic survival corpus: numbers, headings and order survive while
+    /// headers, footers and line-number gutters are removed.
+    fn survival(name: &str) -> String {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let p = Path::new(&manifest_dir)
+            .join("../../test_assets/pdf_survival")
+            .join(name);
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        PdfGobbler.gobble(&p, &(&args).into()).unwrap()
+    }
+
+    fn flat(s: &str) -> String {
+        s.replace("**", "")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn survival_memo_keeps_headings_and_numbers_drops_furniture() {
+        let out = survival("memo_a4_running_headers.pdf");
+        let f = flat(&out);
+        for n in 1..=6 {
+            let h = format!("Section {n}: Overview of Operations");
+            assert!(
+                out.lines().any(|l| l.starts_with('#') && l.contains(&h)),
+                "missing heading {h}"
+            );
+        }
+        assert!(f.contains("take 5 mg orally twice daily for 30 days"));
+        assert!(f.contains("Submit Form 1040 (2025) by April 15 and subtract line 10 from line 9"));
+        assert!(f.contains("304 U.S. 64, 78 (1938)"));
+        assert!(!f.contains("Page 3 of 6"));
+        assert!(!f.contains("Confidential Draft"));
+    }
+
+    #[test]
+    fn survival_line_number_gutters_removed() {
+        let f = flat(&survival("pleading_line_numbers.pdf"));
+        assert!(
+            f.contains("deliver 25 units within 30 days of the order"),
+            "{f}"
+        );
+        let f = flat(&survival("patent_two_column_gutter.pdf"));
+        assert!(f.contains("a batch of 25 sequences in parallel"), "{f}");
+        assert!(f.contains("Training proceeds for 15 epochs"), "{f}");
     }
 }

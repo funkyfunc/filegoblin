@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import os, sys, json, subprocess, time
 
-GAUNTLET_DIR = "/Users/stompinggrounds/Development/filegoblin/test_assets/gauntlet"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GAUNTLET_DIR = os.path.join(ROOT, "test_assets", "gauntlet")
 MANIFEST_PATH = f"{GAUNTLET_DIR}/gauntlet_manifest.json"
-BINARY_PATH = "/Users/stompinggrounds/Development/filegoblin/target/debug/filegoblin"
+# FILEGOBLIN_BIN overrides; otherwise the repo's debug build, then PATH.
+BINARY_PATH = os.environ.get("FILEGOBLIN_BIN", os.path.join(ROOT, "target", "debug", "filegoblin"))
 
 if not os.path.exists(BINARY_PATH):
     BINARY_PATH = "filegoblin"
@@ -79,7 +81,7 @@ print(f"GAUNTLET SCORE: {passed_count}/{len(manifest)} ({score:.1f}%)")
 print("=" * 70)
 
 # Generate Markdown scorecard
-scorecard_path = "/Users/stompinggrounds/Development/filegoblin/GAUNTLET_SCORECARD.md"
+scorecard_path = os.path.join(ROOT, "GAUNTLET_SCORECARD.md")
 with open(scorecard_path, "w") as f:
     f.write("# Filegoblin Adversarial Gauntlet Scorecard\n\n")
     f.write(f"**Overall Score:** {passed_count}/{len(manifest)} ({score:.1f}%)\n\n")

@@ -718,3 +718,35 @@ Prior optimization cycles achieved zero leaks across all benchmark documents and
 
 **Status:** Accepted.
 
+
+## 2026-10-11: PDF engine de-overfitting — geometric furniture, no prose rewriting
+
+**Context:**
+The audit (`docs/agent_context/AUDIT_REPORT.md`) found that the 29/29 gauntlet result had been reached partly by hard-coding the benchmark: verbatim sentences from *Attention Is All You Need* with hand-written LaTeX answers, 46 literal word fixes from the Zeitz scan, a *Thinking in Systems* sentence, and global regex passes that "healed" one document's defects everywhere. Those passes corrupted ordinary text in every PDF: drug doses in the Keytruda label ("KEYTRUDA 200 mg" → "KEYTRUDA200 mg", "axitinib 5 mg" → "axitinibmg"), legal citations ("64, 78 (1938)" → "78), (1938)"), form references and code identifiers. A text-level running-header filter deleted real headings ("Section 3: …") that recurred with different numbers. Separately, `include_artifacts: false` switched on `pdf_oxide`'s own untagged-header heuristic, which drops any top-band line whose digit-stripped text repeats — the same heading bug, upstream.
+
+**Decision:**
+1. **Delete every document-specific literal and every word-level regex pass** from `pdf.rs` (Attention/Zeitz/Meadows literals, the 46-replace chain, line-number regexes, suffix/prefix healing, `COORD_DIGIT_OPEN_PAREN_RE`, `SECTION_NUM_RE`, `CAMEL_PROSE_RE`, the OCR-math regexes, callout disentangling, the author zipper, keyword title promotion, publisher-slug keywords, the dead CMSY table). Post-conversion passes may now only change structure (block spacing, false headings, page joins), never the words of prose. A unit test (`prose_is_never_rewritten`) pins this.
+2. **Furniture is decided geometrically, before conversion** (new `parsers/pdf_furniture.rs`), and excluded via `ConversionOptions::exclude_regions`:
+   - running headers/footers: outermost rows in a band near the page edge, recurring (numbers masked) on ≥ 20% of pages or in a run of nearby pages, at a consistent distance from the edge, and set no larger than body text — a heading-sized line is never furniture;
+   - folios: lone page numbers whose value advances with the page index (a cover-page "2023" does not);
+   - line-number gutters: isolated integers in an empty vertical channel, increasing by a constant step at a constant pitch, standing in a margin or between two columns. Because exclusion works on whole spans, gutter numbers merged into a span are also removed from the text — once, and only between the neighbouring words they had on the page.
+   OCR'd pages (no geometry) use the same recurrence/folio rules on their first and last lines.
+3. **`include_artifacts: true`**: `pdf_oxide`'s untagged-header heuristic is not used.
+4. **Word repair from evidence, not word lists**: line-break hyphenation is joined only for pairs geometry recorded as a line-end hyphen, with the document's own vocabulary deciding compound vs syllable break; words split by a dropped hyphen are rejoined on geometric or vocabulary evidence; tokens the converter ran together are split only where the page shows a word gap *and* the characters show a boundary (case change, letter↔digit, punctuation); letter-spaced headings are rejoined from measured gaps.
+5. **Recovered tables must have real columns**: interior column boundaries must be ruled or clearly wider than the page's word spacing.
+6. **Two-column band detection** now uses the real page box (origin, size) and scales its scan with the body font size instead of US-Letter point constants.
+7. **New evaluation** (`scripts/pdf_eval.py`) beside the gauntlet: synthetic survival PDFs with exact ground truth (`test_assets/pdf_survival/`, generator `scripts/gen_pdf_survival.py`), verbatim must-survive phrases from real documents (doses, citations, form lines), and fidelity against `pdftotext` with a neutral normaliser (word recall/precision, 4-gram recall, numeric survival). `scripts/run_gauntlet.py` now resolves paths from the repo and honours `FILEGOBLIN_BIN`.
+
+**Outcomes** (Linux, debug build with `--features ocr`; same harness for both columns):
+
+| | Before | After |
+|---|---|---|
+| Gauntlet (all 29) | 29/29 | 28/29 — R2 fails |
+| Survival checks (synthetic + real-document phrases) | 37/80 | 78/80 |
+| Fidelity vs pdftotext, mean of 26 PDFs: recall / precision / 4-gram / numeric | 91.1 / 89.0 / 76.0 / 71.6 | 95.9 / 91.0 / 84.5 / 91.8 |
+| Held-out memo: section headings kept | 2/6 | 6/6 |
+| Keytruda dose phrases intact | 1/4 | 4/4 |
+
+R2's canary is `\le`, but the Zeitz page's text layer contains the OCR misreading `::;` and no ≤ anywhere; the only way to produce `\le` is to rewrite that specific misreading, which is the practice this entry removes. The canary should be replaced with a phrase the page actually contains. The two remaining survival misses are compounds broken at a line-end hyphen in a 10-line document ("well-known", "Self-supervised"): with no other occurrences to learn from, the vocabulary rule defaults to joining. Not verified on macOS (Apple Vision OCR path).
+
+**Status:** Accepted.

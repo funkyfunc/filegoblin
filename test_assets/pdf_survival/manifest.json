@@ -1,0 +1,184 @@
+[
+  {
+    "file": "memo_a4_running_headers.pdf",
+    "must_contain": [
+      "Patients should take 5 mg orally twice daily for 30 days, then reduce to 2 mg.",
+      "Submit Form 1040 (2025) by April 15 and subtract line 10 from line 9.",
+      "Revenue grew 12.5. 2023 was a record year for the company.",
+      "Connect GPIO 25 and GPIO 26 to the sensor before Item 15 is signed.",
+      "The function localStorage.getItem returns null, so call parseInt on it.",
+      "Grade 3 (12%) and Grade 4 (0.3%) reactions were reported in Table A 2.",
+      "In Smith v. Jones, 304 U.S. 64, 78 (1938), the court held otherwise.",
+      "Administer KEYTRUDA 200 mg every 3 weeks or 400 mg every 6 weeks.",
+      "A box of 20 units costs 45 dollars and ships within 10 business days."
+    ],
+    "must_not_contain": [
+      "Page 3 of 6",
+      "Page 5 of 6",
+      "Confidential Draft"
+    ],
+    "headings": [
+      "Section 1: Overview of Operations",
+      "Section 2: Overview of Operations",
+      "Section 3: Overview of Operations",
+      "Section 4: Overview of Operations",
+      "Section 5: Overview of Operations",
+      "Section 6: Overview of Operations"
+    ],
+    "ordered": [
+      [
+        "Section 1: Overview",
+        "Section 2: Overview"
+      ],
+      [
+        "Section 5: Overview",
+        "Section 6: Overview"
+      ]
+    ]
+  },
+  {
+    "file": "pleading_line_numbers.pdf",
+    "must_contain": [
+      "deliver 25 units within 30 days of the order",
+      "in breach of Section 15 of the agreement",
+      "partial shipment of 20 units",
+      "interest at 5 percent"
+    ],
+    "must_not_contain": [],
+    "headings": [],
+    "ordered": [
+      [
+        "COMPLAINT FOR BREACH",
+        "Plaintiff alleges"
+      ]
+    ],
+    "no_number_noise": true
+  },
+  {
+    "file": "patent_two_column_gutter.pdf",
+    "must_contain": [
+      "includes 6 encoder subnetworks, each having 8 attention heads",
+      "a batch of 25 sequences in parallel",
+      "within 10 milliseconds",
+      "contains 30 thousand tokens and the beam width is 5 candidates",
+      "Training proceeds for 15 epochs",
+      "evaluated on 55 held out documents"
+    ],
+    "must_not_contain": [],
+    "headings": [],
+    "ordered": [
+      [
+        "includes 6 encoder subnetworks",
+        "The decoder generates"
+      ]
+    ]
+  },
+  {
+    "file": "three_column_newsletter.pdf",
+    "must_contain": [
+      "approved a budget of 12 million dollars",
+      "voted 7 to 2 in favour of the plan",
+      "a survey of 400 residents",
+      "returns on Saturday with 35 vendors"
+    ],
+    "must_not_contain": [],
+    "headings": [],
+    "ordered": [
+      [
+        "ALPHA The city council",
+        "BRAVO The public library"
+      ],
+      [
+        "BRAVO The public library",
+        "CHARLIE The farmers market"
+      ],
+      [
+        "funds 15 new teachers",
+        "BRAVO The public library"
+      ]
+    ]
+  },
+  {
+    "file": "landscape_slides.pdf",
+    "must_contain": [
+      "Revenue reached 4.2 billion dollars",
+      "Operating margin was 12.5 percent",
+      "Asia Pacific grew 15 percent",
+      "We expect 10 to 15 percent growth",
+      "Two new factories open in Q3"
+    ],
+    "must_not_contain": [],
+    "headings": [],
+    "ordered": [
+      [
+        "Quarterly Highlights",
+        "Regional Performance"
+      ],
+      [
+        "Regional Performance",
+        "Outlook for 2025"
+      ]
+    ]
+  },
+  {
+    "file": "hyphenation_column.pdf",
+    "must_contain": [
+      "improves information retrieval for large collections of documents",
+      "state-of-the-art approach",
+      "well-known among practitioners",
+      "used 25 queries and reported a 12 percent gain",
+      "the authors describe as encouraging",
+      "Self-supervised pretraining"
+    ],
+    "must_not_contain": [
+      "infor- mation",
+      "collec- tions"
+    ],
+    "headings": [],
+    "ordered": []
+  },
+  {
+    "file": "ruled_table_and_values.pdf",
+    "must_contain": [
+      "Consolidated Results",
+      "2023",
+      "(3.4)",
+      "1,450",
+      "Units (000)",
+      "12-3456789"
+    ],
+    "must_not_contain": [],
+    "headings": [],
+    "ordered": [
+      [
+        "Revenue",
+        "Net income"
+      ]
+    ],
+    "table_cells": [
+      [
+        "Net income",
+        "(3.4)",
+        "12.0"
+      ],
+      [
+        "Revenue",
+        "1,200",
+        "1,450"
+      ]
+    ]
+  },
+  {
+    "file": "multilingual.pdf",
+    "must_contain": [
+      "innerhalb 30 Tagen erfolgen",
+      "5 Prozent Verzugszinsen gemäß Artikel 15",
+      "budget de 20 millions d'euros pour l'année 2025",
+      "25度以下",
+      "30日以内"
+    ],
+    "must_not_contain": [],
+    "headings": [],
+    "ordered": []
+  }
+]

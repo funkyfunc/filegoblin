@@ -207,6 +207,7 @@ pub mod omml;
 pub mod opendocument;
 pub mod openxml_chart;
 pub mod pdf;
+pub mod pdf_furniture;
 pub mod pdf_table;
 pub mod powerpoint;
 pub mod rtf;
