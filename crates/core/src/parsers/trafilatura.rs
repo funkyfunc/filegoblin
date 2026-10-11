@@ -29,6 +29,9 @@ static SEL_CANDIDATES: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("article, main, section, div, [role='main'], [role='article']").unwrap()
 });
 
+/// Article selector.
+static SEL_ARTICLE: LazyLock<Selector> = LazyLock::new(|| Selector::parse("article").unwrap());
+
 /// Link selector.
 static SEL_LINKS: LazyLock<Selector> = LazyLock::new(|| Selector::parse("a").unwrap());
 
@@ -288,8 +291,46 @@ impl TrafilaturaExtractor {
         // Step 4: Remove link farms (containers where link text > 33%)
         self.prune_link_farms(&mut doc);
 
-        // Step 5: Score remaining candidate containers
+        // Step 5: Document-level tabular density check
+        // If the document contains substantial table content (table_text_len / total_text_len > 0.30
+        // or table_count >= 3) and no dominant <article> tag is present, do NOT strip tables or narrow
+        // down to a single candidate element. Fall back to preserving all table content from body.
+        let body_sel = Selector::parse("body").unwrap();
+        let total_text_len: usize = doc
+            .select(&body_sel)
+            .next()
+            .map(|b| b.text().map(|t| t.trim().len()).sum())
+            .unwrap_or(0);
+
+        let table_count = doc.select(&SEL_TABLES).count();
+        let table_text_len: usize = doc
+            .select(&SEL_TABLES)
+            .map(|tbl| tbl.text().map(|t| t.trim().len()).sum::<usize>())
+            .sum();
+
+        let has_dominant_article = doc.select(&SEL_ARTICLE).any(|art| {
+            let art_len: usize = art.text().map(|t| t.trim().len()).sum();
+            art_len > 300 && (total_text_len == 0 || (art_len as f32 / total_text_len as f32) > 0.5)
+        });
+
+        let is_tabular_document = !has_dominant_article
+            && total_text_len > 0
+            && (table_count >= 3 || (table_text_len as f32 / total_text_len as f32) > 0.30);
+
         let root = doc.root_element();
+        if is_tabular_document {
+            let fallback = doc
+                .select(&body_sel)
+                .next()
+                .map(|b| b.inner_html())
+                .unwrap_or_else(|| root.inner_html());
+
+            if !fallback.trim().is_empty() {
+                return Some(fallback);
+            }
+        }
+
+        // Step 6: Score remaining candidate containers
         let candidates: Vec<ElementRef> = doc.select(&SEL_CANDIDATES).collect();
 
         let mut best_elem: Option<ElementRef> = None;
@@ -556,5 +597,46 @@ mod tests {
             result.contains("let score = metrics.score();"),
             "must preserve code block"
         );
+    }
+
+    #[test]
+    fn test_trafilatura_tabular_document_fallback() {
+        let html = r#"
+        <!DOCTYPE html>
+        <html>
+        <head><title>Q3 Financial Operations</title></head>
+        <body>
+          <div class="report-header">
+            <h1>Consolidated Statements of Operations</h1>
+          </div>
+          <div class="financial-table">
+            <table>
+              <tr><th>Line Item</th><th>2025</th><th>2024</th></tr>
+              <tr><td>Total Net Sales</td><td>$416,161</td><td>$391,035</td></tr>
+            </table>
+          </div>
+          <div class="financial-table">
+            <table>
+              <tr><th>Expense</th><th>2025</th><th>2024</th></tr>
+              <tr><td>Research and Development</td><td>$31,370</td><td>$29,915</td></tr>
+            </table>
+          </div>
+          <div class="financial-table">
+            <table>
+              <tr><th>Tax Rate</th><th>2025</th><th>2024</th></tr>
+              <tr><td>Effective Rate</td><td>15.4%</td><td>14.8%</td></tr>
+            </table>
+          </div>
+        </body>
+        </html>
+        "#;
+
+        let extractor = TrafilaturaExtractor::default();
+        let result = extractor.extract(html).expect("extract content");
+
+        assert!(result.contains("Consolidated Statements of Operations"));
+        assert!(result.contains("Total Net Sales"));
+        assert!(result.contains("Research and Development"));
+        assert!(result.contains("Effective Rate"));
     }
 }
