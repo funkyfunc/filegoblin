@@ -97,18 +97,20 @@ pub(crate) fn page_box(doc: &PdfDocument, page: usize, words: &[GWord]) -> (f32,
 
 /// Collects line and word geometry for one page.
 pub(crate) fn collect_page_geom(doc: &PdfDocument, page: usize) -> Option<PageGeom> {
-    let raw_words = doc.extract_words(page).ok()?;
-    let words: Vec<GWord> = raw_words
+    let to_word = |w: &pdf_oxide::layout::Word| GWord {
+        text: w.text.trim().to_string(),
+        x0: w.bbox.x,
+        y0: w.bbox.y,
+        x1: w.bbox.x + w.bbox.width,
+        y1: w.bbox.y + w.bbox.height,
+        size: w.avg_font_size,
+    };
+    let words: Vec<GWord> = doc
+        .extract_words(page)
+        .ok()?
         .iter()
         .filter(|w| !w.text.trim().is_empty())
-        .map(|w| GWord {
-            text: w.text.trim().to_string(),
-            x0: w.bbox.x,
-            y0: w.bbox.y,
-            x1: w.bbox.x + w.bbox.width,
-            y1: w.bbox.y + w.bbox.height,
-            size: w.avg_font_size,
-        })
+        .map(to_word)
         .collect();
     let lines: Vec<GLine> = doc
         .extract_text_lines(page)
@@ -130,40 +132,34 @@ pub(crate) fn collect_page_geom(doc: &PdfDocument, page: usize) -> Option<PageGe
                 .words
                 .iter()
                 .filter(|w| !w.text.trim().is_empty())
-                .map(|w| GWord {
-                    text: w.text.trim().to_string(),
-                    x0: w.bbox.x,
-                    y0: w.bbox.y,
-                    x1: w.bbox.x + w.bbox.width,
-                    y1: w.bbox.y + w.bbox.height,
-                    size: w.avg_font_size,
-                })
+                .map(to_word)
                 .collect(),
         })
         .collect();
     let bx = page_box(doc, page, &words);
     let glued = glued_runs(&lines);
-    let numeric = words
-        .iter()
-        .filter(|w| w.text.parse::<u32>().is_ok())
-        .count();
-    let table_boxes = if numeric >= 4 {
-        doc.extract_tables(page)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|t| t.bbox)
-            .map(|b| (b.x, b.y, b.x + b.width, b.y + b.height))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    Some(PageGeom {
+    let mut geom = PageGeom {
         bx,
         lines,
         words,
         glued,
-        table_boxes,
-    })
+        table_boxes: Vec::new(),
+    };
+    // Table boxes only matter to protect a numeric table column from being
+    // read as a line-number gutter, so detect tables only when a gutter
+    // candidate exists. The permissive size limit (largest font on the page)
+    // makes this a superset of what the document-level pass will consider.
+    let largest = geom.words.iter().map(|w| w.size).fold(0.0f32, f32::max);
+    if !line_number_gutters(&geom, largest.max(1.0)).0.is_empty() {
+        geom.table_boxes = doc
+            .extract_tables(page)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|t| t.bbox)
+            .map(|b| (b.x, b.y, b.x + b.width, b.y + b.height))
+            .collect();
+    }
+    Some(geom)
 }
 
 /// The first word of the line that continues a line spanning `x0..x1` with

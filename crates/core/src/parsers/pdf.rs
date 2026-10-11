@@ -42,10 +42,6 @@ fn detect_two_column_bands(
     excluded: &[Rect],
     body: f32,
 ) -> Option<(f32, f32, f32)> {
-    // Pages with tables are left to the table extractor.
-    if !doc.extract_tables(page).unwrap_or_default().is_empty() {
-        return None;
-    }
     if geom.lines.iter().any(|l| l.text.contains('|')) {
         return None;
     }
@@ -141,6 +137,11 @@ fn detect_two_column_bands(
     }
 
     if best_score < 8 {
+        return None;
+    }
+    // Pages with tables are left to the table extractor. Checked last: table
+    // detection is expensive and most pages have no two-column band at all.
+    if !doc.extract_tables(page).unwrap_or_default().is_empty() {
         return None;
     }
     let gx = (best_gx_min + best_gx_max) / 2.0;
@@ -329,23 +330,25 @@ impl Gobble for PdfGobbler {
         }
 
         // Stage 1: classify pages and collect geometry for those with text.
-        let kinds: Vec<PageKind> = (0..page_count)
+        // Classification and geometry run back to back for each page, so the
+        // page's parsed content is still in pdf_oxide's small per-page cache
+        // when the geometry pass reads it.
+        let (kinds, geoms): (Vec<PageKind>, Vec<Option<PageGeom>>) = (0..page_count)
             .into_par_iter()
             .map(|page| {
                 // Cheap preflight: signals only, no rasterization. On any
                 // classification error, assume a text layer and let extraction try.
-                doc.classify_page(page)
+                let kind = doc
+                    .classify_page(page)
                     .map(|c| c.kind)
-                    .unwrap_or(PageKind::TextLayer)
+                    .unwrap_or(PageKind::TextLayer);
+                let geom = match kind {
+                    PageKind::Empty => None,
+                    _ => pdf_furniture::collect_page_geom(&doc, page),
+                };
+                (kind, geom)
             })
-            .collect();
-        let geoms: Vec<Option<PageGeom>> = (0..page_count)
-            .into_par_iter()
-            .map(|page| match kinds[page] {
-                PageKind::Empty => None,
-                _ => pdf_furniture::collect_page_geom(&doc, page),
-            })
-            .collect();
+            .unzip();
 
         // Stage 2: furniture, decided across the whole document.
         let pdf_furniture::Furniture {
@@ -998,7 +1001,7 @@ pub(crate) fn format_table_and_block_boundaries(md: &str) -> String {
             continue;
         }
 
-        out.push(raw_line.to_string());
+        out.push(squeeze_spaces(raw_line));
     }
 
     if in_table {
@@ -1008,52 +1011,118 @@ pub(crate) fn format_table_and_block_boundaries(md: &str) -> String {
     collapse_blank_lines(&out)
 }
 
+/// Emits a table in the project's single pipe-table dialect (`| a | b |`,
+/// `|---|`) without changing any cell text: cell padding is normalised, the
+/// delimiter row matches the column count, and rows or columns with no
+/// content at all are dropped. A block without a delimiter row passes through.
 fn flush_table(out: &mut Vec<String>, rows: &[String]) {
-    if rows.is_empty() {
+    if rows.len() < 2 || !is_table_separator(&rows[1]) {
+        out.extend(rows.iter().cloned());
         return;
     }
-
-    if rows.len() == 1 {
-        out.push(rows[0].clone());
+    let header = split_cells(&rows[0]);
+    let width = header.len();
+    if width == 0 {
+        out.extend(rows.iter().cloned());
         return;
     }
-
-    let header_cols = count_pipe_columns(&rows[0]);
-
-    for (row_idx, row) in rows.iter().enumerate() {
-        if row_idx == 1 && is_table_separator(row) {
-            let sep_cols = count_pipe_columns(row);
-            if sep_cols != header_cols && header_cols > 0 {
-                let mut fixed_sep = String::from("|");
-                for _ in 0..header_cols {
-                    fixed_sep.push_str("---|");
-                }
-                out.push(fixed_sep);
-                continue;
-            }
-        }
-        out.push(row.clone());
+    let delim: Vec<String> = split_cells(&rows[1])
+        .into_iter()
+        .map(|c| {
+            let (l, r) = (c.starts_with(':'), c.ends_with(':') && c.len() > 1);
+            format!(
+                "{}---{}",
+                if l { ":" } else { "" },
+                if r { ":" } else { "" }
+            )
+        })
+        .collect();
+    let mut body: Vec<Vec<String>> = rows[2..]
+        .iter()
+        .map(|r| split_cells(r))
+        .filter(|cells| cells.iter().any(|c| !c.is_empty()))
+        .collect();
+    for r in body.iter_mut() {
+        r.resize(width.max(r.len()), String::new());
+    }
+    let width = body.iter().map(|r| r.len()).max().unwrap_or(0).max(width);
+    // Columns that are empty in every row, header included.
+    let keep: Vec<bool> = (0..width)
+        .map(|i| {
+            header.get(i).is_some_and(|c| !c.is_empty())
+                || body.iter().any(|r| r.get(i).is_some_and(|c| !c.is_empty()))
+        })
+        .collect();
+    if !keep.iter().any(|k| *k) {
+        return;
+    }
+    let render = |cells: &[String]| {
+        let kept: Vec<&str> = (0..width)
+            .filter(|i| keep[*i])
+            .map(|i| cells.get(i).map(String::as_str).unwrap_or(""))
+            .collect();
+        format!("| {} |", kept.join(" | "))
+    };
+    let mut head = header.clone();
+    head.resize(width, String::new());
+    out.push(render(&head));
+    let mut d = delim;
+    d.resize(width, "---".to_string());
+    let d_kept: Vec<&str> = (0..width)
+        .filter(|i| keep[*i])
+        .map(|i| d[i].as_str())
+        .collect();
+    out.push(format!("|{}|", d_kept.join("|")));
+    for r in &body {
+        out.push(render(r));
     }
 }
 
-fn count_pipe_columns(s: &str) -> usize {
-    let trimmed = s.trim();
-    if !trimmed.starts_with('|') || !trimmed.ends_with('|') || trimmed.len() < 2 {
-        return 0;
-    }
-    let inner = &trimmed[1..trimmed.len() - 1];
-    let mut cols = 0;
-    let mut in_escape = false;
+/// Splits a pipe-table row into trimmed cells, honouring `\|` escapes.
+fn split_cells(row: &str) -> Vec<String> {
+    let t = row.trim();
+    let inner = t.strip_prefix('|').unwrap_or(t);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let mut cells = Vec::new();
+    let mut cur = String::new();
+    let mut escaped = false;
     for c in inner.chars() {
-        if in_escape {
-            in_escape = false;
+        if escaped {
+            cur.push(c);
+            escaped = false;
         } else if c == '\\' {
-            in_escape = true;
+            cur.push(c);
+            escaped = true;
         } else if c == '|' {
-            cols += 1;
+            cells.push(cur.trim().to_string());
+            cur.clear();
+        } else {
+            cur.push(c);
         }
     }
-    cols + 1
+    cells.push(cur.trim().to_string());
+    cells
+}
+
+/// Collapses runs of spaces inside a prose line to one space (the converter
+/// often emits two), keeping leading indentation and dropping trailing blanks.
+fn squeeze_spaces(line: &str) -> String {
+    let indent = line.len() - line.trim_start().len();
+    let mut out = String::with_capacity(line.len());
+    out.push_str(&line[..indent]);
+    let mut prev_space = false;
+    for c in line[indent..].trim_end().chars() {
+        if c == ' ' || c == '\t' {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    out
 }
 
 fn is_table_separator(s: &str) -> bool {
@@ -2172,5 +2241,16 @@ mod tests {
         let f = flat(&survival("patent_two_column_gutter.pdf"));
         assert!(f.contains("a batch of 25 sequences in parallel"), "{f}");
         assert!(f.contains("Training proceeds for 15 epochs"), "{f}");
+    }
+
+    #[test]
+    fn tables_are_compacted_without_changing_cells() {
+        let md = "| Metric |  | 2023 | Note |\n|:---|---|---:|---|\n| Revenue |  | 1,200 | a \\| b |\n|  |  |  |  |\n| Margin |  | (3.4) |  |";
+        let out = format_table_and_block_boundaries(md);
+        assert_eq!(
+            out,
+            "| Metric | 2023 | Note |\n|:---|---:|---|\n| Revenue | 1,200 | a \\| b |\n| Margin | (3.4) |  |"
+        );
+        assert_eq!(squeeze_spaces("  a  b   c  "), "  a b c");
     }
 }

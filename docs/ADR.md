@@ -750,3 +750,16 @@ The audit (`docs/agent_context/AUDIT_REPORT.md`) found that the 29/29 gauntlet r
 R2's canary is `\le`, but the Zeitz page's text layer contains the OCR misreading `::;` and no ≤ anywhere; the only way to produce `\le` is to rewrite that specific misreading, which is the practice this entry removes. The canary should be replaced with a phrase the page actually contains. The two remaining survival misses are compounds broken at a line-end hyphen in a 10-line document ("well-known", "Self-supervised"): with no other occurrences to learn from, the vocabulary rule defaults to joining. Not verified on macOS (Apple Vision OCR path).
 
 **Status:** Accepted.
+
+## 2026-10-11: PDF pass speed-up and table compaction
+
+**Context:** Profiling the PDF pipeline showed most time inside `pdf_oxide` re-reading pages: classification, geometry and conversion each parsed every page again, because its parsed-page cache holds only eight pages and the stages ran as separate passes over the whole document. Table detection also ran on every page just to rule out a two-column split.
+
+**Decision:**
+- Classify and collect geometry for a page in the same task, so geometry reuses the classification's parsed page (extract_words dropped from 2.6 s to 0.4 s of CPU on the Keytruda label).
+- Check for tables only after a two-column band has been found, and detect tables for the line-number guard only on pages with a gutter candidate.
+- Emit PDF tables with empty rows and empty columns removed and cell padding normalised (same `| a | b |` dialect as every other parser), and collapse runs of spaces in prose.
+
+**Outcome:** gauntlet PDFs convert 19% faster (21.6 s → 17.5 s for the 16 gauntlet PDFs on 2 cores) with no words changed (only whitespace and empty table cells differ); all quality metrics unchanged (survival 78/80, gauntlet 28/29, pdftotext fidelity identical); output 1.9% smaller in GPT-4o tokens. A compact table dialect (`|a|b|`, `|-|`) would save roughly 3% more but changes every parser's output and two gauntlet syntax canaries, so it is left as a separate decision.
+
+**Status:** Accepted.
