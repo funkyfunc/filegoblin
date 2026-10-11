@@ -188,5 +188,71 @@
       "User Comments (3)",
       "Terms of Service"
     ]
+  },
+  {
+    "id": "FIN_1",
+    "file": "financial/berkshire_annual_report_2023.pdf",
+    "category": "Corporate Financial 10-K",
+    "description": "Berkshire Hathaway Annual Report (140pp): multi-page balance sheets and operating earnings",
+    "canaries_present": [
+      "BERKSHIRE HATHAWAY INC.",
+      "Consolidated Balance Sheets",
+      "Charlie Munger",
+      "Operating Companies"
+    ]
+  },
+  {
+    "id": "FIN_2",
+    "file": "financial/apple_10k_2025.html",
+    "category": "SEC EDGAR iXBRL HTML",
+    "description": "Apple Inc. 10-K (iXBRL HTML): preserve dense financial statement tables without article boilerplate stripping",
+    "canaries_present": [
+      "CONSOLIDATED STATEMENTS OF OPERATIONS",
+      "Total net sales",
+      "Research and development"
+    ],
+    "syntax_contains": [
+      "|"
+    ]
+  },
+  {
+    "id": "FORM_1",
+    "file": "forms/irs_form_1040.pdf",
+    "category": "Government Tax Forms",
+    "description": "IRS Form 1040: spatial form grids, label-value bounding boxes, and SSN field recovery",
+    "canaries_present": [
+      "1040",
+      "U.S. Individual Income Tax Return",
+      "Your social security number",
+      "Standard Deduction"
+    ]
+  },
+  {
+    "id": "TECH_1",
+    "file": "datasheets/esp32_datasheet.pdf",
+    "category": "Hardware Datasheets",
+    "description": "ESP32 SoC Datasheet: pinout matrices, peripheral tables, and register memory maps",
+    "canaries_present": [
+      "ESP32 Series Datasheet",
+      "Pin Definitions",
+      "Electrical Characteristics",
+      "Product Overview"
+    ],
+    "syntax_contains": [
+      "|",
+      "UART"
+    ]
+  },
+  {
+    "id": "SLIDE_1",
+    "file": "presentations/tesla_q4_2023_shareholder_update.pdf",
+    "category": "Corporate Investor Relations Deck",
+    "description": "Tesla Q4 & FY 2023 Update: wide-format presentation slides, financial metric callouts, and vehicle deliveries",
+    "canaries_present": [
+      "Q4 and FY 2023 Update",
+      "Financial Summary",
+      "Vehicle Capacity",
+      "free cash flow"
+    ]
   }
 ]
