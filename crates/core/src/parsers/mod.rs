@@ -209,6 +209,8 @@ pub mod openxml_chart;
 pub mod pdf;
 pub mod pdf_furniture;
 pub mod pdf_table;
+#[cfg(feature = "vision")]
+pub mod pdf_vision;
 pub mod powerpoint;
 pub mod rtf;
 pub mod sheet;

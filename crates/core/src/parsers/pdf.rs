@@ -315,7 +315,7 @@ fn join_pages_healing_dangling(pages: &[String]) -> String {
 pub struct PdfGobbler;
 
 impl Gobble for PdfGobbler {
-    fn gobble(&self, path: &Path, _opts: &ParseOptions) -> Result<String> {
+    fn gobble(&self, path: &Path, opts: &ParseOptions) -> Result<String> {
         if !path.exists() {
             anyhow::bail!("Mischievous I/O Error: file not found at {:?}", path);
         }
@@ -371,6 +371,19 @@ impl Gobble for PdfGobbler {
             ..Default::default()
         };
 
+        #[cfg(not(feature = "vision"))]
+        let _ = opts.fast;
+        // Layout models, when built in and their weights are present: render
+        // pages and let the model place each text-layer word.
+        #[cfg(feature = "vision")]
+        let renderer = if !opts.fast && crate::vision::enabled() {
+            std::fs::read(path)
+                .ok()
+                .and_then(|bytes| crate::vision::render::Renderer::open(std::sync::Arc::new(bytes)))
+        } else {
+            None
+        };
+
         // Stage 3: convert each page with its furniture excluded.
         // (markdown, unreadable, came_from_ocr)
         let page_results: Vec<(String, bool, bool)> = (0..page_count)
@@ -382,10 +395,36 @@ impl Gobble for PdfGobbler {
                 options.exclude_regions = excluded.clone();
                 options.exclude_regions_mode = RectFilterMode::MinOverlap(0.5);
                 let kind = kinds[page];
+                // Scans: the bundled layout + OCR models when available, else
+                // the platform OCR engine on the page's embedded images.
+                let scanned_page_text = |doc: &PdfDocument, page: usize| -> Option<String> {
+                    #[cfg(feature = "vision")]
+                    if let Some(md) = renderer
+                        .as_ref()
+                        .and_then(|r| super::pdf_vision::convert_scanned_page(r, page))
+                        .filter(|md| !md.trim().is_empty())
+                    {
+                        return Some(md);
+                    }
+                    ocr_scanned_page(doc, page)
+                };
 
                 match kind {
-                    PageKind::Empty => (String::new(), false, false),
-                    PageKind::Scanned => match ocr_scanned_page(&doc, page) {
+                    // "Empty" to the text layer can still be a picture the
+                    // classifier could not decode (JBIG2, odd masks); the
+                    // renderer and layout model get the final say.
+                    PageKind::Empty => {
+                        #[cfg(feature = "vision")]
+                        if let Some(md) = renderer
+                            .as_ref()
+                            .and_then(|r| super::pdf_vision::convert_scanned_page(r, page))
+                            .filter(|md| !md.trim().is_empty())
+                        {
+                            return (md, false, true);
+                        }
+                        (String::new(), false, false)
+                    }
+                    PageKind::Scanned => match scanned_page_text(&doc, page) {
                         Some(text) if !text.trim().is_empty() => {
                             (text.trim().to_string(), false, true)
                         }
@@ -407,6 +446,23 @@ impl Gobble for PdfGobbler {
                     // TextLayer / ImageText / Mixed: the native converter. For
                     // hybrids, also OCR the page's image so figure text isn't lost.
                     _ => {
+                        #[cfg(feature = "vision")]
+                        if let (Some(r), Some(g)) = (renderer.as_ref(), geom)
+                            && let Some(md) = super::pdf_vision::convert_page(
+                                r,
+                                &doc,
+                                page,
+                                g,
+                                excluded,
+                                &base_options,
+                            )
+                        {
+                            let md = rejoin_letter_spacing(
+                                &pdf_furniture::remove_gutter_numbers(md.trim(), &gutters[page]),
+                                geom,
+                            );
+                            return (md, false, false);
+                        }
                         let (mut md, unreadable) =
                             match convert_page_text(&doc, page, &options, geom, excluded, body) {
                                 Ok(text) => (
@@ -756,8 +812,14 @@ pub(crate) fn dehyphenate_line_breaks(
         std::sync::LazyLock::new(|| regex::Regex::new(r"[\p{L}]+(?:-[\p{L}]+)*").unwrap());
     // Vocabulary of the document, counting each hyphenated token whole and
     // by its parts — except the tokens that are line-break candidates.
+    // Words split across a line break are not evidence for themselves:
+    // "incre-⏎mentally" must not count "incre" and "mentally" as words.
+    static LINE_BREAK_PAIR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"[\p{L}]+-[ \t]*\n[ \t]*\p{Ll}[\p{L}]*").unwrap()
+    });
+    let vocab_text = LINE_BREAK_PAIR.replace_all(md, " ");
     let mut vocab: HashMap<String, usize> = HashMap::new();
-    for line in md.lines() {
+    for line in vocab_text.lines() {
         for m in WORD_RE.find_iter(line) {
             let w = m.as_str().to_lowercase();
             if let Some((l, r)) = w.rsplit_once('-')

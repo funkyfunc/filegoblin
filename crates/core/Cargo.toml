@@ -16,6 +16,14 @@ web = ["dep:reqwest", "dep:governor", "dep:robotxt", "dep:tokio", "dep:encoding_
 # macOS needs no feature: Apple Vision OCR is built in. This gates only the
 # pure-Rust fallback engine for Linux (ocrs/rten) and the Windows OCR API path.
 ocr = ["dep:rten", "dep:rten-tensor", "dep:ocrs", "dep:tokio"]
+# Bundled vision models for PDFs (layout, reading order, formulas, tables),
+# all run in-process with pure-Rust inference (rten) and rendering (hayro).
+# Weights are found at runtime; see `vision::models`.
+vision = ["dep:rten", "dep:rten-tensor", "dep:hayro"]
+# Compile the vision weights into the binary (~520 MB). Set
+# FILEGOBLIN_MODELS_DIR at build time to the directory made by
+# scripts/vision_models.py.
+bundled-models = ["vision"]
 wasm = ["dep:wasmtime"]
 rag = ["dep:tantivy"]
 # Audio/video → transcript via whisper.cpp. Build needs cmake + a C/C++
@@ -55,6 +63,8 @@ open = "5.3.3"
 # reading order), per-page scanned/text classification for the OCR fallback,
 # and no rusty-tesseract shell-out in its dependency tree. See ADR 2026-07-30.
 pdf_oxide = "0.3.73"
+# Pure-Rust PDF rasterizer (MIT/Apache) for the vision models.
+hayro = { version = "=0.7.1", features = ["embed-fonts"], optional = true }
 pulldown-cmark = "0.13.1"
 pulldown-cmark-to-cmark = "22.0.0"
 quick-xml = "0.39.2"

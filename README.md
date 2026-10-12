@@ -34,6 +34,7 @@ dependency:
 | Want | Add | Build needs |
 |---|---|---|
 | OCR on Linux/Windows | `--features ocr` | `just get-brains` for the weights (macOS uses Apple Vision, no flag) |
+| PDF vision models (layout, reading order, formulas → LaTeX, tables, scan OCR) | `--features vision` | Weights in `models/` next to the binary, `~/.filegoblin/models`, or `$FILEGOBLIN_MODELS` (build them with `scripts/vision_models.py`); add `bundled-models` with `FILEGOBLIN_MODELS_DIR` set to compile them into a single binary (~400 MB of weights) |
 | Audio/video transcription | `--features transcribe` | `cmake` + a C/C++ compiler; downloads a ~574 MB model on first use |
 | Metal-accelerated transcription (macOS only) | `--features transcribe-metal` | Xcode Command Line Tools. **Does not build on Linux/Windows** |
 | WASM plugins | `--features wasm` | — |
@@ -63,7 +64,8 @@ cargo install --git https://github.com/funkyfunc/filegoblin filegoblin --feature
 │   │       ├── curation/     (BM25 Search & Auto-Pruning)
 │   │       ├── privacy_shield.rs (PII Redaction Engine)
 │   │       ├── compressor/   (Token Compression Pipeline)
-│   │       ├── parsers/      (File parsing engines)
+│   │       ├── parsers/      (File parsing engines; pdf_vision.rs = layout-guided PDF assembly)
+│   │       ├── vision/       (Bundled ONNX models on rten: layout, formula, table, OCR; hayro rendering)
 │   │       └── pipeline/     (Pipeline execution stages)
 │   └── cli/          (filegoblin: The Headless Binary)
 │       ├── Cargo.toml
@@ -86,6 +88,7 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, OpenDocument, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
 - [x] PDF → markdown via `pdf_oxide`: headings, pipe tables, reading order, hyphenation — with per-page scanned-vs-text classification
 - [x] **Scanned PDFs and images OCR automatically on macOS** (Apple Vision, zero setup; parallelized page conversion, 30+ pages/s); Linux/Windows via `--features ocr`
+- [x] **PDF vision pipeline** (`--features vision`, `--fast` to skip): pages are rendered in pure Rust (`hayro`) and read by bundled, permissively licensed models on `rten` — no Python, system libraries or LLM at runtime. PP-DocLayoutV3 places every text-layer word in its region (title, heading, paragraph, caption, footnote, table, figure, running header/footer) in a learned reading order; display and inline formulas are re-read from the image as LaTeX (pix2text MFR); tables get rows/columns/spanning cells from Table Transformer and their cell values from the text layer; scanned pages, and text regions the text layer leaves empty, are read with PP-OCRv5. On the full olmOCR-bench (1,403 PDFs, official scorer) this takes filegoblin from 33.2% to 72.3% (arXiv math 0% → 84%, tables 26% → 75%, multi-column 46% → 71%, headers/footers 42% → 92%)
 - [x] **Geometric PDF page furniture removal**: running headers/footers, page numbers, and line-number gutters (pleading paper, patents) are identified from position, cross-page recurrence, font size and alignment — before conversion — so prose, numbers and headings are never rewritten by text heuristics. Line-break hyphenation and words run together across visible gaps are repaired from page geometry plus the document's own vocabulary
 - [x] **Semantic Chapter Boundaries**: Automated detection and injection of thematic dividers and XML section markers (`<!-- filegoblin:section ... -->`)
 - [x] Word → real markdown: heading levels, nested lists, bold/italic, hyperlinks with URLs, and equations

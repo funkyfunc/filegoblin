@@ -12,6 +12,8 @@ pub mod parsers;
 pub mod pipeline;
 pub mod privacy_shield;
 pub mod scrub_config;
+#[cfg(feature = "vision")]
+pub mod vision;
 pub mod walk;
 
 use crate::parsers::gobble::Gobble;

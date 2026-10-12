@@ -225,6 +225,11 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities", conflicts_with_all = ["chunk", "json"])]
     pub summary: bool,
 
+    /// PDFs: skip the bundled vision models (layout, reading order, formulas,
+    /// tables, scan OCR) and use the fast geometric converter only
+    #[arg(long)]
+    pub fast: bool,
+
     /// Skip the conversion cache (~/.filegoblin/cache) for this run: refetch
     /// URLs and redo OCR/transcription even when a cached result exists
     #[arg(long, help_heading = "Developer Utilities")]

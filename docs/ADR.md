@@ -763,3 +763,64 @@ R2's canary is `\le`, but the Zeitz page's text layer contains the OCR misreadin
 **Outcome:** gauntlet PDFs convert 19% faster (21.6 s → 17.5 s for the 16 gauntlet PDFs on 2 cores) with no words changed (only whitespace and empty table cells differ); all quality metrics unchanged (survival 78/80, gauntlet 28/29, pdftotext fidelity identical); output 1.9% smaller in GPT-4o tokens. A compact table dialect (`|a|b|`, `|-|`) would save roughly 3% more but changes every parser's output and two gauntlet syntax canaries, so it is left as a separate decision.
 
 **Status:** Accepted.
+
+## 2026-10-12: PDF vision pipeline — bundled layout, formula, table and OCR models
+
+**Context:** After the de-overfitting work the PDF engine was honest but limited by what a text layer can say. On an external benchmark (olmOCR-bench: 1,403 single pages, 7,010 machine-checkable tests across arXiv math, scanned math, tables, old scans, headers/footers, multi-column and tiny text), the geometric engine scored 33.2% on the full set, below the pre-refactor engine (35.1%, whose keyword heuristics happened to remove more single-page headers) and only a little above `pdftotext` (30.5%). It scored 0% on both math categories, because no text layer contains LaTeX. It was weak on tables, reading order and scans for the same reason. The user asked for the best possible output with three constraints: everything bundled, cross-platform, and no outside software or LLMs at runtime. Size and speed are secondary.
+
+**Decision:** Add an opt-in `vision` feature. Under it, PDFs are rendered and read by bundled ONNX models running on `rten` (pure Rust, already a dependency through `ocrs`):
+
+| Stage | Model | License |
+|---|---|---|
+| Rendering | `hayro` 0.7 (pure-Rust rasterizer, embedded standard fonts). `pdf_oxide`'s renderer was rejected: wrong fonts, no clipping | MIT/Apache-2.0 |
+| Layout + reading order | PP-DocLayoutV3. 25 region classes, including inline formulas and page furniture, plus a pairwise reading-order head | Apache-2.0 |
+| Formula → LaTeX | pix2text MFR 1.5 (DeiT encoder + TrOCR decoder). The decoder is rebuilt with a KV cache from the released weights and checked to 1e-3 in logits against the original | MIT |
+| Table structure | Table Transformer v1.1 "all" | MIT |
+| OCR | PP-OCRv5 mobile detection + English recognition, from PaddlePaddle's official ONNX exports | Apache-2.0 |
+
+AGPL-licensed weights (YOLO-based formula detectors, MinerU's) were excluded on purpose.
+
+Rules of the assembly (`parsers/pdf_vision.rs`):
+- **The model never invents words on text-layer pages.** Words come from the PDF. The layout model only decides which region each word belongs to (smallest region containing its centre), in what order regions are read, and which words are furniture. Furniture regions count only near the top or bottom edge. Text inside figures and charts is dropped.
+- **Words no region claims are never dropped.** They are grouped into blocks and placed after the nearest region above them in the same column.
+- **Formulas are the exception.** They are re-read from the image because a text layer cannot express them. Display formulas become `$$…$$`. Inline formulas replace the words under them with `$…$`; sentence punctuation the detector included moves back outside. A formula split by a line break after an operator is rejoined. Recognizer output is canonicalised (spacing commands dropped, `\operatorname{log}` → `\log`, emphasis wrappers on heavy print removed). A display formula keeps the sentence punctuation it carries.
+- **Tables:** the model gives rows, columns, header rows and spanning cells; the text layer fills the cells; a spanning cell's text repeats in each cell it covers. Output stays in the one pipe-table dialect.
+- **Scans, and text regions the text layer leaves empty, go through OCR.** Lines are detected as rotated boxes and warped upright before recognition, so skewed book pages read correctly. This also covers pages the classifier calls empty but that render (JBIG2 masks).
+- **Cleaning up after the layout:** paragraphs cut by a column or region break are rejoined when the first block stops mid-sentence and the next starts lowercase. Tokens set flush in the text layer stay joined. Ligature code points are spelled out. Dehyphenation no longer counts a word's own line-break fragments as vocabulary evidence; this fix also applies to the non-vision path.
+- **Model loading:** all models load eagerly on the calling thread. Lazy loading inside the page-parallel loop deadlocked: rten's load-time optimizer waits on a pool, and a rayon worker steals another page job that waits on the same `OnceLock`.
+- **Model files:** weights are found in `$FILEGOBLIN_MODELS`, `models/` next to the binary, or `~/.filegoblin/models`. `bundled-models` compiles them in (~370 MB). `scripts/vision_models.py` rebuilds every file from its upstream source, including the conversions rten needs: an f64-free graph, opset upgrade and Conv epilogue folding. `--fast` and `FILEGOBLIN_VISION=0` turn the pipeline off.
+
+**Outcomes:** full olmOCR-bench (1,403 PDFs, 8,413 tests incl. baseline), official scorer, mean of per-file scores:
+
+| | v1 (pre-refactor) | v2 (geometric) | pdftotext | **vision** |
+|---|---|---|---|---|
+| arXiv math | 0.0% | 0.0% | 0.0% | **84.4%** |
+| Headers/footers | 60.1% | 42.4% | 28.7% | **91.6%** |
+| Long tiny text | 38.5% | 38.7% | 58.6%* | **82.8%** |
+| Multi-column | 42.8% | 45.5% | 11.1% | **70.8%** |
+| Old scans | 15.2% | 14.4% | 58.7%* | 26.6% |
+| Old scans math | 0.0% | 0.0% | 0.0% | **47.6%** |
+| Tables | 25.2% | 25.5% | 0.0% | **75.0%** |
+| Baseline | 99.3% | 99.3% | 86.9% | 99.6% |
+| **Overall** | **35.1%** | **33.2%** | **30.5%** | **72.3% ± 1.0** |
+
+\* The scorer passes "present" tests on whitespace-only output, and pdftotext emits whitespace for every scanned page. Its scan numbers are an artifact of that, not of reading the scans.
+
+During development, iteration used a stratified 141-PDF sample with the same test code. Mean of 7 categories:
+
+| | v2 (geometric) | vision |
+|---|---|---|
+| arXiv math | 0.0% | 86.3% |
+| Headers/footers | 47.7% | 90.8% |
+| Long tiny text | 40.5% | 81.8% |
+| Multi-column | 54.1% | 84.7% |
+| Old scans (mostly handwriting) | 12.7% | 20.3% |
+| Old scans math | 0.0% | 42.0% |
+| Tables | 19.6% | 83.5% |
+| **Mean** | **24.9%** | **69.9%** |
+
+The largest gains after the first working version came from three changes. Taking spacing from the converter's text spans instead of word boxes was worth +5.5 points on arXiv, +6 on multi-column and +8 on tables; word boxes misjudge both tight italics and OCR text layers whose glyph widths are wrong. Rotated OCR line boxes were worth +7 on long tiny text. Re-reading regions that the text layer leaves empty recovered scanned tables hidden behind a thin text layer.
+
+**Cost:** on a 2-core cloud box, about 3 s per text page for layout, about 0.35 s per formula, and 15–40 s per scanned page. On an Apple M4 Pro, the 15-page "Attention Is All You Need" converts in 10 s with vision and 1 s with `--fast`. The model build script reproduced all nine weight files there from upstream in 3 minutes. `--fast` keeps the old speed. Handwriting remains out of reach: no permissive handwriting recognizer runs well on CPU. The old-scans category is mostly handwritten letters, which is why it stays low.
+
+**Status:** Accepted. `vision` is opt-in until release builds ship the weights.
