@@ -420,6 +420,65 @@ def ocr(out, work):
         f.write("\n".join(str(c) for c in chars) + "\n")
 
 
+LICENSES = """# Third-party model weights
+
+filegoblin's `vision` feature runs these models. Each file was converted from
+the upstream release named here (see scripts/vision_models.py); the weights
+remain under their original licenses.
+
+| file(s) | upstream | license | copyright |
+|---|---|---|---|
+| pp-doclayout-v3.onnx | https://huggingface.co/PaddlePaddle/PP-DocLayoutV3_safetensors | Apache-2.0 | PaddlePaddle Authors |
+| ppocr-v5-det.onnx | https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx | Apache-2.0 | PaddlePaddle Authors |
+| ppocr-v5-rec.onnx, ppocr-v5-dict.txt | https://huggingface.co/PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx | Apache-2.0 | PaddlePaddle Authors |
+| mfr-encoder.onnx, mfr-decoder-init.onnx, mfr-decoder-step.onnx, mfr-tokenizer.json | https://huggingface.co/breezedeus/pix2text-mfr-1.5 | MIT | breezedeus (Pix2Text) |
+| tatr-structure.onnx | https://huggingface.co/microsoft/table-transformer-structure-recognition-v1.1-all | MIT | Microsoft Corporation |
+
+Modifications: graph-format conversions only (ONNX export, float64 → float32,
+opset upgrade, Conv epilogue folding, and for the formula decoder a rebuild
+with a key/value cache from the released weights). No weights were retrained.
+
+The full license texts are in LICENSE-APACHE-2.0.txt and LICENSE-MIT.txt.
+"""
+
+MIT = """MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Copyright (c) Microsoft Corporation (Table Transformer).
+Copyright (c) breezedeus (Pix2Text MFR).
+"""
+
+
+def write_licenses(out):
+    with open(os.path.join(out, "LICENSES.md"), "w") as f:
+        f.write(LICENSES)
+    with open(os.path.join(out, "LICENSE-MIT.txt"), "w") as f:
+        f.write(MIT)
+    fetch_url("https://www.apache.org/licenses/LICENSE-2.0.txt", os.path.join(out, "LICENSE-APACHE-2.0.txt"))
+
+
+def fetch_url(url, dst):
+    if not os.path.exists(dst):
+        urllib.request.urlretrieve(url, dst)
+
+
 def main():
     out = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "models")
     work = os.path.join(out, ".work")
@@ -427,6 +486,7 @@ def main():
     for step in (layout, formula, table, ocr):
         print("==", step.__name__)
         step(out, work)
+    write_licenses(out)
     manifest = {}
     for f in sorted(os.listdir(out)):
         p = os.path.join(out, f)

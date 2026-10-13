@@ -350,11 +350,7 @@ pub fn gobble_local(
                 let before = files_to_process.len();
                 files_to_process.retain(|p| {
                     p.strip_prefix(root)
-                        .map(|rel| {
-                            changed
-                                .iter()
-                                .any(|cf| rel.to_string_lossy() == cf.as_str())
-                        })
+                        .map(|rel| changed.iter().any(|cf| slash_path(rel) == cf.as_str()))
                         .unwrap_or(false)
                 });
                 if !args.quiet {
@@ -407,11 +403,7 @@ fn parse_files(
     paths
         .par_iter()
         .filter_map(|file_path| {
-            let rel_str = file_path
-                .strip_prefix(strip_base)
-                .ok()?
-                .to_string_lossy()
-                .into_owned();
+            let rel_str = slash_path(file_path.strip_prefix(strip_base).ok()?);
             let bytes = std::fs::metadata(file_path).ok().map(|m| m.len());
 
             // --diff-format short-circuits parsing with git's unified diff.
@@ -744,6 +736,17 @@ fn charset_of(s: &str) -> Option<String> {
         .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         .collect();
     (!value.is_empty()).then_some(value)
+}
+
+/// A relative path written with `/` on every OS, so breadcrumbs (and the
+/// paths compared against `git diff` output) are identical everywhere.
+fn slash_path(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy();
+    if cfg!(windows) {
+        s.replace('\\', "/")
+    } else {
+        s.into_owned()
+    }
 }
 
 #[cfg(test)]

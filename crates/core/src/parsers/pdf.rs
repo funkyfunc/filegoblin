@@ -372,17 +372,36 @@ impl Gobble for PdfGobbler {
         };
 
         #[cfg(not(feature = "vision"))]
-        let _ = opts.fast;
+        let _ = opts.vision;
         // Layout models, when built in and their weights are present: render
         // pages and let the model place each text-layer word.
         #[cfg(feature = "vision")]
-        let renderer = if !opts.fast && crate::vision::enabled() {
+        let mode = opts.vision;
+        #[cfg(feature = "vision")]
+        let renderer = if mode != crate::cli::VisionMode::Off && crate::vision::enabled() {
             std::fs::read(path)
                 .ok()
                 .and_then(|bytes| crate::vision::render::Renderer::open(std::sync::Arc::new(bytes)))
         } else {
+            if mode != crate::cli::VisionMode::Off
+                && !opts.quiet
+                && std::env::var_os("FILEGOBLIN_VISION").is_none()
+            {
+                static HINT: std::sync::Once = std::sync::Once::new();
+                HINT.call_once(|| {
+                    eprintln!(
+                        "filegoblin: PDF vision models not found — using the fast converter. \
+                         For math, tables, columns and scans install them (`just get-vision-models`, \
+                         or unpack the release's filegoblin-vision-models.tar.gz into ~/.filegoblin/models). \
+                         `--vision off` silences this."
+                    );
+                });
+            }
             None
         };
+
+        #[cfg(feature = "vision")]
+        let vision_pages = std::sync::atomic::AtomicUsize::new(0);
 
         // Stage 3: convert each page with its furniture excluded.
         // (markdown, unreadable, came_from_ocr)
@@ -404,6 +423,7 @@ impl Gobble for PdfGobbler {
                         .and_then(|r| super::pdf_vision::convert_scanned_page(r, page))
                         .filter(|md| !md.trim().is_empty())
                     {
+                        vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return Some(md);
                     }
                     ocr_scanned_page(doc, page)
@@ -420,6 +440,7 @@ impl Gobble for PdfGobbler {
                             .and_then(|r| super::pdf_vision::convert_scanned_page(r, page))
                             .filter(|md| !md.trim().is_empty())
                         {
+                            vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             return (md, false, true);
                         }
                         (String::new(), false, false)
@@ -446,8 +467,28 @@ impl Gobble for PdfGobbler {
                     // TextLayer / ImageText / Mixed: the native converter. For
                     // hybrids, also OCR the page's image so figure text isn't lost.
                     _ => {
+                        // `--vision smart` keeps plain prose on the fast path.
                         #[cfg(feature = "vision")]
-                        if let (Some(r), Some(g)) = (renderer.as_ref(), geom)
+                        let wanted = match mode {
+                            crate::cli::VisionMode::All => true,
+                            crate::cli::VisionMode::Off => false,
+                            crate::cli::VisionMode::Smart => {
+                                let why = super::pdf_route::needs_vision(
+                                    &doc, page, kind, geom, page_count,
+                                );
+                                if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+                                    eprintln!(
+                                        "route page {}: {}",
+                                        page + 1,
+                                        why.map_or("fast path", super::pdf_route::Reason::as_str)
+                                    );
+                                }
+                                why.is_some()
+                            }
+                        };
+                        #[cfg(feature = "vision")]
+                        if wanted
+                            && let (Some(r), Some(g)) = (renderer.as_ref(), geom)
                             && let Some(md) = super::pdf_vision::convert_page(
                                 r,
                                 &doc,
@@ -457,6 +498,7 @@ impl Gobble for PdfGobbler {
                                 &base_options,
                             )
                         {
+                            vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             let md = rejoin_letter_spacing(
                                 &pdf_furniture::remove_gutter_numbers(md.trim(), &gutters[page]),
                                 geom,
@@ -502,6 +544,19 @@ impl Gobble for PdfGobbler {
                 }
             })
             .collect();
+
+        #[cfg(feature = "vision")]
+        if renderer.is_some() && !opts.quiet && page_count > 1 {
+            eprintln!(
+                "filegoblin: {} of {page_count} pages read with the vision models (--vision {})",
+                vision_pages.load(std::sync::atomic::Ordering::Relaxed),
+                match mode {
+                    crate::cli::VisionMode::Smart => "smart",
+                    crate::cli::VisionMode::All => "all",
+                    crate::cli::VisionMode::Off => "off",
+                }
+            );
+        }
 
         let mut pages_md: Vec<String> = Vec::with_capacity(page_results.len());
         let mut ocr_flags: Vec<bool> = Vec::with_capacity(page_results.len());

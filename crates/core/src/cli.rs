@@ -29,6 +29,19 @@ pub enum ExtractMode {
     Symbols,
 }
 
+/// How PDFs use the bundled vision models (`--vision`).
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum VisionMode {
+    /// Never: the fast geometric converter only.
+    Off,
+    /// Per page: scans, math, tables, columns, figures and short documents
+    /// go through the models; plain single-column prose takes the fast path.
+    #[default]
+    Smart,
+    /// Every page through the models.
+    All,
+}
+
 /// Accepts `100k`, `2m`, or a bare token count, rejecting anything else at
 /// parse time so a typo can never be silently ignored.
 pub fn parse_token_budget(raw: &str) -> Result<String, String> {
@@ -225,10 +238,12 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities", conflicts_with_all = ["chunk", "json"])]
     pub summary: bool,
 
-    /// PDFs: skip the bundled vision models (layout, reading order, formulas,
-    /// tables, scan OCR) and use the fast geometric converter only
-    #[arg(long)]
-    pub fast: bool,
+    /// PDFs: when to use the bundled vision models (layout, reading order,
+    /// formulas, tables, scan OCR). `smart` decides per page; `off` is the
+    /// fast geometric converter only; `all` sends every page through them.
+    /// Needs a build with `--features vision` and the model weights.
+    #[arg(long, value_enum, default_value_t = VisionMode::Smart)]
+    pub vision: VisionMode,
 
     /// Skip the conversion cache (~/.filegoblin/cache) for this run: refetch
     /// URLs and redo OCR/transcription even when a cached result exists

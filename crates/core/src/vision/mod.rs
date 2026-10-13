@@ -63,6 +63,76 @@ impl UserBox {
     }
 }
 
+/// Bounds how many pages run through the models at once.
+///
+/// Each model already spreads one page over every core (rten's own thread
+/// pool), so running more pages side by side adds memory — a few hundred MB
+/// of activations per page — without adding speed. Page-level parallelism is
+/// kept for the cheap geometric path.
+///
+/// The gated work runs on a plain thread, never on a rayon worker. A rayon
+/// worker that waits for rten's pool steals other jobs meanwhile; if it
+/// stole another page it would block on this gate while still holding a
+/// permit, and with every permit held that way the run deadlocks (seen on
+/// multi-page scans). A plain thread waits without stealing, so a permit
+/// holder only ever waits on rten.
+pub struct PageGate {
+    busy: std::sync::Mutex<usize>,
+    freed: std::sync::Condvar,
+    limit: usize,
+}
+
+/// Held while a page is inside the models.
+struct PagePermit<'a>(&'a PageGate);
+
+impl PageGate {
+    pub fn global() -> &'static PageGate {
+        static GATE: std::sync::OnceLock<PageGate> = std::sync::OnceLock::new();
+        GATE.get_or_init(|| PageGate {
+            busy: std::sync::Mutex::new(0),
+            freed: std::sync::Condvar::new(),
+            limit: 2,
+        })
+    }
+
+    /// Runs `f` once a permit is free, off rayon's pool.
+    pub fn run<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+        if rayon::current_thread_index().is_none() {
+            let _permit = self.enter();
+            return f();
+        }
+        std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .name("filegoblin-vision".into())
+                .stack_size(8 << 20)
+                .spawn_scoped(s, || {
+                    let _permit = self.enter();
+                    f()
+                })
+                .expect("spawn a vision thread")
+                .join()
+                .unwrap_or_else(|p| std::panic::resume_unwind(p))
+        })
+    }
+
+    fn enter(&self) -> PagePermit<'_> {
+        let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        while *busy >= self.limit {
+            busy = self.freed.wait(busy).unwrap_or_else(|e| e.into_inner());
+        }
+        *busy += 1;
+        PagePermit(self)
+    }
+}
+
+impl Drop for PagePermit<'_> {
+    fn drop(&mut self) {
+        let mut busy = self.0.busy.lock().unwrap_or_else(|e| e.into_inner());
+        *busy -= 1;
+        self.0.freed.notify_one();
+    }
+}
+
 /// True unless vision is switched off with `FILEGOBLIN_VISION=0` or the
 /// layout weights cannot be found.
 ///

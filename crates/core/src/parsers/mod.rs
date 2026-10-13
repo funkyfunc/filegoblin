@@ -208,6 +208,8 @@ pub mod opendocument;
 pub mod openxml_chart;
 pub mod pdf;
 pub mod pdf_furniture;
+#[cfg(feature = "vision")]
+pub(crate) mod pdf_route;
 pub mod pdf_table;
 #[cfg(feature = "vision")]
 pub mod pdf_vision;

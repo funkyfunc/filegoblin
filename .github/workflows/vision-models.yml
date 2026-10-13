@@ -1,0 +1,46 @@
+# Builds the PDF vision model archive for a release.
+#
+# Called by dist's release workflow (`global-artifacts-jobs` in
+# dist-workspace.toml). The archive is platform-independent ONNX, so it is
+# built once and attached next to the per-platform binaries:
+#
+#   filegoblin-vision-models.tar.gz         (~370 MB)
+#   filegoblin-vision-models.tar.gz.sha256
+#
+# Unpack it into `models/` next to the binary, `~/.filegoblin/models`, or any
+# directory named by FILEGOBLIN_MODELS.
+name: vision-models
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install converters
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          pip install transformers onnx onnxruntime onnxscript pyyaml safetensors numpy
+      - name: Build models
+        run: python scripts/vision_models.py out/models
+      - name: Package
+        run: |
+          rm -rf out/models/.work
+          tar -C out -czf filegoblin-vision-models.tar.gz models
+          sha256sum filegoblin-vision-models.tar.gz > filegoblin-vision-models.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-vision-models
+          path: |
+            filegoblin-vision-models.tar.gz
+            filegoblin-vision-models.tar.gz.sha256

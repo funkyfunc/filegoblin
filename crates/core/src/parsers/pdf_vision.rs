@@ -49,6 +49,18 @@ pub(crate) fn convert_page(
     excluded: &[Rect],
     base_options: &pdf_oxide::converters::ConversionOptions,
 ) -> Option<String> {
+    crate::vision::PageGate::global()
+        .run(|| convert_page_gated(renderer, doc, page, geom, excluded, base_options))
+}
+
+fn convert_page_gated(
+    renderer: &Renderer,
+    doc: &PdfDocument,
+    page: usize,
+    geom: &PageGeom,
+    excluded: &[Rect],
+    base_options: &pdf_oxide::converters::ConversionOptions,
+) -> Option<String> {
     let t = std::time::Instant::now();
     let img = renderer.render(page, RENDER_LONG_SIDE, MAX_SCALE)?;
     let regions = layout::detect(&img)?;
@@ -99,6 +111,10 @@ pub(crate) fn convert_scanned_page(renderer: &Renderer, page: usize) -> Option<S
     if !crate::vision::ocr::available() {
         return None;
     }
+    crate::vision::PageGate::global().run(|| convert_scanned_page_gated(renderer, page))
+}
+
+fn convert_scanned_page_gated(renderer: &Renderer, page: usize) -> Option<String> {
     let t = std::time::Instant::now();
     let img = renderer.render(page, SCAN_LONG_SIDE, SCAN_MAX_SCALE)?;
     let regions = layout::detect(&img)?;
@@ -154,7 +170,7 @@ fn span_words(doc: &PdfDocument, page: usize, excluded: &[Rect]) -> Option<Vec<T
             // only the start positions are trusted for the "to the right" test.
             same_line
                 && s.bbox.x > p.bbox.x
-                && gap < 0.15 * s.font_size.min(p.font_size)
+                && gap < 0.1 * s.font_size.min(p.font_size)
                 && !p.text.ends_with(char::is_whitespace)
                 && !s.text.starts_with(char::is_whitespace)
         });
@@ -210,7 +226,23 @@ fn span_words(doc: &PdfDocument, page: usize, excluded: &[Rect]) -> Option<Vec<T
         }
         prev = Some(s);
     }
-    Some(words)
+    Some(drop_doubled(words))
+}
+
+/// Removes words the page draws twice in the same place (fake bold, drop
+/// shadows, overprinted layers): same text, boxes overlapping by more than
+/// half. The reader sees one word; so should the output.
+fn drop_doubled(words: Vec<Tok>) -> Vec<Tok> {
+    let mut kept: Vec<Tok> = Vec::with_capacity(words.len());
+    'next: for w in words {
+        for k in kept.iter().rev().take(64) {
+            if k.text == w.text && k.b.iou(&w.b) > 0.5 {
+                continue 'next;
+            }
+        }
+        kept.push(w);
+    }
+    kept
 }
 
 /// OCR words of a rendered page in user space. Each recognized line is split
@@ -285,9 +317,17 @@ fn assemble(
 
     // Recognize formulas: display formulas replace their region's text,
     // inline formulas replace the words under them.
+    // Inside a table, a value like "48.96 ± 2.84" reads better — and is
+    // searched for — as the text it is than as LaTeX; the text layer (or
+    // OCR) already has it.
+    let tables: Vec<&Region> = regions.iter().filter(|r| r.label == Label::Table).collect();
     let inline: Vec<&Region> = regions
         .iter()
         .filter(|r| r.label == Label::InlineFormula)
+        .filter(|r| {
+            let (cx, cy) = ((r.bbox.x0 + r.bbox.x1) / 2.0, (r.bbox.y0 + r.bbox.y1) / 2.0);
+            !tables.iter().any(|t| t.bbox.contains_point(cx, cy))
+        })
         .collect();
     let display_idx: Vec<usize> = content
         .iter()
@@ -312,6 +352,8 @@ fn assemble(
     // Tokens: words minus furniture and words under a recognized inline
     // formula; plus one token per recognized inline formula.
     let mut toks: Vec<Tok> = Vec::new();
+    let page_has_math =
+        latex_inline.iter().any(Option::is_some) || latex_display.iter().any(Option::is_some);
     for w in &words {
         let (cx, cy) = ((w.b.x0 + w.b.x1) / 2.0, (w.b.y0 + w.b.y1) / 2.0);
         if furniture.iter().any(|r| r.bbox.contains_point(cx, cy)) {
@@ -322,7 +364,13 @@ fn assemble(
             .zip(latex_inline.iter())
             .any(|(r, l)| l.is_some() && covers(&r.bbox, &w.b));
         if !under_formula {
-            toks.push(w.clone());
+            let mut w = w.clone();
+            // On a page that carries LaTeX, a literal dollar sign in the
+            // prose would open a formula for every math-aware reader.
+            if page_has_math && w.text.contains('$') {
+                w.text = w.text.replace('$', "\\$");
+            }
+            toks.push(w);
         }
     }
     for (r, l) in inline.iter().zip(latex_inline.iter()) {
@@ -357,14 +405,32 @@ fn assemble(
     // Assign every token to the smallest content region holding its centre.
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); content.len()];
     let mut orphans: Vec<usize> = Vec::new();
+    // Detected boxes are drawn tight and sometimes clip a paragraph's first
+    // glyph (a raised or dropped initial, a first letter set in its own
+    // font). A token just outside a box, within half an em, still belongs to
+    // it when no box holds it outright.
     for (ti, t) in toks.iter().enumerate() {
         let (cx, cy) = ((t.b.x0 + t.b.x1) / 2.0, (t.b.y0 + t.b.y1) / 2.0);
-        let best = content
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.bbox.contains_point(cx, cy))
-            .min_by(|a, b| a.1.bbox.area().total_cmp(&b.1.bbox.area()))
-            .map(|(i, _)| i);
+        let holding = |margin: f32| {
+            content
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| {
+                    let b = r.bbox;
+                    cx >= b.x0 - margin
+                        && cx <= b.x1 + margin
+                        && cy >= b.y0 - margin
+                        && cy <= b.y1 + margin
+                })
+                .min_by(|a, b| a.1.bbox.area().total_cmp(&b.1.bbox.area()))
+                .map(|(i, _)| i)
+        };
+        let lettered = t.text.chars().any(char::is_alphabetic) && !t.text.starts_with('$');
+        let best = holding(0.0).or_else(|| {
+            lettered
+                .then(|| holding(0.5 * t.size.max(t.b.height())))
+                .flatten()
+        });
         match best {
             Some(i) => members[i].push(ti),
             None => orphans.push(ti),
@@ -573,11 +639,22 @@ fn heading_level(text: &str) -> usize {
 /// Groups tokens into visual lines (top to bottom) and joins them.
 fn lines_to_text(toks: &[Tok], idx: &[usize]) -> String {
     let lines = visual_lines(toks, idx);
-    lines
-        .iter()
-        .map(|l| join_line(toks, l))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::new();
+    for l in &lines {
+        let line = join_line(toks, l);
+        if out.ends_with('\u{ad}') {
+            // A soft hyphen marks a syllable break by definition: rejoin.
+            out.pop();
+            out.push_str(line.trim_start());
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&line);
+    }
+    // Soft hyphens anywhere else are invisible break hints.
+    out.replace('\u{ad}', "")
 }
 
 /// Joins one visual line's tokens. Closing punctuation hugs the token before
@@ -596,6 +673,16 @@ fn join_line(toks: &[Tok], line: &[usize]) -> String {
         let hug = t
             .chars()
             .all(|c| matches!(c, ',' | '.' | ';' | ':' | ')' | '!' | '?'))
+            // A hyphen set as its own word at the end of a line is the
+            // line-break hyphen of the word before it.
+            || ((t == "-" || t == "\u{ad}") && line.last() == Some(&i))
+            // A lone sign or currency symbol set just before a number
+            // belongs to it ("− 92" → "−92").
+            || prev.is_some_and(|p| {
+                matches!(p.text.as_str(), "−" | "±" | "$" | "€" | "£")
+                    && t.starts_with(|c: char| c.is_ascii_digit() || c == '.')
+                    && tok.b.x0 - p.b.x1 < 0.35 * p.size.max(1.0)
+            })
             || (tok.glued
                 && prev.is_some_and(|p| {
                     !p.text.ends_with('$') && tok.b.x0 > p.b.x0 && tok.b.x0 - p.b.x1 < p.size
@@ -719,6 +806,9 @@ fn orphan_key(bb: &UserBox, content: &[&Region]) -> f32 {
     f32::MAX
 }
 
+static LEADER: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?:\s?\.){4,}").expect("valid regex"));
+
 /// Fills the model's rows × columns grid with the region's tokens and writes
 /// a pipe table. A spanning cell's text is repeated in every cell it covers,
 /// so each row and column still reads on its own.
@@ -771,7 +861,8 @@ fn grid_markdown(
                         }
                         text.push_str(&line);
                     }
-                    text.replace('|', "\\|")
+                    // Dot leaders ("Hettinger.........") are layout, not content.
+                    LEADER.replace_all(&text, "").trim().replace('|', "\\|")
                 })
                 .collect()
         })
@@ -902,6 +993,19 @@ mod tests {
         assert!(!continues("The end.", "next paragraph"));
         assert!(!continues("## Heading", "lower"));
         assert!(!continues("some text", "Capitalized"));
+    }
+
+    #[test]
+    fn doubled_words_and_soft_hyphens_are_cleaned() {
+        let toks = vec![
+            tok("modi\u{ad}", 10.0, 700.0, 40.0, 710.0),
+            tok("fied", 10.0, 685.0, 30.0, 695.0),
+            tok("fied", 10.2, 685.1, 30.2, 695.1),
+        ];
+        let toks = drop_doubled(toks);
+        assert_eq!(toks.len(), 2);
+        let idx: Vec<usize> = (0..toks.len()).collect();
+        assert_eq!(lines_to_text(&toks, &idx), "modified");
     }
 
     #[test]

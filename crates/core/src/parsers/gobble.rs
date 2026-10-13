@@ -16,8 +16,8 @@ pub struct ParseOptions {
     /// must not suggest `--browser` again — which it did, verbatim, on pages it
     /// had just rendered.
     pub already_rendered: bool,
-    /// Skip the vision models for PDFs (`--fast`).
-    pub fast: bool,
+    /// When PDFs use the vision models (`--vision`).
+    pub vision: crate::cli::VisionMode,
 }
 
 impl From<&crate::cli::Cli> for ParseOptions {
@@ -27,7 +27,7 @@ impl From<&crate::cli::Cli> for ParseOptions {
             extract: cli.extract,
             quiet: cli.quiet,
             already_rendered: false,
-            fast: cli.fast,
+            vision: cli.vision,
         }
     }
 }
