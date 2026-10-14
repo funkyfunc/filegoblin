@@ -1,5 +1,6 @@
 pub mod browser;
 pub mod cache;
+pub mod chunking;
 pub mod cli;
 pub mod compressor;
 pub mod curation;
@@ -219,7 +220,10 @@ pub fn gobble_to_string(targets: &[String], args: &crate::cli::Cli) -> Result<St
 /// complete output (whole-payload clipboard, grand totals, table of contents). Everything
 /// else streams out-of-core.
 fn requires_buffering(args: &crate::cli::Cli) -> bool {
-    args.json
+    args.output_format() == crate::cli::OutputFormat::Json
+        || args.output_format() == crate::cli::OutputFormat::Plain
+        || args.chunk_size.is_some()
+        || args.json
         || args.search.is_some()
         || args.max_tokens.is_some()
         || args.copy

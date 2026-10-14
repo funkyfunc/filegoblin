@@ -71,6 +71,8 @@ with `--features vision,bundled-models`.
 │   │       ├── lib.rs        (Core Pipeline Logic)
 │   │       ├── cli.rs        (Clap Flag Definitions)
 │   │       ├── formatters.rs (Output Assembly & Splitting)
+│   │       ├── formatters/   (Plain text & specialized formatters)
+│   │       ├── chunking/     (Layout-aware semantic chunking engine)
 │   │       ├── curation/     (BM25 Search & Auto-Pruning)
 │   │       ├── privacy_shield.rs (PII Redaction Engine)
 │   │       ├── compressor/   (Token Compression Pipeline)
@@ -90,11 +92,13 @@ with `--features vision,bundled-models`.
 
 ---
 
-## ⚡ Current Capabilities (v1.14.0)
+## ⚡ Current Capabilities (v1.15.0)
 
 Some capabilities are gated behind opt-in Cargo features (built off by default to
 keep the binary lean). Feature-gated items are marked below.
 
+- [x] **Multi-Format Output Engine (`--format markdown|plain|json` / `-f`)**: GFM markdown (default), syntax-stripped plain text with space-aligned tables for vector embeddings (e.g. OpenAI `text-embedding-3`, BGE) and BM25 search, and structured JSON documents
+- [x] **Layout-Aware Semantic Chunking (`--chunk-size`, `--chunk-overlap`, `--chunk-strategy layout|tokens`)**: splits along structural headings (H1 > H2 > H3), protects tables and code blocks from mid-block slicing, automatically replicates table headers across chunk splits, and embeds hierarchical outline breadcrumbs
 - [x] Core Parsers (PDF, Word, Excel/CSV, PowerPoint, OpenDocument, Jupyter, Code, Email, RTF, HTML, EPUB) — always on
 - [x] PDF → markdown via `pdf_oxide`: headings, pipe tables, reading order, hyphenation — with per-page scanned-vs-text classification
 - [x] **Scanned PDFs and images OCR automatically on macOS** (Apple Vision, zero setup; parallelized page conversion, 30+ pages/s); Linux/Windows via `--features ocr`
@@ -245,6 +249,29 @@ filegoblin ./src/ --horde -q --json | jq '.[].path'
 vanishing — so an agent can trust that every input is accounted for. Exit codes: `0` success,
 `4` when nothing could be extracted (empty result vs. total failure), `3` when
 `--scrub --scrub-fail` redacted something.
+
+**Multi-Format Output (`--format markdown|plain|json` / `-f`):**
+```bash
+# Default GFM markdown with tables, math, and code fences
+filegoblin document.pdf -f markdown > doc.md
+
+# Strip markdown punctuation for dense vector embeddings & BM25 search
+# (Pipe tables become space-aligned text columns; headings & math stripped of tokens)
+filegoblin document.pdf -f plain > embedding_input.txt
+
+# Structured JSON document array for agent pipelines
+filegoblin document.pdf -f json > document.json
+```
+
+**Layout-Aware Semantic Chunking (`--chunk-size`, `--chunk-overlap`, `--chunk-strategy`):**
+```bash
+# Split along structural boundaries (H1/H2/H3, tables, code blocks) with 512 token budget
+# Replicates table headers across chunk boundaries and embeds hierarchical breadcrumbs
+filegoblin document.pdf --chunk-size 512 > chunks.md
+
+# Structured JSON chunks with breadcrumbs and token estimates for RAG vectors
+filegoblin document.pdf -f json --chunk-size 512 --chunk-overlap 64 > rag_chunks.json
+```
 
 **Token Compression (Reduce LLM context sizes):**
 ```bash

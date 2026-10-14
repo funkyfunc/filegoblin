@@ -42,6 +42,28 @@ pub enum VisionMode {
     All,
 }
 
+/// Unified output format for the conversion pipeline.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    /// Standard GitHub Flavored Markdown with tables, LaTeX math, and code blocks
+    #[default]
+    Markdown,
+    /// Clean plain text with formatting stripped, space-aligned tables, and plain math
+    Plain,
+    /// Structured JSON documents or chunks
+    Json,
+}
+
+/// Chunking strategy: layout-aware semantic boundaries or hard token windows.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ChunkStrategy {
+    /// Splits strictly along semantic structural boundaries (headings, tables, code blocks, paragraphs)
+    #[default]
+    Layout,
+    /// Hard token windowing fallback
+    Tokens,
+}
+
 /// Accepts `100k`, `2m`, or a bare token count, rejecting anything else at
 /// parse time so a typo can never be silently ignored.
 pub fn parse_token_budget(raw: &str) -> Result<String, String> {
@@ -59,6 +81,23 @@ pub fn parse_token_budget(raw: &str) -> Result<String, String> {
         Err(format!(
             "expected a token budget like `100k`, `2m`, or `5000` — got `{raw}`"
         ))
+    }
+}
+
+/// Parses a token count like `512`, `1024`, `1k`, `2m` into a usize token limit.
+pub fn parse_chunk_size(raw: &str) -> Result<usize, String> {
+    let c = raw.trim().to_lowercase();
+    if let Some(n) = c.strip_suffix('k') {
+        n.parse::<f64>()
+            .map(|n| (n * 1000.0) as usize)
+            .map_err(|_| format!("expected a valid token size like 512, 1024, or 1k — got `{raw}`"))
+    } else if let Some(n) = c.strip_suffix('m') {
+        n.parse::<f64>()
+            .map(|n| (n * 1_000_000.0) as usize)
+            .map_err(|_| format!("expected a valid token size like 512, 1024, or 1k — got `{raw}`"))
+    } else {
+        c.parse::<usize>()
+            .map_err(|_| format!("expected a valid token size like 512, 1024, or 1k — got `{raw}`"))
     }
 }
 
@@ -84,7 +123,7 @@ pub struct Cli {
     pub full: bool,
 
     /// Split `--horde` output into individual files within an auto-generated directory
-    #[arg(short = 's', long, help_heading = "Output Formatting", conflicts_with_all = ["chunk", "json"])]
+    #[arg(short = 's', long, help_heading = "Output Formatting", conflicts_with_all = ["chunk", "json", "chunk_size"])]
     pub split: bool,
 
     /// Chunk combined output into multiple files based on an estimated token limit (e.g. --chunk 100k)
@@ -94,7 +133,7 @@ pub struct Cli {
     #[arg(
         long,
         help_heading = "Output Formatting",
-        conflicts_with_all = ["split", "json", "summary", "manifest"],
+        conflicts_with_all = ["split", "json", "summary", "manifest", "chunk_size"],
         value_parser = parse_token_budget,
     )]
     pub chunk: Option<String>,
@@ -106,6 +145,38 @@ pub struct Cli {
     /// Output strictly formatted struct data (JSON) instead of markdown
     #[arg(long, help_heading = "Output Formatting", conflicts_with_all = ["split", "chunk", "compress"])]
     pub json: bool,
+
+    /// Unified output format: markdown (default), plain, or json
+    #[arg(
+        short = 'f',
+        long,
+        value_enum,
+        default_value_t = OutputFormat::Markdown,
+        help_heading = "Output Formatting"
+    )]
+    pub format: OutputFormat,
+
+    /// Target maximum token budget per chunk for semantic chunking (e.g. 512, 1024, 1k)
+    #[arg(
+        long,
+        help_heading = "Output Formatting",
+        conflicts_with_all = ["chunk", "split"],
+        value_parser = parse_chunk_size,
+    )]
+    pub chunk_size: Option<usize>,
+
+    /// Overlap token budget between adjacent narrative chunks
+    #[arg(long, default_value_t = 50, help_heading = "Output Formatting")]
+    pub chunk_overlap: usize,
+
+    /// Chunking strategy: layout-aware semantic boundaries (default) or hard token windows
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ChunkStrategy::Layout,
+        help_heading = "Output Formatting"
+    )]
+    pub chunk_strategy: ChunkStrategy,
 
     // --- CRAWLING & INGESTION ---
     /// Force all ingested files through a specific WASM Component Model plugin (e.g. --plugin my_parser)
@@ -267,4 +338,15 @@ pub struct Cli {
     /// Not a user-facing flag.
     #[arg(skip)]
     pub no_nested_archives: bool,
+}
+
+impl Cli {
+    /// Returns the effective output format, prioritizing `--json` for backwards compatibility.
+    pub fn output_format(&self) -> OutputFormat {
+        if self.json {
+            OutputFormat::Json
+        } else {
+            self.format
+        }
+    }
 }

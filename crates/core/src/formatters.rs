@@ -3,6 +3,8 @@ use anyhow::Result;
 use colored::Colorize;
 use url::Url;
 
+pub mod plain;
+
 /// Renders one document as an output block: the tree map bare, everything else
 /// behind a `FILE_START` breadcrumb.
 ///
@@ -183,6 +185,198 @@ fn print_belch(
     );
 }
 
+fn output_formatted_text(
+    output: &str,
+    post_compression_tokens: usize,
+    chunk_count: usize,
+    display_name: &str,
+    args: &crate::cli::Cli,
+) -> Result<()> {
+    let output = format!("{}\n", output.trim());
+    let total_chars = output.len();
+
+    if args.tokens {
+        if args.quiet {
+            eprintln!("tokens: {}", post_compression_tokens);
+        } else if chunk_count > 0 {
+            eprintln!(
+                "{}",
+                format!(
+                    "📊 tokens: {} (~{} chars across {} chunks)",
+                    post_compression_tokens, total_chars, chunk_count
+                )
+                .truecolor(255, 191, 0)
+            );
+        } else {
+            eprintln!(
+                "{}",
+                format!(
+                    "📊 tokens: {} (~{} chars)",
+                    post_compression_tokens, total_chars
+                )
+                .truecolor(255, 191, 0)
+            );
+        }
+    }
+
+    if let Some(file_path) = args.write.as_deref() {
+        std::fs::write(file_path, &output)?;
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                format!("💾 Saved output to {}", file_path).truecolor(0, 255, 100)
+            );
+        }
+    } else {
+        println!("{}", output);
+    }
+
+    if args.open {
+        let file_to_open = if let Some(file_path) = args.write.as_deref() {
+            std::path::PathBuf::from(file_path)
+        } else {
+            let file_prefix = display_name
+                .replace("https://", "")
+                .replace("http://", "")
+                .replace(['/', ':', ' '], "_")
+                .replace("..", "")
+                .replace('&', "and");
+            let temp_dir = std::env::temp_dir();
+            let temp_file = temp_dir.join(format!("{}_gobbled.md", file_prefix));
+            std::fs::write(&temp_file, &output)?;
+            temp_file
+        };
+
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                format!("🚪 Kicked open: {}", file_to_open.display()).truecolor(0, 200, 255)
+            );
+        }
+        if let Err(e) = open::that(&file_to_open) {
+            eprintln!("{} Failed to open file: {}", "⚠️".yellow(), e);
+        }
+    }
+
+    if args.copy {
+        let mut clipboard = arboard::Clipboard::new()?;
+        clipboard.set_text(output)?;
+        if !args.quiet {
+            eprintln!(
+                "{}",
+                "📋 Stashed the loot in your clipboard!".truecolor(0, 255, 100)
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn format_semantic_chunks_and_output(
+    docs: &[GobbleDocument],
+    chunk_size: usize,
+    display_name: &str,
+    args: &crate::cli::Cli,
+) -> Result<()> {
+    let config = crate::chunking::ChunkConfig {
+        chunk_size,
+        chunk_overlap: args.chunk_overlap,
+        strategy: args.chunk_strategy,
+    };
+
+    let mut all_chunks = Vec::new();
+    for doc in docs {
+        if doc.path == "_tree.md" {
+            continue;
+        }
+        let chunks = crate::chunking::chunk_document(&doc.content, &doc.path, &config);
+        all_chunks.extend(chunks);
+    }
+
+    let total_chunk_tokens: usize = all_chunks.iter().map(|c| c.tokens).sum();
+    if args.tokens_only {
+        println!("{}", total_chunk_tokens);
+        return Ok(());
+    }
+
+    match args.output_format() {
+        crate::cli::OutputFormat::Json => {
+            let serialized = serde_json::to_string_pretty(&all_chunks)?;
+            if let Some(file_path) = args.write.as_deref() {
+                std::fs::write(file_path, &serialized)?;
+                if !args.quiet {
+                    eprintln!(
+                        "{}",
+                        format!("💾 Saved JSON output to {}", file_path).truecolor(0, 255, 100)
+                    );
+                }
+            } else {
+                println!("{}", serialized);
+            }
+
+            if args.copy {
+                let mut clipboard = arboard::Clipboard::new()?;
+                clipboard.set_text(serialized)?;
+                if !args.quiet {
+                    eprintln!(
+                        "{}",
+                        "📋 Stashed the JSON loot in your clipboard!".truecolor(0, 255, 100)
+                    );
+                }
+            }
+        }
+        crate::cli::OutputFormat::Plain => {
+            let mut chunk_texts = Vec::new();
+            for chunk in &all_chunks {
+                let plain_content = plain::markdown_to_plain(&chunk.content);
+                let formatted = if !chunk.breadcrumbs.is_empty() {
+                    format!(
+                        "<!-- Context: {} -->\n\n{}",
+                        chunk.breadcrumbs.join(" > "),
+                        plain_content
+                    )
+                } else {
+                    plain_content
+                };
+                chunk_texts.push(formatted);
+            }
+            let output = chunk_texts.join("\n\n---\n\n");
+            output_formatted_text(
+                &output,
+                total_chunk_tokens,
+                all_chunks.len(),
+                display_name,
+                args,
+            )?;
+        }
+        crate::cli::OutputFormat::Markdown => {
+            let mut chunk_texts = Vec::new();
+            for chunk in &all_chunks {
+                let formatted = if !chunk.breadcrumbs.is_empty() {
+                    format!(
+                        "<!-- Context: {} -->\n\n{}",
+                        chunk.breadcrumbs.join(" > "),
+                        chunk.content
+                    )
+                } else {
+                    chunk.content.clone()
+                };
+                chunk_texts.push(formatted);
+            }
+            let output = chunk_texts.join("\n\n---\n\n");
+            output_formatted_text(
+                &output,
+                total_chunk_tokens,
+                all_chunks.len(),
+                display_name,
+                args,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn format_and_output(
     mut compressed_docs: Vec<GobbleDocument>,
     pre_compression_tokens: usize,
@@ -191,7 +385,7 @@ pub fn format_and_output(
 ) -> Result<()> {
     // Failed extractions are carried through only so `--json` can report them
     // in-band; every other output form drops them (no empty file blocks).
-    if !args.json {
+    if !args.json && args.output_format() != crate::cli::OutputFormat::Json {
         compressed_docs.retain(|d| d.error.is_none());
     }
 
@@ -268,6 +462,15 @@ pub fn format_and_output(
         preamble.push_str("\n---\n\n");
     }
 
+    if let Some(target_chunk_size) = args.chunk_size {
+        return format_semantic_chunks_and_output(
+            &compressed_docs,
+            target_chunk_size,
+            display_name,
+            args,
+        );
+    }
+
     if args.split {
         let root_dir_name = sanitize_root_dir_name(display_name);
         let root_dir = args
@@ -334,7 +537,7 @@ pub fn format_and_output(
                 eprintln!("{} Failed to open directory: {}", "⚠️".yellow(), e);
             }
         }
-    } else if args.json {
+    } else if args.output_format() == crate::cli::OutputFormat::Json {
         // Stable machine contract: a deterministic (alphabetically sorted above) array
         // of records, each carrying the detected format and an LLM token estimate so an
         // agent can extract a file and budget it in one call.
@@ -556,37 +759,11 @@ pub fn format_and_output(
             combined.push_str(&render_block(&doc));
         }
 
-        let output = format!("{}\n", combined.trim());
-        let total_chars = output.len();
-
-        if args.tokens {
-            if args.quiet {
-                eprintln!("tokens: {}", post_compression_tokens);
-            } else {
-                eprintln!(
-                    "{}",
-                    format!(
-                        "📊 tokens: {} (~{} chars)",
-                        post_compression_tokens, total_chars
-                    )
-                    .truecolor(255, 191, 0)
-                );
-            }
-        }
-
-        if let Some(file_path) = args.write.as_deref() {
-            std::fs::write(file_path, &output)?;
-            if !args.quiet {
-                eprintln!(
-                    "{}",
-                    format!("💾 Saved output to {}", file_path).truecolor(0, 255, 100)
-                );
-            }
+        let output = if args.output_format() == crate::cli::OutputFormat::Plain {
+            plain::markdown_to_plain(&combined)
         } else {
-            // The actual markdown output — nothing but the content itself, so the
-            // buffered and streaming paths emit identical bytes.
-            println!("{}", output);
-        }
+            combined
+        };
 
         let tokens_saved =
             if args.compress.is_some() && pre_compression_tokens > post_compression_tokens {
@@ -599,53 +776,13 @@ pub fn format_and_output(
         print_belch(
             args.quiet,
             file_count,
-            total_chars,
+            output.len(),
             post_compression_tokens,
             tokens_saved,
             None,
         );
 
-        if args.open {
-            let file_to_open = if let Some(file_path) = args.write.as_deref() {
-                // --write was specified — open that file directly
-                std::path::PathBuf::from(file_path)
-            } else {
-                // No --write — write to a temp file and open that
-                let file_prefix = display_name
-                    .replace("https://", "")
-                    .replace("http://", "")
-                    .replace("/", "_")
-                    .replace("..", "")
-                    .replace(":", "_")
-                    .replace(" ", "_")
-                    .replace("&", "and");
-                let temp_dir = std::env::temp_dir();
-                let temp_file = temp_dir.join(format!("{}_gobbled.md", file_prefix));
-                std::fs::write(&temp_file, &output)?;
-                temp_file
-            };
-
-            if !args.quiet {
-                eprintln!(
-                    "{}",
-                    format!("🚪 Kicked open: {}", file_to_open.display()).truecolor(0, 200, 255)
-                );
-            }
-            if let Err(e) = open::that(&file_to_open) {
-                eprintln!("{} Failed to open file: {}", "⚠️".yellow(), e);
-            }
-        }
-
-        if args.copy {
-            let mut clipboard = arboard::Clipboard::new()?;
-            clipboard.set_text(output)?;
-            if !args.quiet {
-                eprintln!(
-                    "{}",
-                    "📋 Stashed the loot in your clipboard!".truecolor(0, 255, 100)
-                );
-            }
-        }
+        output_formatted_text(&output, post_compression_tokens, 0, display_name, args)?;
     }
 
     Ok(())
@@ -676,7 +813,11 @@ pub fn stream_and_output(
     // would have silently changed the machine contract the day anyone removed
     // `json` from that list. Deleted rather than left as a trap.
     debug_assert!(
-        !(args.summary || args.manifest || args.json),
+        !(args.summary
+            || args.manifest
+            || args.output_format() == crate::cli::OutputFormat::Json
+            || args.output_format() == crate::cli::OutputFormat::Plain
+            || args.chunk_size.is_some()),
         "buffered-only modes must not reach stream_and_output"
     );
 

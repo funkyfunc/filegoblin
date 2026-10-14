@@ -209,8 +209,11 @@ fn sweep_stale_urls() {
 mod tests {
     use super::*;
 
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn blob_roundtrip_and_disable() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let k = key(b"cache-test-input");
         put_blob("test", &k, "cached value");
         assert_eq!(get_blob("test", &k).as_deref(), Some("cached value"));
@@ -229,6 +232,7 @@ mod tests {
     /// it had no test at all, so a broken comparison would have been invisible.
     #[test]
     fn ttl_expiry_evicts_and_content_addressed_entries_survive() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let k = key(b"ttl-test-input");
         put("test", &k, b"value");
 

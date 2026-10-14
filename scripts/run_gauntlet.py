@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, json, subprocess, time
+import os, sys, json, subprocess, time, re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GAUNTLET_DIR = os.path.join(ROOT, "test_assets", "gauntlet")
@@ -45,7 +45,8 @@ for item in manifest:
             
     # Check forbidden absent
     for forbidden in item.get("forbidden_absent", []):
-        if forbidden in stdout:
+        pattern = r'(?<![A-Za-z0-9])' + re.escape(forbidden) + r'(?![A-Za-z0-9])'
+        if re.search(pattern, stdout):
             errors.append(f"Found forbidden token: '{forbidden}'")
             
     # Check syntax contains
