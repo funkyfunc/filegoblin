@@ -1,97 +1,238 @@
 #!/usr/bin/env python3
-import os, sys, json, subprocess, time, re
+"""Runs the adversarial gauntlet: every case in gauntlet_manifest.json through
+filegoblin, scored two ways.
+
+* **Canaries** (pass/fail): required strings, forbidden strings, syntax
+  markers from the manifest.
+* **Quality** (0–100): how close the output is to the hand-checked gold
+  excerpts in test_assets/gauntlet/gold/ (see scripts/gauntlet_grade.py).
+  Quality keeps moving after every canary passes, so it measures the impact
+  of each change.
+
+    python3 scripts/run_gauntlet.py                    # all cases, default --vision
+    python3 scripts/run_gauntlet.py --vision off       # one mode
+    python3 scripts/run_gauntlet.py --only FORM_1,TBL_1
+    python3 scripts/run_gauntlet.py --regrade target/gauntlet/smart   # rescore saved outputs
+    python3 scripts/run_gauntlet.py --compare target/gauntlet/off target/gauntlet/smart
+
+Outputs and results.json go to target/gauntlet/<mode>/. GAUNTLET_SCORECARD.md
+is rewritten only by a full run (all cases).
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gauntlet_grade import grade_case, weakest  # noqa: E402
+import gauntlet_formats  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GAUNTLET_DIR = os.path.join(ROOT, "test_assets", "gauntlet")
-MANIFEST_PATH = f"{GAUNTLET_DIR}/gauntlet_manifest.json"
-# FILEGOBLIN_BIN overrides; otherwise the repo's debug build, then PATH.
-BINARY_PATH = os.environ.get("FILEGOBLIN_BIN", os.path.join(ROOT, "target", "debug", "filegoblin"))
+GOLD_DIR = os.path.join(GAUNTLET_DIR, "gold")
+MANIFEST_PATH = os.path.join(GAUNTLET_DIR, "gauntlet_manifest.json")
 
-if not os.path.exists(BINARY_PATH):
-    BINARY_PATH = "filegoblin"
 
-with open(MANIFEST_PATH) as f:
-    manifest = json.load(f)
+def binary_path():
+    # FILEGOBLIN_BIN overrides; otherwise the repo's builds, then PATH.
+    if os.environ.get("FILEGOBLIN_BIN"):
+        return os.environ["FILEGOBLIN_BIN"]
+    for p in ("release", "debug"):
+        cand = os.path.join(ROOT, "target", p, "filegoblin")
+        if os.path.exists(cand):
+            return cand
+    return "filegoblin"
 
-print("=" * 70)
-print(f"       FILEGOBLIN ADVERSARIAL GAUNTLET (v1.14.0)")
-print("=" * 70)
 
-results = []
-passed_count = 0
-
-for item in manifest:
-    case_id = item["id"]
-    filename = item["file"]
-    filepath = os.path.join(GAUNTLET_DIR, filename)
-    desc = item["description"]
-    
-    start = time.time()
-    res = subprocess.run([BINARY_PATH, filepath, "-q"], capture_output=True, text=True)
-    elapsed = time.time() - start
-    
-    stdout = res.stdout
-    stderr = res.stderr
-    exit_code = res.returncode
-    
+def canary_errors(item, stdout, exit_code, stderr):
     errors = []
     if exit_code != 0:
         errors.append(f"Non-zero exit ({exit_code}): {stderr.strip()[:100]}")
-    
-    # Check canaries present
+    low = stdout.lower()
     for canary in item.get("canaries_present", []):
-        if canary not in stdout and canary.lower() not in stdout.lower():
-            errors.append(f"Missing canary: '{canary}'")
-            
-    # Check forbidden absent
+        alts = canary if isinstance(canary, list) else [canary]
+        if not any(a in stdout or a.lower() in low for a in alts):
+            errors.append(f"Missing canary: '{alts[0]}'")
     for forbidden in item.get("forbidden_absent", []):
-        pattern = r'(?<![A-Za-z0-9])' + re.escape(forbidden) + r'(?![A-Za-z0-9])'
+        pattern = r"(?<![A-Za-z0-9])" + re.escape(forbidden) + r"(?![A-Za-z0-9])"
         if re.search(pattern, stdout):
             errors.append(f"Found forbidden token: '{forbidden}'")
-            
-    # Check syntax contains
+    # A list item means any one of its alternatives (equally valid conventions,
+    # e.g. a merged header written once or repeated across its columns).
     for syn in item.get("syntax_contains", []):
-        if syn not in stdout:
-            errors.append(f"Missing syntax marker: '{syn}'")
-            
-    passed = len(errors) == 0
-    if passed:
-        passed_count += 1
-        status = "\033[92mPASS\033[0m"
-    else:
-        status = "\033[91mFAIL\033[0m"
-        
-    print(f"[{status}] {case_id:<3}: {desc[:48]:<48} ({elapsed*1000:.1f}ms)")
-    if errors:
-        for err in errors[:3]:
-            print(f"       -> {err}")
-            
-    results.append({
-        "id": case_id,
-        "file": filename,
-        "category": item["category"],
-        "description": desc,
-        "passed": passed,
-        "elapsed_ms": elapsed * 1000,
-        "errors": errors
-    })
+        alts = syn if isinstance(syn, list) else [syn]
+        if not any(a in stdout for a in alts):
+            errors.append(f"Missing syntax marker: '{alts[0]}'")
+    return errors
 
-score = (passed_count / len(manifest)) * 100
-print("=" * 70)
-print(f"GAUNTLET SCORE: {passed_count}/{len(manifest)} ({score:.1f}%)")
-print("=" * 70)
 
-# Generate Markdown scorecard
-scorecard_path = os.path.join(ROOT, "GAUNTLET_SCORECARD.md")
-with open(scorecard_path, "w") as f:
-    f.write("# Filegoblin Adversarial Gauntlet Scorecard\n\n")
-    f.write(f"**Overall Score:** {passed_count}/{len(manifest)} ({score:.1f}%)\n\n")
-    f.write("| ID | Category | Description | Status | Latency | Primary Failure Reason |\n")
-    f.write("| :--- | :--- | :--- | :--- | :--- | :--- |\n")
-    for r in results:
-        status_md = "✅ PASS" if r["passed"] else "❌ FAIL"
-        err_msg = r["errors"][0] if r["errors"] else "None"
-        f.write(f"| **{r['id']}** | {r['category']} | {r['description']} | {status_md} | {r['elapsed_ms']:.1f} ms | {err_msg} |\n")
+def fmt_q(q):
+    return "  —  " if q is None else f"{q:5.1f}"
 
-print(f"Scorecard written to: {scorecard_path}")
-sys.exit(0 if passed_count == len(manifest) else 1)
+
+def summarize(results):
+    passed = sum(r["passed"] for r in results)
+    graded = [r["quality"] for r in results if r["quality"] is not None]
+    quality = sum(graded) / len(graded) if graded else None
+    return passed, quality, len(graded)
+
+
+def run(args):
+    with open(MANIFEST_PATH) as f:
+        manifest = json.load(f)
+    if args.only:
+        wanted = set(args.only.split(","))
+        manifest = [m for m in manifest if m["id"] in wanted]
+    mode = args.vision or "default"
+    out_dir = args.regrade or args.out or os.path.join(ROOT, "target", "gauntlet", mode)
+    os.makedirs(out_dir, exist_ok=True)
+    binary = binary_path()
+
+    print("=" * 78)
+    print(f"  FILEGOBLIN ADVERSARIAL GAUNTLET  ·  --vision {mode}  ·  {len(manifest)} cases")
+    print("=" * 78)
+    print(f"{'':6} {'ID':<11} {'quality':>7}  {'time':>8}  {'weakest component / first failure'}")
+
+    results = []
+    for item in manifest:
+        case_id = item["id"]
+        out_path = os.path.join(out_dir, f"{case_id}.md")
+        if args.regrade:
+            if not os.path.exists(out_path):
+                continue
+            stdout = open(out_path, encoding="utf-8").read()
+            meta_path = out_path + ".meta.json"
+            meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
+            exit_code, stderr, elapsed = meta.get("exit", 0), meta.get("stderr", ""), meta.get("elapsed", 0.0)
+        else:
+            cmd = [binary, os.path.join(GAUNTLET_DIR, item["file"]), "-q"]
+            if args.vision:
+                cmd += ["--vision", args.vision]
+            start = time.time()
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            elapsed = time.time() - start
+            stdout, stderr, exit_code = res.stdout, res.stderr, res.returncode
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(stdout)
+            with open(out_path + ".meta.json", "w") as fh:
+                json.dump({"exit": exit_code, "stderr": stderr[-2000:], "elapsed": elapsed}, fh)
+
+        fmt = None
+        if args.formats and not args.regrade:
+            fmt = check_formats(binary, item, stdout, args.formats, out_dir)
+        errors = canary_errors(item, stdout, exit_code, stderr)
+        grade = grade_case(stdout, os.path.join(GOLD_DIR, case_id))
+        quality = None if grade is None else grade["score"]
+        passed = not errors
+        status = "\033[92mPASS\033[0m" if passed else "\033[91mFAIL\033[0m"
+        note = errors[0] if errors else weakest(grade)
+        print(f"[{status}] {case_id:<11} {fmt_q(quality):>7}  {elapsed:7.1f}s  {note[:60]}")
+        if fmt is not None:
+            print(f"        formats {'ok  ' if fmt['pass'] else 'FAIL'} plain cov {100 * fmt['plain']['coverage']:.1f}% "
+                  f"residue {fmt['plain']['residue']} · chunks {fmt['chunks'].get('chunks', 0)} cov "
+                  f"{100 * fmt['chunks'].get('coverage', 0):.1f}% oversize {fmt['chunks'].get('oversize', '?')} "
+                  f"broken {fmt['chunks'].get('broken', '?')} {fmt['chunks'].get('error', '')}")
+        results.append({
+            "id": case_id, "file": item["file"], "category": item["category"],
+            "description": item["description"], "passed": passed, "errors": errors,
+            "elapsed_ms": elapsed * 1000, "quality": quality,
+            "components": grade["components"] if grade else {},
+            "leaks": grade["leaks"] if grade else [],
+            "excerpts": grade["excerpts"] if grade else {},
+            "formats": fmt,
+        })
+
+    passed, quality, n_graded = summarize(results)
+    fmts = [r["formats"] for r in results if r.get("formats")]
+    print("=" * 78)
+    if fmts:
+        print(f"FORMATS: {sum(f['pass'] for f in fmts)}/{len(fmts)} cases keep markdown content and "
+              f"format guarantees in --format plain and --chunk-size {args.formats} --format json")
+    print(f"CANARIES: {passed}/{len(results)} ({100 * passed / max(1, len(results)):.1f}%)   "
+          f"QUALITY: {fmt_q(quality).strip()} (mean of {n_graded} graded cases)")
+    print("=" * 78)
+
+    with open(os.path.join(out_dir, "results.json"), "w") as fh:
+        json.dump({"mode": mode, "cases": results}, fh, indent=1)
+
+    full_run = not args.only and not args.regrade
+    if full_run and not args.no_scorecard:
+        write_scorecard(results, mode)
+    return 0 if passed == len(results) else 1
+
+
+def check_formats(binary, item, markdown, size, out_dir):
+    """Runs the case through --format plain and --chunk-size/--format json
+    (always --vision off: the format layer does not depend on the PDF engine,
+    and the markdown it is compared with must come from the same engine)."""
+    src = os.path.join(GAUNTLET_DIR, item["file"])
+    base = [binary, src, "-q", "--vision", "off"]
+    md = subprocess.run(base, capture_output=True, text=True).stdout
+    plain = subprocess.run(base + ["--format", "plain"], capture_output=True, text=True).stdout
+    chunks = subprocess.run(base + ["--chunk-size", str(size), "--format", "json"],
+                            capture_output=True, text=True).stdout
+    with open(os.path.join(out_dir, f"{item['id']}.chunks.json"), "w", encoding="utf-8") as fh:
+        fh.write(chunks)
+    p = gauntlet_formats.check_plain(md, plain)
+    c = gauntlet_formats.check_chunks(md, chunks, size)
+    return {"plain": p, "chunks": c, "pass": gauntlet_formats.passes(p, c)}
+
+
+def write_scorecard(results, mode):
+    passed, quality, n_graded = summarize(results)
+    path = os.path.join(ROOT, "GAUNTLET_SCORECARD.md")
+    with open(path, "w") as f:
+        f.write("# Filegoblin Adversarial Gauntlet Scorecard\n\n")
+        f.write(f"Mode: `--vision {mode}`\n\n")
+        f.write(f"**Canaries:** {passed}/{len(results)} ({100 * passed / len(results):.1f}%) · ")
+        f.write(f"**Quality:** {fmt_q(quality).strip()} / 100 (mean over {n_graded} cases with gold excerpts)\n\n")
+        f.write("Quality is graded against hand-checked gold excerpts in `test_assets/gauntlet/gold/`; "
+                "components are completeness, precision, order, tables, headings and math "
+                "(see `scripts/gauntlet_grade.py`).\n\n")
+        f.write("| ID | Category | Canaries | Quality | Weakest | Latency | First failure |\n")
+        f.write("| :--- | :--- | :--- | ---: | :--- | ---: | :--- |\n")
+        for r in results:
+            status = "✅ PASS" if r["passed"] else "❌ FAIL"
+            grade = {"components": r["components"], "leaks": r["leaks"]} if r["components"] else None
+            f.write(f"| **{r['id']}** | {r['category']} | {status} | {fmt_q(r['quality']).strip()} | "
+                    f"{weakest(grade) if grade else ''} | {r['elapsed_ms'] / 1000:.1f} s | "
+                    f"{r['errors'][0] if r['errors'] else ''} |\n")
+    print(f"Scorecard written to: {path}")
+
+
+def compare(a_dir, b_dir):
+    a = {r["id"]: r for r in json.load(open(os.path.join(a_dir, "results.json")))["cases"]}
+    bj = json.load(open(os.path.join(b_dir, "results.json")))
+    b = {r["id"]: r for r in bj["cases"]}
+    print(f"{'ID':<11} {'A':>6} {'B':>6} {'Δ':>6}   canaries A→B")
+    deltas = []
+    for cid in b:
+        if cid not in a:
+            continue
+        qa, qb = a[cid]["quality"], b[cid]["quality"]
+        d = None if qa is None or qb is None else qb - qa
+        if d is not None:
+            deltas.append(d)
+        mark = "" if a[cid]["passed"] == b[cid]["passed"] else ("  FIXED" if b[cid]["passed"] else "  BROKE")
+        print(f"{cid:<11} {fmt_q(qa)} {fmt_q(qb)} {'' if d is None else f'{d:+6.1f}'}   "
+              f"{'P' if a[cid]['passed'] else 'F'}→{'P' if b[cid]['passed'] else 'F'}{mark}")
+    if deltas:
+        print(f"mean Δ quality: {sum(deltas) / len(deltas):+.2f} over {len(deltas)} cases")
+    return 0
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--vision", choices=["off", "smart", "all"], help="passed to filegoblin")
+    ap.add_argument("--only", help="comma-separated case IDs")
+    ap.add_argument("--out", help="where outputs and results.json go")
+    ap.add_argument("--regrade", metavar="DIR", help="rescore outputs saved in DIR instead of running")
+    ap.add_argument("--compare", nargs=2, metavar=("A", "B"), help="per-case quality deltas between two runs")
+    ap.add_argument("--formats", type=int, nargs="?", const=512, metavar="TOKENS",
+                    help="also check --format plain and --chunk-size TOKENS --format json (default 512)")
+    ap.add_argument("--no-scorecard", action="store_true")
+    a = ap.parse_args()
+    sys.exit(compare(*a.compare) if a.compare else run(a))

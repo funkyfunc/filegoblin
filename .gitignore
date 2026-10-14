@@ -36,3 +36,4 @@ assets/*.wasm
 
 references/
 test_assets/enterprise_research/
+__pycache__/

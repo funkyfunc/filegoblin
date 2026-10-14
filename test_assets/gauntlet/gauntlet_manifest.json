@@ -154,7 +154,10 @@
       "$1,024,320.00"
     ],
     "syntax_contains": [
-      "| Portfolio Security Information |  | Valuation & Exposure Metrics |  |  |",
+      [
+        "| Portfolio Security Information |  | Valuation & Exposure Metrics |  |  |",
+        "| Portfolio Security Information | Portfolio Security Information | Valuation & Exposure Metrics | Valuation & Exposure Metrics | Valuation & Exposure Metrics |"
+      ],
       "|---|---|---|---|---|"
     ],
     "forbidden_absent": [
@@ -335,7 +338,11 @@
     "description": "Google Transformer Patent (US 10,452,978): multi-column claims and architecture",
     "canaries_present": [
       "United States Patent",
-      "ATTENTION BASED SEQUENCE",
+      [
+        "ATTENTION-BASED SEQUENCE",
+        "ATTENTION - BASED SEQUENCE",
+        "ATTENTION BASED SEQUENCE"
+      ],
       "10 452 978",
       "What is claimed is",
       "limitations on the scope of any invention"
