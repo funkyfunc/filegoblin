@@ -338,10 +338,21 @@ impl Gobble for PdfGobbler {
             .map(|page| {
                 // Cheap preflight: signals only, no rasterization. On any
                 // classification error, assume a text layer and let extraction try.
-                let kind = doc
-                    .classify_page(page)
-                    .map(|c| c.kind)
-                    .unwrap_or(PageKind::TextLayer);
+                let kind = match doc.classify_page(page) {
+                    // A "scan" with no picture on it is a text page whose
+                    // text tripped the quality gate (a table of contents'
+                    // dot leaders read as repeated junk). There is nothing
+                    // to OCR; its text layer is the content.
+                    Ok(c)
+                        if c.kind == PageKind::Scanned
+                            && c.signals.image_area_ratio < 0.05
+                            && c.signals.text_glyph_count > 0 =>
+                    {
+                        PageKind::TextLayer
+                    }
+                    Ok(c) => c.kind,
+                    Err(_) => PageKind::TextLayer,
+                };
                 let geom = match kind {
                     PageKind::Empty => None,
                     _ => pdf_furniture::collect_page_geom(&doc, page),

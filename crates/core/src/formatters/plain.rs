@@ -206,7 +206,7 @@ fn clean_inline_formatting(text: &str) -> String {
     static IMAGE_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\([^\)]+\)").unwrap());
     static LINK_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\([^\)]+\)").unwrap());
+        LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\(([^\)\s]+)[^\)]*\)").unwrap());
     static AUTOLINK_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"<(https?://[^>]+)>").unwrap());
     static EMAIL_RE: LazyLock<Regex> =
@@ -225,6 +225,7 @@ fn clean_inline_formatting(text: &str) -> String {
     static ITALIC_UNDER_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(^|\s)_([^_]+)_($|\s)").unwrap());
     static STRIKE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"~~([^~]+)~~").unwrap());
+    static BR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<br\s*/?>").unwrap());
     static HTML_TAG_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"</?[a-zA-Z][^>]*>").unwrap());
     static HTML_COMMENT_RE: LazyLock<Regex> =
@@ -235,7 +236,25 @@ fn clean_inline_formatting(text: &str) -> String {
     res = DISPLAY_MATH_RE.replace_all(&res, "$1").to_string();
     res = INLINE_MATH_RE.replace_all(&res, "$1").to_string();
     res = IMAGE_RE.replace_all(&res, "$1").to_string();
-    res = LINK_RE.replace_all(&res, "$1").to_string();
+    // A web link keeps its address ("text (https://…)"): references, DOIs
+    // and repositories are content. In-page anchors and relative paths are not.
+    res = LINK_RE
+        .replace_all(&res, |c: &regex::Captures| {
+            let (label, url) = (&c[1], &c[2]);
+            let web = url.starts_with("http://") || url.starts_with("https://");
+            let same = label.trim_end_matches('/') == url.trim_end_matches('/')
+                || url.ends_with(
+                    label
+                        .trim_start_matches("https://")
+                        .trim_start_matches("http://"),
+                );
+            if web && !same {
+                format!("{label} ({url})")
+            } else {
+                label.to_string()
+            }
+        })
+        .to_string();
     res = AUTOLINK_RE.replace_all(&res, "$1").to_string();
     res = EMAIL_RE.replace_all(&res, "$1").to_string();
     res = INLINE_CODE_RE.replace_all(&res, "$1").to_string();
@@ -245,6 +264,8 @@ fn clean_inline_formatting(text: &str) -> String {
     res = BOLD_UNDER_RE.replace_all(&res, "$1").to_string();
     res = ITALIC_UNDER_RE.replace_all(&res, "$1$2$3").to_string();
     res = STRIKE_RE.replace_all(&res, "$1").to_string();
+    // A line break tag separates words ("of<br/>China"); other tags vanish.
+    res = BR_RE.replace_all(&res, " ").to_string();
     res = HTML_TAG_RE.replace_all(&res, "").to_string();
 
     res
@@ -272,6 +293,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn line_break_tags_keep_words_apart() {
+        assert_eq!(
+            markdown_to_plain("laws of<br/>China and<BR>Party").trim(),
+            "laws of China and Party"
+        );
+    }
+
+    #[test]
+    fn web_links_keep_their_address() {
+        let out = markdown_to_plain(
+            "See [the paper](https://doi.org/10.1/x), [§2](#sec-2) and <https://a.b/c>.",
+        );
+        assert!(out.contains("the paper (https://doi.org/10.1/x)"), "{out}");
+        assert!(out.contains("§2") && !out.contains("#sec-2"), "{out}");
+        assert!(out.contains("https://a.b/c"), "{out}");
+        let same = markdown_to_plain("[https://example.com](https://example.com)");
+        assert_eq!(same.trim(), "https://example.com");
+    }
+
+    #[test]
     fn test_markdown_to_plain_headings_and_styles() {
         let md =
             "# Title\n\n## Subtitle\n\nThis is **bold**, *italic*, and `code` with ~~strike~~.";
@@ -286,7 +327,7 @@ mod tests {
     fn test_markdown_to_plain_links_and_math() {
         let md = "See [our website](https://example.com) for $x = y^2$ formulas.\n\n$$\\int_0^1 f(x) dx$$";
         let plain = markdown_to_plain(md);
-        assert!(plain.contains("See our website for x = y^2 formulas."));
+        assert!(plain.contains("See our website (https://example.com) for x = y^2 formulas."));
         assert!(plain.contains("\\int_0^1 f(x) dx"));
     }
 

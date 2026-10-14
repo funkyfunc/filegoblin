@@ -15,6 +15,9 @@
 //! * **Pictures**: pages that mix text with images.
 //! * **Short documents**: running heads and page numbers are recognised by
 //!   recurrence across pages, which a one- or two-page document cannot show.
+//!
+//! Fillable forms (ten or more form-field widgets) stay on the fast path:
+//! the layout models read a form's boxes as one page-wide table.
 
 use super::pdf_furniture::PageGeom;
 use pdf_oxide::PdfDocument;
@@ -65,6 +68,12 @@ pub(crate) fn needs_vision(
     let Some(geom) = geom else {
         return Some(Reason::NoTextLayer);
     };
+    // Fillable forms: the layout models read a form's boxes as one page-wide
+    // table, while the geometric converter keeps the labels in reading
+    // order. The fields themselves say it is a form.
+    if is_form(doc, page) {
+        return None;
+    }
     if page_count <= 2 {
         return Some(Reason::ShortDocument);
     }
@@ -78,6 +87,18 @@ pub(crate) fn needs_vision(
         return Some(Reason::Columns);
     }
     None
+}
+
+/// Ten or more form-field widgets on the page.
+fn is_form(doc: &PdfDocument, page: usize) -> bool {
+    use pdf_oxide::annotation_types::AnnotationSubtype;
+    doc.get_annotations(page).is_ok_and(|annots| {
+        annots
+            .iter()
+            .filter(|a| a.subtype_enum == AnnotationSubtype::Widget)
+            .count()
+            >= 10
+    })
 }
 
 /// Three or more characters set in a math font or drawn from the math

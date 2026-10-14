@@ -359,15 +359,19 @@ fn chunk_document_layout(
                 let header_prefix = format!("{}\n{}", table.header, table.separator);
                 let header_tokens = estimate_tokens(&header_prefix, file_path).max(1);
 
-                // If current_parts fits along with table header, include it in the first chunk
-                let (first_prefix, mut table_part_tokens) = if !current_parts.is_empty()
+                // Text held back to open the table's first part (when it
+                // fits alongside the header), with its own breadcrumbs.
+                let mut lead: Option<(String, Vec<String>, usize)> = if !current_parts.is_empty()
                     && current_tokens + header_tokens < config.chunk_size
                 {
-                    let p = format!("{}\n\n{}", current_parts.join("\n\n"), header_prefix);
-                    let toks = current_tokens + header_tokens;
+                    let held = (
+                        current_parts.join("\n\n"),
+                        std::mem::take(&mut current_breadcrumbs),
+                        current_tokens,
+                    );
                     current_parts.clear();
                     current_tokens = 0;
-                    (p, toks)
+                    Some(held)
                 } else {
                     flush_current(
                         &mut current_parts,
@@ -375,23 +379,42 @@ fn chunk_document_layout(
                         &mut current_tokens,
                         &mut raw_chunks,
                     );
-                    (header_prefix.clone(), header_tokens)
+                    None
                 };
-
-                let mut current_table_rows = Vec::new();
+                let mut table_part_tokens = header_tokens + lead.as_ref().map_or(0, |l| l.2);
+                let mut current_table_rows: Vec<String> = Vec::new();
+                let mut parts_emitted = 0usize;
+                // Every part repeats the header; the first also carries the
+                // held-back text. (Choosing the first part by
+                // `raw_chunks.is_empty()` dropped that text whenever earlier
+                // chunks existed.)
+                let part = |lead: &mut Option<(String, Vec<String>, usize)>, rows: &[String]| {
+                    let prefix = match lead.take() {
+                        Some((text, _, _)) => format!("{text}\n\n{header_prefix}"),
+                        None => header_prefix.clone(),
+                    };
+                    format!("{}\n{}", prefix, rows.join("\n"))
+                        .trim_end()
+                        .to_string()
+                };
 
                 for row in &table.rows {
                     let row_tokens = estimate_tokens(row, file_path).max(1);
-                    if table_part_tokens + row_tokens > config.chunk_size
-                        && !current_table_rows.is_empty()
-                    {
-                        let prefix = if raw_chunks.is_empty() && current_parts.is_empty() {
-                            &first_prefix
-                        } else {
-                            &header_prefix
-                        };
-                        let chunk_text = format!("{}\n{}", prefix, current_table_rows.join("\n"));
-                        raw_chunks.push((chunk_text, block.breadcrumbs.clone()));
+                    if current_table_rows.is_empty() {
+                        // A first row that does not fit beside the held-back
+                        // text: that text goes out as a chunk of its own.
+                        if lead.is_some() && table_part_tokens + row_tokens > config.chunk_size {
+                            if let Some((text, crumbs, _)) = lead.take() {
+                                raw_chunks.push((text, crumbs));
+                            }
+                            table_part_tokens = header_tokens;
+                        }
+                    } else if table_part_tokens + row_tokens > config.chunk_size {
+                        raw_chunks.push((
+                            part(&mut lead, &current_table_rows),
+                            block.breadcrumbs.clone(),
+                        ));
+                        parts_emitted += 1;
                         current_table_rows.clear();
                         table_part_tokens = header_tokens;
                     }
@@ -399,14 +422,13 @@ fn chunk_document_layout(
                     table_part_tokens += row_tokens;
                 }
 
-                if !current_table_rows.is_empty() {
-                    let prefix = if raw_chunks.is_empty() {
-                        &first_prefix
-                    } else {
-                        &header_prefix
-                    };
-                    let chunk_text = format!("{}\n{}", prefix, current_table_rows.join("\n"));
-                    raw_chunks.push((chunk_text, block.breadcrumbs.clone()));
+                // The last part; always at least one, even for a table that
+                // is a lone (oversized) header row.
+                if !current_table_rows.is_empty() || lead.is_some() || parts_emitted == 0 {
+                    raw_chunks.push((
+                        part(&mut lead, &current_table_rows),
+                        block.breadcrumbs.clone(),
+                    ));
                 }
                 last_narrative_text = None;
             }
@@ -459,6 +481,28 @@ fn chunk_document_layout(
 
         // Narrative or Thematic break
         let is_narrative = matches!(block.kind, BlockKind::Narrative(_));
+
+        // A paragraph or list longer than the budget is cut at line breaks,
+        // then sentence ends, then spaces; the pieces become chunks of their
+        // own and the last one stays open for what follows.
+        if is_narrative && block.tokens > config.chunk_size {
+            flush_current(
+                &mut current_parts,
+                &mut current_breadcrumbs,
+                &mut current_tokens,
+                &mut raw_chunks,
+            );
+            let mut pieces = split_to_budget(&block.raw_text, config.chunk_size, file_path);
+            let last = pieces.pop().unwrap_or_default();
+            for piece in pieces {
+                raw_chunks.push((piece, block.breadcrumbs.clone()));
+            }
+            current_tokens = estimate_tokens(&last, file_path).max(1);
+            current_breadcrumbs = block.breadcrumbs.clone();
+            last_narrative_text = Some(last.clone());
+            current_parts.push(last);
+            continue;
+        }
 
         if current_tokens + block.tokens > config.chunk_size && !current_parts.is_empty() {
             // Need to flush current chunk
@@ -525,6 +569,88 @@ fn chunk_document_layout(
         .collect()
 }
 
+/// Cuts `text` into pieces of at most `budget` tokens: at line breaks first,
+/// then after sentence ends, then between words. Nothing is dropped.
+fn split_to_budget(text: &str, budget: usize, file_path: &str) -> Vec<String> {
+    let fits = |s: &str| estimate_tokens(s, file_path) <= budget;
+    // Units no larger than the budget, each tagged with the separator that
+    // joins it to the previous unit.
+    let mut units: Vec<(&str, String)> = Vec::new();
+    for line in text.lines() {
+        if fits(line) {
+            units.push(("\n", line.to_string()));
+            continue;
+        }
+        let mut first = true;
+        for sentence in split_sentences(line) {
+            let sep = if first { "\n" } else { " " };
+            first = false;
+            if fits(&sentence) {
+                units.push((sep, sentence));
+                continue;
+            }
+            let mut piece = String::new();
+            let mut piece_sep = sep;
+            for word in sentence.split_whitespace() {
+                let candidate = if piece.is_empty() {
+                    word.to_string()
+                } else {
+                    format!("{piece} {word}")
+                };
+                if !piece.is_empty() && !fits(&candidate) {
+                    units.push((piece_sep, std::mem::take(&mut piece)));
+                    piece_sep = " ";
+                    piece = word.to_string();
+                } else {
+                    piece = candidate;
+                }
+            }
+            if !piece.is_empty() {
+                units.push((piece_sep, piece));
+            }
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for (sep, unit) in units {
+        let candidate = if cur.is_empty() {
+            unit.clone()
+        } else {
+            format!("{cur}{sep}{unit}")
+        };
+        if !cur.is_empty() && !fits(&candidate) {
+            out.push(std::mem::take(&mut cur));
+            cur = unit;
+        } else {
+            cur = candidate;
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Sentences of one line, each keeping its closing punctuation.
+fn split_sentences(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let bytes: Vec<(usize, char)> = line.char_indices().collect();
+    for (k, &(i, c)) in bytes.iter().enumerate() {
+        let next_is_space = bytes.get(k + 1).is_some_and(|&(_, n)| n == ' ');
+        if matches!(c, '.' | '!' | '?' | ';') && next_is_space {
+            let end = i + c.len_utf8();
+            out.push(line[start..end].trim().to_string());
+            start = end;
+        }
+    }
+    let rest = line[start..].trim();
+    if !rest.is_empty() {
+        out.push(rest.to_string());
+    }
+    out
+}
+
 /// Fallback hard token windowing strategy.
 fn chunk_document_tokens(
     content: &str,
@@ -589,6 +715,85 @@ mod tests {
             all.contains("---\ntitle: \"A\"\nauthor: B\n---"),
             "frontmatter split apart: {all:?}"
         );
+    }
+
+    #[test]
+    fn text_before_a_large_table_is_kept_after_earlier_chunks() {
+        let mut md = String::from("# One\n\n");
+        md.push_str(&"Opening words fill the first chunk. ".repeat(40));
+        md.push_str(
+            "\n\n# Two\n\nLEAD-IN paragraph right before the table.\n\n| A | B |\n|---|---|\n",
+        );
+        for i in 0..200 {
+            md.push_str(&format!("| row {i} | value {i} |\n"));
+        }
+        let cfg = ChunkConfig {
+            chunk_size: 200,
+            chunk_overlap: 0,
+            strategy: ChunkStrategy::Layout,
+        };
+        let chunks = chunk_document(&md, "a.md", &cfg);
+        let all: String = chunks
+            .iter()
+            .map(|c| c.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("LEAD-IN paragraph"), "lead-in lost");
+        assert!(all.contains("| row 199 | value 199 |"));
+        for c in &chunks {
+            if c.content.contains("| row ") {
+                assert!(
+                    c.content.contains("| A | B |"),
+                    "table part without header: {}",
+                    c.content
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_paragraph_longer_than_the_budget_is_split_without_loss() {
+        let para = (0..400)
+            .map(|i| format!("Sentence number {i} says something."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let cfg = ChunkConfig {
+            chunk_size: 120,
+            chunk_overlap: 0,
+            strategy: ChunkStrategy::Layout,
+        };
+        let chunks = chunk_document(&para, "a.md", &cfg);
+        assert!(chunks.len() > 5);
+        assert!(
+            chunks.iter().all(|c| c.tokens <= 130),
+            "a chunk is over budget"
+        );
+        let joined: String = chunks
+            .iter()
+            .map(|c| c.content.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            joined.split_whitespace().count(),
+            para.split_whitespace().count()
+        );
+    }
+
+    #[test]
+    fn an_oversized_header_only_table_is_kept() {
+        let cell = "word ".repeat(300);
+        let md = format!("Intro.\n\n| {cell} | x |\n|---|---|\n\nAfter.");
+        let cfg = ChunkConfig {
+            chunk_size: 100,
+            chunk_overlap: 0,
+            strategy: ChunkStrategy::Layout,
+        };
+        let all: String = chunk_document(&md, "a.md", &cfg)
+            .iter()
+            .map(|c| c.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains(cell.trim()) && all.contains("After."), "{all}");
     }
 
     #[test]

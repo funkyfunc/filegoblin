@@ -867,7 +867,15 @@ fn grid_markdown(
                 .collect()
         })
         .collect();
-    for sp in &st.spans {
+    // Spans are read from the grid as filled from the text layer and each
+    // cell belongs to one span only, the largest. Reading a span from cells
+    // an earlier span had already filled repeated its text once per overlap
+    // (the model's spans overlap on dense forms: "Form 1040 … Form 1040 …").
+    let filled = grid.clone();
+    let mut claimed = vec![vec![false; nc]; nr];
+    let mut spans: Vec<&UserBox> = st.spans.iter().collect();
+    spans.sort_by(|a, b| b.area().total_cmp(&a.area()));
+    for sp in spans {
         let rs: Vec<usize> = (0..nr)
             .filter(|&r| {
                 (st.rows[r].y1.min(sp.y1) - st.rows[r].y0.max(sp.y0)).max(0.0)
@@ -880,19 +888,20 @@ fn grid_markdown(
                     > 0.5 * st.cols[c].width()
             })
             .collect();
-        if rs.len() * cs.len() < 2 {
+        if rs.len() * cs.len() < 2 || rs.iter().any(|&r| cs.iter().any(|&c| claimed[r][c])) {
             continue;
         }
         let text = rs
             .iter()
             .flat_map(|&r| cs.iter().map(move |&c| (r, c)))
-            .map(|(r, c)| grid[r][c].clone())
+            .map(|(r, c)| filled[r][c].as_str())
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
         for &r in &rs {
             for &c in &cs {
                 grid[r][c] = text.clone();
+                claimed[r][c] = true;
             }
         }
     }
@@ -963,6 +972,36 @@ mod tests {
             size: y1 - y0,
             glued: false,
         }
+    }
+
+    #[test]
+    fn overlapping_spans_do_not_repeat_text() {
+        // 2 rows x 3 columns, PDF coordinates (y up). One word per cell in
+        // the top row; the model reports two overlapping spans over it.
+        let ub = |x0, y0, x1, y1| UserBox { x0, y0, x1, y1 };
+        let st = crate::vision::table::Structure {
+            rows: vec![ub(0.0, 680.0, 300.0, 700.0), ub(0.0, 660.0, 300.0, 680.0)],
+            cols: vec![
+                ub(0.0, 660.0, 100.0, 700.0),
+                ub(100.0, 660.0, 200.0, 700.0),
+                ub(200.0, 660.0, 300.0, 700.0),
+            ],
+            spans: vec![ub(0.0, 680.0, 300.0, 700.0), ub(0.0, 680.0, 200.0, 700.0)],
+            ..Default::default()
+        };
+        let toks = vec![
+            tok("Form", 10.0, 685.0, 40.0, 695.0),
+            tok("1040", 110.0, 685.0, 140.0, 695.0),
+            tok("2025", 210.0, 685.0, 240.0, 695.0),
+            tok("a", 10.0, 665.0, 20.0, 675.0),
+            tok("b", 110.0, 665.0, 120.0, 675.0),
+            tok("c", 210.0, 665.0, 220.0, 675.0),
+        ];
+        let idx: Vec<usize> = (0..toks.len()).collect();
+        let md = grid_markdown(&st, &toks, &idx).unwrap();
+        let header = md.lines().next().unwrap();
+        assert_eq!(header.matches("Form").count(), 3, "{md}");
+        assert!(!header.contains("Form 1040 2025 Form"), "{md}");
     }
 
     #[test]

@@ -60,7 +60,8 @@ fn run() {
     // Bold/italic/links stripped
     assert!(out.contains("Rust with high efficiency."));
     assert!(!out.contains("**Rust**"));
-    assert!(out.contains("See documentation link for details."));
+    // Web links keep their address: references are content.
+    assert!(out.contains("See documentation link (https://filegoblin.rs/docs) for details."));
     assert!(!out.contains("[documentation link](https://filegoblin.rs/docs)"));
 
     // Math delimiters stripped
