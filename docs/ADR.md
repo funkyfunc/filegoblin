@@ -904,3 +904,44 @@ The largest gains after the first working version came from three changes. Takin
 **Cost:** on a 2-core cloud box, about 3 s per text page for layout, about 0.35 s per formula, and 15–40 s per scanned page. On an Apple M4 Pro, the 15-page "Attention Is All You Need" converts in 10 s with vision and 1 s with `--vision off`. The model build script reproduced all nine weight files there from upstream in 3 minutes. `--vision off` keeps the old speed. Handwriting remains out of reach: no permissive handwriting recognizer runs well on CPU. The old-scans category is mostly handwritten letters, which is why it stays low.
 
 **Status:** Accepted. `vision` is opt-in until release builds ship the weights.
+
+## 2026-10-14: Graded gauntlet: quality against hand-checked gold, plus format checks
+
+**Context:** the gauntlet's canaries (required strings, forbidden strings, syntax markers) had saturated at 29/29 with the fast path, so they could no longer show whether a change helped. A canary also passes on output that is garbled around it. "Measure impact" needs a score that keeps moving.
+
+**Decision:**
+- **Gold excerpts.** `test_assets/gauntlet/gold/<ID>/` holds 58 excerpts for 27 cases, plus furniture checks (`checks.json`: strings that must never appear). They were written from the sources only: rendered pages, text layers, and the HTML/DOCX/PPTX markup, never from filegoblin's output. Conventions are in the folder's README. The two copyrighted books are graded on furniture checks alone.
+- **Scoring** (`scripts/gauntlet_grade.py`, standard library only). Each excerpt is located in the output and scored on:
+  - completeness;
+  - precision, which duplicated text also lowers;
+  - reading order;
+  - table cells;
+  - headings, where only `#` headings count, because chunk breadcrumbs depend on them;
+  - math.
+
+  Each case scores 0–100. Equally valid conventions score the same: a merged cell written once or repeated, Mermaid diagrams read by their labels, LaTeX formatting commands ignored.
+- **Format checks** (`scripts/gauntlet_formats.py`, `--formats`). `--format plain` and `--chunk-size N --format json` must keep at least 99% of the markdown's words. Plain text must carry no markdown syntax. No chunk may be oversized while holding more than one block, and no table part may lack its header.
+- **`run_gauntlet.py`** saves outputs under `target/gauntlet/<mode>/`. `--regrade` rescores saved outputs, which is the fast loop for scorer work, and `--compare A B` prints per-case deltas.
+
+**Result** (M4 Pro, 29 cases):
+
+| | canaries | quality |
+|---|---|---|
+| `--vision off` | 28/29 | 74.7 |
+| `--vision smart`, before this round | 26/29 | 79.5 |
+| `--vision smart`, after | 28/29 | 81.8 |
+
+The fixes found by the new measurements:
+- **Chunking lost text.** Held-back text before an oversized table was dropped, a header-only oversized table vanished, and long paragraphs were never split.
+- **Plain text** dropped link URLs and glued words at `<br>` tags.
+- **Vision tables:** overlapping spans repeated text.
+- **Forms** went to the models, which read them as one page-wide table. FORM_1 went from 37.7 to 70.5.
+- **A table-of-contents page counted as a scan** was OCR'd and lost its title. TI_REG was fixed and TECH_1 rose 9.6 points.
+
+**Open:**
+- **Headings.** PDF section titles come out as bold lines, not `#` headings. SEC and legal HTML headings are lost entirely, and the headings score is 0 on most filings.
+- **HTML page furniture.** EDGAR page footers such as "Apple Inc. | 2025 Form 10-K | 5" and wrapper filenames leak into the output.
+- **Layout tables in HTML** turn prose clauses into one-row pipe tables with `<br/>` inside.
+- **PATENT_1 in smart mode.** A line-end hyphen in a two-column OCR text layer is not rejoined ("limita- tions").
+
+**Status:** Accepted.

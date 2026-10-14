@@ -1,5 +1,7 @@
 # Session Handoff: Phase 7 Multi-Format Output Engine & Layout-Aware Semantic Chunking
 
+> **Update 2026-10-14:** the gauntlet now grades quality (0–100) against hand-checked gold in `test_assets/gauntlet/gold/` and checks `--format plain` and `--chunk-size`. Current numbers are in `GAUNTLET_SCORECARD.md`: with `--vision smart`, 28/29 canaries and 81.8 quality; with `--vision off`, 28/29 and 74.7. Open issues are listed in docs/ADR.md under "Graded gauntlet". The 29/29 figures below were measured before that.
+
 ## 1. What Was Just Completed
 We successfully designed, implemented, and verified the native Multi-Format Output Engine and Layout-Aware Semantic Chunking architecture for RAG and LLM agent pipelines in `filegoblin`:
 

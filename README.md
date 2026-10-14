@@ -57,6 +57,15 @@ with `--features vision,bundled-models`.
 
 ---
 
+**Measuring quality.** `just gauntlet` runs the 29-case adversarial gauntlet
+(`just gauntlet off` for the fast path). Each case gets pass/fail canaries and
+a 0–100 quality score graded against hand-checked gold excerpts in
+`test_assets/gauntlet/gold/`, plus checks that `--format plain` and
+`--chunk-size` lose nothing. `just gauntlet-compare A B` shows what a change
+did case by case. Results are in `GAUNTLET_SCORECARD.md`.
+
+---
+
 ## 🏗 Current Project Structure
 *Note to Agent: Maintain this section as you add modules.*
 

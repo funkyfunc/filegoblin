@@ -16,7 +16,8 @@ filegoblin, scored two ways.
     python3 scripts/run_gauntlet.py --compare target/gauntlet/off target/gauntlet/smart
 
 Outputs and results.json go to target/gauntlet/<mode>/. GAUNTLET_SCORECARD.md
-is rewritten only by a full run (all cases).
+is rewritten by any run or regrade that covers every case (--no-scorecard to
+skip).
 """
 import argparse
 import json
@@ -158,7 +159,7 @@ def run(args):
     with open(os.path.join(out_dir, "results.json"), "w") as fh:
         json.dump({"mode": mode, "cases": results}, fh, indent=1)
 
-    full_run = not args.only and not args.regrade
+    full_run = not args.only and len(results) == len(json.load(open(MANIFEST_PATH)))
     if full_run and not args.no_scorecard:
         write_scorecard(results, mode)
     return 0 if passed == len(results) else 1

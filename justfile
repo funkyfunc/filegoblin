@@ -35,3 +35,16 @@ get-vision-models:
 # with torch, transformers, onnx, onnxruntime, onnxscript, pyyaml).
 build-vision-models:
 	python3 scripts/vision_models.py ~/.filegoblin/models
+
+# The adversarial gauntlet: canaries (pass/fail) and quality (0-100, graded
+# against hand-checked gold in test_assets/gauntlet/gold), plus the
+# --format plain / --chunk-size checks. Builds release with vision first.
+# Example: just gauntlet off
+gauntlet mode="smart":
+	cargo build --release -p filegoblin --features vision
+	python3 scripts/run_gauntlet.py --vision {{mode}} --formats
+
+# Per-case quality deltas between two saved runs, e.g.
+# just gauntlet-compare target/gauntlet/off target/gauntlet/smart
+gauntlet-compare a b:
+	python3 scripts/run_gauntlet.py --compare {{a}} {{b}}

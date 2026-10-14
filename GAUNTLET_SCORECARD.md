@@ -1,35 +1,41 @@
 # Filegoblin Adversarial Gauntlet Scorecard
 
-**Overall Score:** 28/29 (96.6%)
+Mode: `--vision smart`
 
-| ID | Category | Description | Status | Latency | Primary Failure Reason |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **P1** | PPTX Diagrams | Flowchart with glued connectors (<p:cxnSp>) | ✅ PASS | 13.3 ms | None |
-| **P2** | PPTX Grouped Shapes | Text inside nested <p:grpSp> groups (MarkItDown #332) | ✅ PASS | 12.3 ms | None |
-| **P3** | PPTX Chart Gaps | Chart with missing data points, must not print literal 'None' (MarkItDown #2526) | ✅ PASS | 11.0 ms | None |
-| **D1** | DOCX Tables | Word table with gridSpan merged headers | ✅ PASS | 10.7 ms | None |
-| **D3** | DOCX Floating Text Boxes | Floating text box inside mc:AlternateContent (Docling #4569) | ✅ PASS | 13.1 ms | None |
-| **D4** | DOCX Equations | Word equations in OMML format compiled to LaTeX | ✅ PASS | 28.6 ms | None |
-| **R1** | PDF Layout | Two-column scanned layout without line interleaving | ✅ PASS | 36.1 ms | None |
-| **R2** | PDF Math | Heavy mathematical notation and inequalities (CMSY/CMMI) | ❌ FAIL | 203.6 ms | Missing canary: '\le' |
-| **SCI_1** | Scientific Paper (arXiv) | Attention Is All You Need: 2-column, Transformer diagram, multi-head attention math | ✅ PASS | 658.3 ms | None |
-| **SCI_2** | Scientific Paper (arXiv) | Dense 2-column mathematics and transformer architectures (arXiv:2401.14373) | ✅ PASS | 708.8 ms | None |
-| **BOOK_1** | Full Book (300pp) | Thinking in Systems (Meadows, 235pp): flat RAM, chapters, callouts | ✅ PASS | 3774.5 ms | None |
-| **BOOK_2** | Full Book (Scan) | Structuring Interviews with Experts (21pp scan): high-throughput Apple Vision OCR | ✅ PASS | 202.4 ms | None |
-| **TBL_1** | PDF Tables | Complex ruling-line PDF table with colspans and multi-line cells | ✅ PASS | 34.2 ms | None |
-| **WEB_1** | HTML Web Articles | Noisy technical blog: boilerplate and ad purge with code/table preservation | ✅ PASS | 18.8 ms | None |
-| **FIN_1** | Corporate Financial 10-K | Berkshire Hathaway Annual Report (140pp): multi-page balance sheets and operating earnings | ✅ PASS | 7117.7 ms | None |
-| **FIN_2** | SEC EDGAR iXBRL HTML | Apple Inc. 10-K (iXBRL HTML): preserve dense financial statement tables without article boilerplate stripping | ✅ PASS | 295.9 ms | None |
-| **FORM_1** | Government Tax Forms | IRS Form 1040: spatial form grids, label-value bounding boxes, and SSN field recovery | ✅ PASS | 143.6 ms | None |
-| **TECH_1** | Hardware Datasheets | ESP32 SoC Datasheet: pinout matrices, peripheral tables, and register memory maps | ✅ PASS | 1912.2 ms | None |
-| **SLIDE_1** | Corporate Investor Relations Deck | Tesla Q4 & FY 2023 Update: wide-format presentation slides, financial metric callouts, and vehicle deliveries | ✅ PASS | 503.0 ms | None |
-| **SEC_S1** | SEC S-1 Registration | DoorDash S-1/A: non-GAAP reconciliation and financial statement tables | ✅ PASS | 1216.3 ms | None |
-| **SEC_CREDIT** | Debt Credit Agreements | Dynatrace Credit Agreement: pricing grid tables and deep nested definitions | ✅ PASS | 252.8 ms | None |
-| **SEC_PROXY** | SEC DEF 14A Proxy | Merck DEF 14A Proxy: multi-year executive compensation and footnotes | ✅ PASS | 776.9 ms | None |
-| **LEGAL_VIE** | Cross-Border VIE Contracts | VIE Call Option Agreement: multi-party covenants and outlines | ✅ PASS | 28.4 ms | None |
-| **SCOTUS_1** | Supreme Court Slip Opinion | SCOTUS Berk v. Choy: 2-column syllabus transition and opinion | ✅ PASS | 456.5 ms | None |
-| **PATENT_1** | USPTO Patents | Google Transformer Patent (US 10,452,978): multi-column claims and architecture | ✅ PASS | 736.9 ms | None |
-| **CLIN_1** | Clinical Study Protocols | EMR700568-012 MS Study Protocol: Schedule of Assessments and multi-trial criteria | ✅ PASS | 1330.5 ms | None |
-| **FDA_1** | FDA Drug Safety Labels | Keytruda FDA Label (SPL): multi-column boxed warnings and adverse reactions | ✅ PASS | 8042.1 ms | None |
-| **TI_REG** | Hardware Register Maps | TI LMK3H2104 Register Map: 16-bit register diagrams and bitfield tables | ✅ PASS | 2150.5 ms | None |
-| **CSI_SPEC** | CSI MasterFormat Specs | City of Norcross Specs (Division 01): 50-division MasterFormat hierarchy | ✅ PASS | 440.4 ms | None |
+**Canaries:** 28/29 (96.6%) · **Quality:** 81.8 / 100 (mean over 28 cases with gold excerpts)
+
+Quality is graded against hand-checked gold excerpts in `test_assets/gauntlet/gold/`; components are completeness, precision, order, tables, headings and math (see `scripts/gauntlet_grade.py`).
+
+| ID | Category | Canaries | Quality | Weakest | Latency | First failure |
+| :--- | :--- | :--- | ---: | :--- | ---: | :--- |
+| **P1** | PPTX Diagrams | ✅ PASS | 100.0 | completeness 100 | 0.0 s |  |
+| **P2** | PPTX Grouped Shapes | ✅ PASS | 100.0 | completeness 100 | 0.0 s |  |
+| **P3** | PPTX Chart Gaps | ✅ PASS | 98.5 | precision 93 | 0.0 s |  |
+| **D1** | DOCX Tables | ✅ PASS | 100.0 | completeness 100 | 0.0 s |  |
+| **D3** | DOCX Floating Text Boxes | ✅ PASS | 100.0 | completeness 100 | 0.0 s |  |
+| **D4** | DOCX Equations | ✅ PASS | 92.1 | precision 85 | 0.0 s |  |
+| **R1** | PDF Layout | ✅ PASS | 87.0 | precision 91; leaks: INTERNATIONAL JOURNAL OF INTELLIGENT SYSTEMS, CCC 0884-8173/93/010071-20 | 5.9 s |  |
+| **R2** | PDF Math | ✅ PASS | 78.0 | math 29 | 1.6 s |  |
+| **SCI_1** | Scientific Paper (arXiv) | ✅ PASS | 90.9 | math 68 | 7.0 s |  |
+| **SCI_2** | Scientific Paper (arXiv) | ✅ PASS | 96.1 | precision 90 | 7.2 s |  |
+| **BOOK_1** | Full Book (300pp) | ✅ PASS | 0.0 |  | 7.5 s |  |
+| **BOOK_2** | Full Book (Scan) | ✅ PASS | — |  | 24.9 s |  |
+| **TBL_1** | PDF Tables | ✅ PASS | 100.0 | completeness 100 | 0.5 s |  |
+| **WEB_1** | HTML Web Articles | ✅ PASS | 99.6 | precision 98 | 0.0 s |  |
+| **FIN_1** | Corporate Financial 10-K | ✅ PASS | 79.9 | headings 0 | 54.7 s |  |
+| **FIN_2** | SEC EDGAR iXBRL HTML | ✅ PASS | 69.6 | headings 0; leaks: Apple Inc. | 2025 Form 10-K | 5, Apple Inc. | 2025 Form 10-K | 29 | 0.1 s |  |
+| **FORM_1** | Government Tax Forms | ✅ PASS | 70.5 | tables 49; leaks: Created 9/5/25 | 0.1 s |  |
+| **TECH_1** | Hardware Datasheets | ✅ PASS | 74.3 | headings 33 | 29.2 s |  |
+| **SLIDE_1** | Corporate Investor Relations Deck | ✅ PASS | 87.5 | headings 25 | 7.6 s |  |
+| **SEC_S1** | SEC S-1 Registration | ✅ PASS | 69.8 | headings 0; leaks: d752207ds1a.htm | 0.3 s |  |
+| **SEC_CREDIT** | Debt Credit Agreements | ✅ PASS | 74.9 | headings 0; leaks: dynatrace-creditagreementc.htm, ACTIVE/119835323.10 | 0.1 s |  |
+| **SEC_PROXY** | SEC DEF 14A Proxy | ✅ PASS | 66.7 | headings 0; leaks: Merck & Co., Inc., Rahway, NJ, U.S.A., 2026 Proxy Statement, 0000310158 | 0.2 s |  |
+| **LEGAL_VIE** | Cross-Border VIE Contracts | ✅ PASS | 74.2 | headings 0; leaks: d118108dex1016.htm | 0.0 s |  |
+| **SCOTUS_1** | Supreme Court Slip Opinion | ✅ PASS | 72.9 | headings 49; leaks: (Slip Opinion), OCTOBER TERM, 2025 | 0.1 s |  |
+| **PATENT_1** | USPTO Patents | ❌ FAIL | 78.6 | headings 67; leaks: Sheet 2 of 3 | 4.9 s | Missing canary: 'limitations on the scope of any invention' |
+| **CLIN_1** | Clinical Study Protocols | ✅ PASS | 90.8 | tables 79 | 13.1 s |  |
+| **FDA_1** | FDA Drug Safety Labels | ✅ PASS | 81.5 | headings 15 | 64.4 s |  |
+| **TI_REG** | Hardware Register Maps | ✅ PASS | 89.1 | headings 56 | 61.6 s |  |
+| **CSI_SPEC** | CSI MasterFormat Specs | ✅ PASS | 67.9 | headings 12; leaks: JOHNSON DEAN PRESERVE, 01 1100 - 1 | 0.1 s |  |
+
+Measured 2026-10-14 on an Apple M4 Pro. With `--vision off` the same cases score 28/29 canaries and 74.7 quality (R2 fails: the fast path writes no LaTeX). With `--formats`, all 29 cases keep 100% of the markdown's content in `--format plain` and in `--chunk-size 512 --format json`.
