@@ -273,6 +273,20 @@ def heading_score(gold_lines, out_lines) -> float | None:
 
 
 _MATH = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$|\\\((.+?)\\\)|\\\[(.+?)\\\]", re.S)
+# TeX inside the delimiters: a command, a script, a brace or an operator
+# between symbols. Keeps "$1,234 | $5,678" (two dollar amounts) from
+# counting as a formula.
+_TEXISH = re.compile(r"\\[A-Za-z]|[\^_{}]|[A-Za-z0-9)]\s*[=<>+]\s*[A-Za-z0-9(\\]")
+
+
+def _formulas(text: str) -> list[str]:
+    out = []
+    for m in _MATH.finditer(text):
+        body = next(g for g in m.groups() if g)
+        if "|" in body or "\n\n" in body or not _TEXISH.search(body):
+            continue
+        out.append(_norm_tex(body))
+    return out
 
 
 def _norm_tex(t: str) -> str:
@@ -285,11 +299,10 @@ def _norm_tex(t: str) -> str:
 
 
 def math_score(gold_text: str, out_text: str) -> float | None:
-    gold = [_norm_tex(next(g for g in m.groups() if g)) for m in _MATH.finditer(gold_text)]
-    gold = [g for g in gold if len(g) >= 2]
+    gold = [g for g in _formulas(gold_text) if len(g) >= 2]
     if not gold:
         return None
-    out = [_norm_tex(next(g for g in m.groups() if g)) for m in _MATH.finditer(out_text)]
+    out = _formulas(out_text)
     if not out:
         return 0.0
     total = 0.0
