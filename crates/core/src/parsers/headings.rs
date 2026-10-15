@@ -167,7 +167,12 @@ fn heading_for(t: &str) -> Option<String> {
     }
     // Plain numbered lines need more than one word unless they are keyword
     // headings ("Item 1A. Risk Factors" yes, "3 Results" maybe a value row).
-    if !keyword && title.split_whitespace().count() < 2 && !is_caps(title) {
+    // A one-word title after a bare number must be a plain capitalised word
+    // ("1 INTRODUCTION"), not a name ("2 VNGRS-AI" is an affiliation mark).
+    if !keyword
+        && title.split_whitespace().count() < 2
+        && (!is_caps(title) || !title.chars().all(char::is_alphabetic))
+    {
         return None;
     }
     let level = numbered_level(num).unwrap_or(2);
@@ -264,6 +269,7 @@ mod tests {
             "### Section 2.14 Defaulting Lenders\n\nx"
         );
         assert_eq!(p("ARTICLE IV\n\nx"), "## ARTICLE IV\n\nx");
+        assert_eq!(p("1 INTRODUCTION\n\nx"), "## 1 INTRODUCTION\n\nx");
         assert_eq!(
             p("4.6.2 2.4 GHz Transmitter"),
             "#### 4.6.2 2.4 GHz Transmitter"
@@ -319,6 +325,7 @@ mod tests {
             "**a = b + c**",
             "12 345",
             "1 Year",
+            "2 VNGRS-AI",
         ] {
             assert_eq!(p(keep), keep, "should not change: {keep}");
         }
