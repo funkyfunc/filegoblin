@@ -945,3 +945,43 @@ The fixes found by the new measurements:
 - **PATENT_1 in smart mode.** A line-end hyphen in a two-column OCR text layer is not rejoined ("limita- tions").
 
 **Status:** Accepted.
+
+## 2026-10-14: Headings, EDGAR furniture, layout tables, deterministic scans
+
+**Context:** after the graded gauntlet landed, its weakest components were headings (0 on most SEC and legal filings), page furniture leaking from HTML and PDFs, prose written as pipe tables, and one remaining smart-mode failure (PATENT_1). Chasing an unexplained score dip on R2 also turned up nondeterministic output on scanned PDFs.
+
+**Decision:**
+- **Thread safety.** Two pdf_oxide calls, page classification and image extraction, are serialized behind locks. Under parallel calls, a scanned page could be classified or OCR'd from the next page's images. Text shifted by one page, or a page went missing, in 1 run in 4–8 of a 5-page scan. OCR and conversion stay parallel. All 29 cases now give byte-identical output on repeated runs.
+- **One heading pass for HTML and PDF** (`parsers/headings.rs`). Two kinds of standalone block become ATX headings, with the level taken from the numbering:
+  - a short bold span;
+  - a numbered title, such as `1.1 …`, `Section 2.14 …`, `Item 1A. …`, `Table 4-1. …` or `1.01 SECTION INCLUDES:`.
+
+  A bold all-caps run-in lead is split off. Sentences, labels, values, tables, lists and code are never promoted.
+- **HTML pre-pass** (`parsers/html_prep.rs`).
+  - *Before content extraction:* the EDGAR SGML wrapper and `display:none` elements are removed. Furniture at page breaks is found by recurrence and removed: an exact match at 20% or more of breaks, or a match after normalizing digits at 50% or more, or a bare page number.
+  - *After extraction, per fragment:* layout tables (one row of text, or rows of marker plus text) become paragraphs. Short blocks set 15% or more larger than the body text become h2–h4. CSS bold becomes `<b>`, and `<sup>` footnote marks become `[^n]`.
+  - Unwrapping layout tables *before* extraction made the extractor stop treating EDGAR filings as table-heavy and cut them to one block, so that step runs afterwards.
+- **PDF.**
+  - *Code fences:* a fenced block that stays code is copied whole. Its closing fence used to be read as the next block's opening, which left one fence open to the end of the document. A page can no longer leave a fence open, and documents that are mostly monospace unwrap blocks that have no code syntax.
+  - *Glued capitals* are split using the document's own vocabulary.
+  - *Hyphens before suffix fragments* ("limita-|tions") are rejoined.
+  - *Running heads on pages printed inside a smaller trim* count as furniture when their row carries a page number.
+
+**Result** (M4 Pro, 29 cases):
+
+| | canaries | quality |
+|---|---|---|
+| `--vision off`, before | 28/29 | 74.9 |
+| `--vision off`, after | 28/29 | 82.1 |
+| `--vision smart`, before | 28/29 | 81.9 |
+| `--vision smart`, after | **29/29** | **87.9** |
+
+Formats are 29/29. The largest gains are on SEC_PROXY (+24), FIN_2 (+18), LEGAL_VIE (+19), SEC_S1 (+16), SEC_CREDIT (+10) and FIN_1 (+9). No case lost more than 0.7.
+
+**Open:**
+- Merck's two-column page layouts (sidebar tables) still come out as tables.
+- Patent drawing-sheet heads ("Sheet N of 3") sit on rotated pages and are not removed.
+- Furniture that appears on only one page leaks, for example a signature-page document ID.
+- Table structure without the models (`--vision off`) is weak on papers and annual reports.
+
+**Status:** Accepted.
