@@ -199,7 +199,9 @@ pub mod feed;
 #[cfg(feature = "web")]
 pub mod github;
 pub mod gobble;
+pub(crate) mod headings;
 pub mod html;
+pub(crate) mod html_prep;
 pub mod jupyter;
 pub mod ocr;
 pub mod office;

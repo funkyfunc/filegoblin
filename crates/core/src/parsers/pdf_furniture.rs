@@ -366,7 +366,30 @@ enum Edge {
 
 /// Lines eligible to be furniture on one page: among the outermost lines at
 /// each edge and inside that edge's band. Returns (edge, line index).
-fn edge_candidates(p: &PageGeom) -> Vec<(Edge, usize)> {
+/// The document's text frame: the median top of the highest text line and
+/// median bottom of the lowest one across pages. Pages printed inside a
+/// smaller trim (a 6×9 slip opinion on letter paper) have running heads far
+/// below the media box's top edge; the frame finds them, while one sparse
+/// page (a cover with a lone year mid-page) cannot move its own bands.
+fn text_frame(pages: &[Option<PageGeom>]) -> Option<(f32, f32)> {
+    let mut tops: Vec<f32> = Vec::new();
+    let mut bottoms: Vec<f32> = Vec::new();
+    for p in pages.iter().flatten() {
+        if p.lines.len() < 3 {
+            continue;
+        }
+        tops.push(p.lines.iter().map(|l| l.y1).fold(f32::MIN, f32::max));
+        bottoms.push(p.lines.iter().map(|l| l.y0).fold(f32::MAX, f32::min));
+    }
+    if tops.len() < 3 {
+        return None;
+    }
+    tops.sort_by(f32::total_cmp);
+    bottoms.sort_by(f32::total_cmp);
+    Some((tops[tops.len() / 2], bottoms[bottoms.len() / 2]))
+}
+
+fn edge_candidates(p: &PageGeom, frame: Option<(f32, f32)>) -> Vec<(Edge, usize)> {
     let h = p.height();
     // Group lines into physical rows (a footer is often several line objects
     // side by side: folio, title, date), then take the outermost rows.
@@ -385,17 +408,40 @@ fn edge_candidates(p: &PageGeom) -> Vec<(Edge, usize)> {
         }
         rows.push(vec![i]);
     }
+    // Bands hang from the paper's edges. A row the paper bands miss but the
+    // document's text frame reaches (pages printed inside a smaller trim: a
+    // 6×9 slip opinion on letter paper puts its running head 110 pt below
+    // the sheet's top) counts only when it carries a page number, the mark
+    // of a running head; ordinary first and last lines of text never do.
+    let frame_top = frame.map(|(t, _)| t.min(p.bx.3) + 2.0);
+    let frame_bottom = frame.map(|(_, b)| b.max(p.bx.1) - 2.0);
+    let has_folio = |row: &[usize]| {
+        row.iter().any(|&i| {
+            let t = &p.lines[i].text;
+            folio_number(t).is_some()
+                || t.split_whitespace()
+                    .last()
+                    .is_some_and(|w| w.len() <= 4 && w.chars().all(|c| c.is_ascii_digit()))
+        })
+    };
     let mut out = Vec::new();
     for row in rows.iter().take(EDGE_LINES) {
+        let by_frame = frame_top
+            .is_some_and(|t| row.iter().all(|&i| p.lines[i].y0 >= t - BAND * h))
+            && has_folio(row);
         for &i in row {
-            if p.lines[i].y0 >= p.bx.3 - BAND * h {
+            if p.lines[i].y0 >= p.bx.3 - BAND * h || by_frame {
                 out.push((Edge::Top, i));
             }
         }
     }
     for row in rows.iter().rev().take(EDGE_LINES) {
+        let by_frame = frame_bottom
+            .is_some_and(|b| row.iter().all(|&i| p.lines[i].y1 <= b + BAND * h))
+            && has_folio(row);
         for &i in row {
-            if p.lines[i].y1 <= p.bx.1 + BAND * h && !out.iter().any(|&(_, j)| j == i) {
+            if (p.lines[i].y1 <= p.bx.1 + BAND * h || by_frame) && !out.iter().any(|&(_, j)| j == i)
+            {
                 out.push((Edge::Bottom, i));
             }
         }
@@ -564,9 +610,10 @@ pub(crate) fn detect_furniture(pages: &[Option<PageGeom>]) -> Furniture {
     // (edge, signature) -> list of (page, line index, relative y)
     let mut occ: HashMap<(Edge, String), Vec<Hit>> = HashMap::new();
     let mut folio_cands: Vec<(usize, usize, u32)> = Vec::new();
+    let frame = text_frame(pages);
     for (pi, p) in pages.iter().enumerate() {
         let Some(p) = p else { continue };
-        for (edge, li) in edge_candidates(p) {
+        for (edge, li) in edge_candidates(p, frame) {
             let line = &p.lines[li];
             if let Some(n) = folio_number(&line.text) {
                 folio_cands.push((pi, li, n));

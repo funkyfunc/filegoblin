@@ -70,6 +70,10 @@ impl Gobble for HtmlGobbler {
 
     fn gobble_str(&self, content: &str, opts: &ParseOptions) -> Result<String> {
         let full = self.extract_full || opts.full;
+        // CSS bold, footnote marks, hidden facts and page furniture, before
+        // anything reads the DOM.
+        let prepared = crate::parsers::html_prep::prepare_document(content);
+        let content = prepared.as_str();
         let doc = Html::parse_document(content);
 
         // html5ever and html2md both cost more than linearly in nesting depth
@@ -391,6 +395,8 @@ fn score_from((text, link): (usize, usize)) -> f64 {
 /// malformed input, and a panic on one untrusted web page must not kill a whole
 /// horde run. Falls back to plain text extraction.
 fn html_fragment_to_md(fragment: &str) -> String {
+    let prepared = crate::parsers::html_prep::prepare_fragment(fragment);
+    let fragment = prepared.as_str();
     std::panic::catch_unwind(|| html2md::parse_html(fragment)).unwrap_or_else(|_| {
         Html::parse_fragment(fragment)
             .root_element()
@@ -399,6 +405,9 @@ fn html_fragment_to_md(fragment: &str) -> String {
             .join(" ")
     })
 }
+
+static RE_CLOSED_ATX: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^(#{1,6}\s+.*?\S)\s+#+\s*$").unwrap());
 
 static RE_RAW_IMG: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"<img\b[^>]*>").unwrap());
@@ -434,12 +443,18 @@ fn tidy_markdown(md: &str) -> String {
         }
         if line.trim_start().starts_with('|') {
             out.push(collapse_spaces(line));
+        } else if let Some(c) = RE_CLOSED_ATX.captures(line) {
+            // `### Title ###` → `### Title`
+            out.push(c[1].to_string());
         } else {
             out.push(line.to_string());
         }
         i += 1;
     }
-    out.join("\n")
+    let joined = out.join("\n");
+    crate::parsers::headings::promote_headings(&crate::parsers::pdf::merge_adjacent_bold_spans(
+        &joined,
+    ))
 }
 
 /// `====` underlines mean h1, `----` mean h2 (3+ chars, nothing else on the line).

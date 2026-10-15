@@ -246,6 +246,20 @@ fn convert_page_text(
 
 /// Joins per-page markdown, healing a sentence that a page break cut in two:
 /// the previous page ends mid-sentence and the next begins in lowercase.
+/// Closes a code fence that `page` opens and never closes.
+fn close_open_fence(page: &mut String) {
+    let fences = page
+        .lines()
+        .filter(|l| l.trim_start().starts_with("```"))
+        .count();
+    if fences % 2 == 1 {
+        if !page.ends_with('\n') {
+            page.push('\n');
+        }
+        page.push_str("```");
+    }
+}
+
 fn join_pages_healing_dangling(pages: &[String]) -> String {
     let mut out = String::new();
     for p in pages.iter() {
@@ -338,7 +352,17 @@ impl Gobble for PdfGobbler {
             .map(|page| {
                 // Cheap preflight: signals only, no rasterization. On any
                 // classification error, assume a text layer and let extraction try.
-                let kind = match doc.classify_page(page) {
+                // Classification reads the page's image resources, which,
+                // like image extraction, are not safe to read for several
+                // pages at once: a scan could be classified from another
+                // page's images (one run in eight on a 5-page scan).
+                // Serialized; it is cheap next to geometry and conversion.
+                static CLASSIFY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                let classified = {
+                    let _guard = CLASSIFY.lock().unwrap_or_else(|e| e.into_inner());
+                    doc.classify_page(page)
+                };
+                let kind = match classified {
                     // A "scan" with no picture on it is a text page whose
                     // text tripped the quality gate (a table of contents'
                     // dot leaders read as repeated junk). There is nothing
@@ -366,6 +390,7 @@ impl Gobble for PdfGobbler {
             rects: furniture,
             gutters,
         } = pdf_furniture::detect_furniture(&geoms);
+
         let body = pdf_furniture::body_font_size(&geoms);
 
         let base_options = pdf_oxide::converters::ConversionOptions {
@@ -585,6 +610,7 @@ impl Gobble for PdfGobbler {
         // OCR'd pages carry no geometry here, so their furniture is found from
         // the text alone (outermost lines, recurrence, page-number sequence).
         pdf_furniture::strip_text_furniture(&mut pages_md, &ocr_flags);
+
         pages_md.retain(|p| !p.trim().is_empty());
 
         let hyphen_breaks: HashSet<(String, String)> = geoms
@@ -598,6 +624,11 @@ impl Gobble for PdfGobbler {
             .flatten()
             .flat_map(|g| g.glued.iter().cloned())
             .collect();
+        // A page that leaves a code fence open would turn every page after
+        // it into one code block once the pages are joined.
+        for p in pages_md.iter_mut() {
+            close_open_fence(p);
+        }
         let joined = split_glued_tokens(&join_pages_healing_dangling(&pages_md), &glued);
         let tidy = tidy_markdown(&joined, &hyphen_breaks);
         if tidy.is_empty() {
@@ -679,9 +710,10 @@ fn split_glued_tokens(md: &str, glued: &HashMap<String, String>) -> String {
 /// of the document untouched.
 pub(crate) fn tidy_markdown(md: &str, hyphen_breaks: &HashSet<(String, String)>) -> String {
     let headings_fixed = suppress_false_headings(md);
-    let bold_merged = merge_adjacent_bold_spans(&headings_fixed);
+    let bold_merged =
+        super::headings::promote_headings(&merge_adjacent_bold_spans(&headings_fixed));
     let unwrapped = unwrap_false_prose_code_blocks(&bold_merged);
-    let dehyphenated = dehyphenate_line_breaks(&unwrapped, hyphen_breaks);
+    let dehyphenated = split_glued_capitals(&dehyphenate_line_breaks(&unwrapped, hyphen_breaks));
     let formatted = format_table_and_block_boundaries(&dehyphenated);
     let sectioned = insert_semantic_section_boundaries(&formatted);
     prune_isolated_letter_lines(&sectioned).trim().to_string()
@@ -778,7 +810,16 @@ fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
     if !crate::parsers::ocr::ocr_available() {
         return None;
     }
-    let mut images = doc.extract_images(page).ok()?;
+    // pdf_oxide's image extraction is not safe to run for several pages at
+    // once: under parallel calls a page could come back with the *next*
+    // page's images, so a scan's text shifted one page and the last page
+    // came back empty (seen in about one run in four on a 5-page scan).
+    // Extraction is serialized; the OCR itself stays parallel.
+    static EXTRACT_IMAGES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let mut images = {
+        let _guard = EXTRACT_IMAGES.lock().unwrap_or_else(|e| e.into_inner());
+        doc.extract_images(page).ok()?
+    };
     if images.is_empty() {
         return None;
     }
@@ -904,6 +945,18 @@ pub(crate) fn dehyphenate_line_breaks(
     }
     let count = |w: &str| vocab.get(w).copied().unwrap_or(0);
     let seen = |w: &str| count(w) > 0;
+    // A right half that ends three or more other words of the document is a
+    // suffix fragment ("tions": applications, operations, …), not a word in
+    // its own right, even when OCR has left it standing alone somewhere.
+    let suffix_fragment = |right: &str| {
+        right.chars().count() >= 3
+            && vocab
+                .keys()
+                .filter(|w| w.len() >= right.len() + 3 && w.ends_with(right) && !w.contains('-'))
+                .take(3)
+                .count()
+                >= 3
+    };
 
     let mut out = String::with_capacity(md.len());
     let mut in_code = false;
@@ -936,7 +989,8 @@ pub(crate) fn dehyphenate_line_breaks(
                     || (key.0.chars().count() >= 3
                         && key.1.chars().count() >= 3
                         && seen(&key.0)
-                        && seen(&key.1)));
+                        && seen(&key.1)
+                        && !suffix_fragment(&key.1)));
             if keep_hyphen {
                 format!("{}-{}", left, right)
             } else {
@@ -963,6 +1017,93 @@ pub(crate) fn dehyphenate_line_breaks(
     }
     flush(&mut buf, &mut out);
     out
+}
+
+/// Splits capitals the text layer ran together ("CONSOLIDATEDBALANCE
+/// SHEETS", "OFINDEPENDENTREGISTEREDPUBLICACCOUNTINGFIRM"): letter-spaced
+/// headings are often positioned glyph by glyph with no space characters.
+///
+/// The document's own vocabulary decides, never a word list: a run of 12 or
+/// more capitals that is not itself a word of the document is split only
+/// when it divides completely into words that occur elsewhere in the
+/// document, using as few words as possible, none shorter than two letters,
+/// and into three or more words (or two, for runs of 18+ letters: shorter
+/// two-piece runs may be one real word, "UNDER|STANDING").
+pub(crate) fn split_glued_capitals(md: &str) -> String {
+    static GLUED_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\b[A-Z][A-Z’']{11,}\b").unwrap());
+    static WORD_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"[\p{L}’']+").unwrap());
+    if !GLUED_RE.is_match(md) {
+        return md.to_string();
+    }
+    let mut vocab: HashSet<String> = HashSet::new();
+    for m in WORD_RE.find_iter(md) {
+        let w = m.as_str();
+        // Glued runs are not evidence for themselves.
+        if w.chars().count() >= 12 && w.chars().all(|c| c.is_uppercase() || c == '’' || c == '\'')
+        {
+            continue;
+        }
+        if w.chars().count() >= 2 {
+            vocab.insert(w.to_lowercase());
+        }
+    }
+    GLUED_RE
+        .replace_all(md, |c: &regex::Captures| {
+            let run = &c[0];
+            let lower = run.to_lowercase();
+            if vocab.contains(&lower) {
+                return run.to_string();
+            }
+            segment(&lower, &vocab)
+                .map(|cuts| {
+                    let chars: Vec<char> = run.chars().collect();
+                    let mut out = String::new();
+                    let mut start = 0;
+                    for end in cuts {
+                        if start > 0 {
+                            out.push(' ');
+                        }
+                        out.extend(&chars[start..end]);
+                        start = end;
+                    }
+                    out
+                })
+                .unwrap_or_else(|| run.to_string())
+        })
+        .into_owned()
+}
+
+/// Fewest-word split of `s` into words of `vocab` (char end offsets).
+fn segment(s: &str, vocab: &HashSet<String>) -> Option<Vec<usize>> {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    // best[i]: fewest words covering chars[..i], and the previous cut.
+    let mut best: Vec<Option<(usize, usize)>> = vec![None; n + 1];
+    best[0] = Some((0, 0));
+    for end in 2..=n {
+        for start in 0..=end - 2 {
+            let Some((count, _)) = best[start] else {
+                continue;
+            };
+            let piece: String = chars[start..end].iter().collect();
+            if vocab.contains(&piece) && best[end].is_none_or(|(c, _)| count + 1 < c) {
+                best[end] = Some((count + 1, start));
+            }
+        }
+    }
+    best[n]?;
+    let mut cuts = Vec::new();
+    let mut at = n;
+    while at > 0 {
+        cuts.push(at);
+        at = best[at]?.1;
+    }
+    cuts.reverse();
+    // Two pieces could be one real word ("UNDER|STANDING"); English words
+    // of 18+ letters are rare, so two pieces need that length.
+    (cuts.len() >= 3 || (cuts.len() == 2 && n >= 18)).then_some(cuts)
 }
 
 /// Rejoins words that reached the text split in two (`limita tions`,
@@ -1291,6 +1432,22 @@ fn collapse_blank_lines(lines: &[String]) -> String {
 fn unwrap_false_prose_code_blocks(md: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let lines: Vec<&str> = md.lines().collect();
+    // When most of the text is fenced, monospace is simply the document's
+    // font (a typewritten page, a patent's OCR text layer): any block
+    // without code syntax is text.
+    let (mut fenced, mut total, mut inside) = (0usize, 0usize, false);
+    for l in &lines {
+        if l.trim_start().starts_with("```") {
+            inside = !inside;
+            continue;
+        }
+        let n = l.trim().len();
+        total += n;
+        if inside {
+            fenced += n;
+        }
+    }
+    let monospace_document = total > 0 && fenced * 2 >= total;
     let mut i = 0;
     while i < lines.len() {
         let trimmed = lines[i].trim();
@@ -1302,13 +1459,25 @@ fn unwrap_false_prose_code_blocks(md: &str) -> String {
             }
             if j < lines.len() && !has_lang {
                 let block_lines = &lines[i + 1..j];
-                if looks_like_prose(block_lines) {
+                if looks_like_prose(block_lines)
+                    || (monospace_document && !has_code_syntax(block_lines))
+                    || is_short_plain_text(block_lines)
+                {
                     for &bl in block_lines {
                         out.push(bl.trim().to_string());
                     }
                     i = j + 1;
                     continue;
                 }
+            }
+            // A block that stays code is copied whole, so its closing fence
+            // is never read as the opening of the next block (which paired
+            // one block's close with the next one's open, unwrapped the text
+            // between them and left a fence unmatched to the end).
+            if j < lines.len() {
+                out.extend(lines[i..=j].iter().map(|l| l.to_string()));
+                i = j + 1;
+                continue;
             }
         }
         out.push(lines[i].to_string());
@@ -1319,6 +1488,61 @@ fn unwrap_false_prose_code_blocks(md: &str) -> String {
 
 /// Prose, not code: mostly dictionary-shaped words, very few code symbols, and
 /// sentences that end in punctuation.
+/// Symbols code is made of, at more than 1% of the characters, or indented
+/// lines (code structure).
+fn has_code_syntax(lines: &[&str]) -> bool {
+    let text = lines.join(" ");
+    let chars = text.chars().filter(|c| !c.is_whitespace()).count().max(1);
+    let syms = text
+        .chars()
+        .filter(|c| {
+            matches!(
+                c,
+                '{' | '}' | ';' | '=' | '<' | '>' | '[' | ']' | '_' | '$' | '#' | '&' | '(' | ')'
+            )
+        })
+        .count();
+    let indented = lines
+        .iter()
+        .any(|l| l.starts_with("  ") || l.starts_with('\t'));
+    syms * 100 > chars * 3 || indented && syms > 0
+}
+
+/// A few words and figures with no code symbols at all ("12 United States
+/// Patent", "65"): a fence adds nothing.
+fn is_short_plain_text(lines: &[&str]) -> bool {
+    let text = lines.join(" ");
+    let words = text.split_whitespace().count();
+    words > 0
+        && words < 10
+        && lines.len() <= 3
+        && !lines
+            .iter()
+            .any(|l| l.starts_with(' ') || l.starts_with('\t'))
+        && !text.chars().any(|c| {
+            matches!(
+                c,
+                '{' | '}'
+                    | ';'
+                    | '='
+                    | '<'
+                    | '>'
+                    | '['
+                    | ']'
+                    | '_'
+                    | '$'
+                    | '#'
+                    | '&'
+                    | '('
+                    | ')'
+                    | '/'
+                    | '\\'
+                    | '"'
+                    | '`'
+            )
+        })
+}
+
 fn looks_like_prose(lines: &[&str]) -> bool {
     let text = lines.join(" ");
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -2270,6 +2494,70 @@ mod tests {
         assert_eq!(lines[4], "# Item 7 - Management's Discussion");
         assert_eq!(lines[5], "# C++ Interop");
         assert_eq!(lines[6], "# Chapter 2");
+    }
+
+    #[test]
+    fn a_suffix_fragment_is_rejoined_even_when_ocr_left_it_alone() {
+        // OCR split words elsewhere ("limita tions", "applica tions"), so both
+        // halves look like words; "tions" ends many words, so it is a
+        // fragment and the hyphen at the line end is a syllable break.
+        let md = "limita tions apply. applications operations relations stations.\n\
+                  these should not be construed as limita-\ntions on the scope";
+        let out = dehyphenate_line_breaks(md, &HashSet::new());
+        assert!(out.contains("as limitations on"), "{out}");
+        // A real compound keeps its hyphen.
+        let md2 = "a well known fact and the known world; it is well.\nthe well-\nknown result";
+        let out2 = dehyphenate_line_breaks(md2, &HashSet::new());
+        assert!(out2.contains("well-known"), "{out2}");
+    }
+
+    #[test]
+    fn monospace_documents_and_short_plain_blocks_are_not_code() {
+        let ocr = "```\n12 United States Patent\n```\n\n```\n54 ATTENTION BASED SEQUENCE TRANSDUCTION 71 Applicant Google LLC 72 Inventors 10 452 978\n```\n\nx";
+        let out = unwrap_false_prose_code_blocks(ocr);
+        assert!(!out.contains("```"), "{out}");
+        // Real code stays fenced, also in a mostly-fenced document.
+        let code = "```\nfn main() {\n    let x = vec![1, 2];\n}\n```";
+        assert_eq!(unwrap_false_prose_code_blocks(code), code);
+    }
+
+    #[test]
+    fn kept_code_blocks_do_not_pair_their_close_with_the_next_open() {
+        let md = "```\nlet a = [0];\n```\n\nas one patent Oct on 2019 Sheet 2 of 3 and the text goes on here as prose.\n\n```\nlet b = {1};\n```\n\nmore";
+        let out = unwrap_false_prose_code_blocks(md);
+        assert_eq!(
+            out.lines().filter(|l| l.starts_with("```")).count(),
+            4,
+            "{out}"
+        );
+        assert!(out.contains("```\nlet b = {1};\n```"), "{out}");
+    }
+
+    #[test]
+    fn a_page_cannot_leave_a_code_fence_open() {
+        let mut p = String::from("FIG. 2\n\n```\n230\n2001");
+        close_open_fence(&mut p);
+        assert!(p.ends_with("2001\n```"), "{p}");
+        let mut q = String::from("```\nx\n```");
+        close_open_fence(&mut q);
+        assert_eq!(q, "```\nx\n```");
+    }
+
+    #[test]
+    fn glued_capitals_split_on_the_documents_own_words() {
+        let md = "CONSOLIDATEDBALANCE SHEETS\n\nThe consolidated balance shows sheets of equity. \
+                  Report of the independent registered public accounting firm.\n\n\
+                  REPORTOFINDEPENDENTREGISTEREDPUBLICACCOUNTINGFIRM\n\nCONTRAINDICATIONS apply.";
+        let out = split_glued_capitals(md);
+        assert!(out.starts_with("CONSOLIDATED BALANCE SHEETS"), "{out}");
+        assert!(
+            out.contains("REPORT OF INDEPENDENT REGISTERED PUBLIC ACCOUNTING FIRM"),
+            "{out}"
+        );
+        // A real long word the document does not split elsewhere stays.
+        assert!(out.contains("CONTRAINDICATIONS apply"), "{out}");
+        let w = split_glued_capitals("UNDERSTANDING the under side and standing room");
+        assert!(w.starts_with("UNDERSTANDING "), "{w}");
     }
 
     #[test]
