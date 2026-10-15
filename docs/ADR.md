@@ -985,3 +985,35 @@ Formats are 29/29. The largest gains are on SEC_PROXY (+24), FIN_2 (+18), LEGAL_
 - Table structure without the models (`--vision off`) is weak on papers and annual reports.
 
 **Status:** Accepted.
+
+## 2026-10-15: Scan accuracy — PP-OCRv6, damaged OCR layers, scan furniture
+
+**Context:** the research round on scan accuracy (two external reports, analysed in the project's `research/2026-10-14-scan-accuracy-analysis.md`) pointed at three levers: scans whose own OCR layer is garbage keep that garbage, the bundled recognizer (PP-OCRv5 mobile, English) is weak on degraded print and handwriting, and the assembly of OCR'd pages leaks furniture. Measured on the gauntlet and on olmOCR-bench's two scan categories (official tests, KaTeX math scoring).
+
+**Decision:**
+- **PP-OCRv6 medium replaces PP-OCRv5 mobile** (Apache-2.0, PaddlePaddle's official ONNX exports, converted for rten and checked against onnxruntime). The detector and recognizer are picked from what is installed (v6m, then v6s, then v5) with per-model DB thresholds; `FILEGOBLIN_OCR_DET` / `FILEGOBLIN_OCR_REC` override for comparisons. The release bundles v6m only (+~125 MB). About 2–3× slower per scanned page than v5 mobile.
+- **Dropped word spaces are restored from CTC timing.** The multilingual v6 recognizers often emit nothing in a space's slot ("couldtell", "borderforfifteen") on English print and typewriter text. A gap of about two symbols between two letters of a spaced script becomes a space; unspaced scripts are left alone.
+- **Text-layer quality gate** (`parsers/pdf_textq.rs`). Pages with a scanner's OCR layer — invisible text, a page-sized picture, or Acrobat ClearScan's synthesized `Fd…` fonts — are scored on the fast converter's own words: loose single letters (other than a/A/I), OCR garbage tokens (Taghva-style rules), unmappable characters. A layer that fails (≥4% single letters, ≥8% garbage, or ≥3% unmappable) is re-read from the image by the layout + OCR models; without the models, by the platform OCR engine, but only when one picture covers the page. Clean prose layers are kept.
+- **Smart routing** also sends pages whose layer spells formulas as loose letters (≥8% single letters) to the models.
+- **Formulas:** LaTeX that KaTeX refuses is repaired (text-mode and layout commands dropped, `\root…\of` → `\sqrt[…]`, glued font/size switches split off, unpaired `\left`/`\right` unsized, braces balanced), and no edit can fuse a control word with the next letter. On scanned pages where the recognizer sets a numeral in bold — heavy old print — formula bold is dropped; a modern book's bold matrices stay.
+- **Scan furniture:** a line that is only a page number at the top or bottom 8% of a scanned page is dropped; a journal imprint (copyright with year, journal citation `VOL. n, a–b (yyyy)`, CCC/ISSN code) near the head or foot of a page is dropped; a sentence that continues on the next page joins across a footnote at the foot of the page.
+- **Text lines running up or down the page** (boxes 2.5× taller than wide) are also read turned a quarter either way, keeping the more confident reading.
+- **Not done, by measurement:** voting with Apple Vision on macOS (its old-scans reading scored below PP-OCRv6 medium: 71.5 vs 78.5 fuzzy match on the "present" texts, 17.9% vs 27.9% of tests); a contrast-stretched second reading of low-confidence lines (no gain, one more page number leaked); routing every scan-with-layer page to the models (dropped a patent number in a page header with no quality gain). PP-FormulaNet stays blocked on training-data terms.
+
+**Result:** see the table below (M4 Pro; olmOCR-bench old scans: 98 PDFs / 526 tests; old scans math: 36 PDFs / 458 tests).
+
+| run | old scans | old scans math | gauntlet smart | R1 | R2 |
+|---|---|---|---|---|---|
+| before (`19f7ee3`, PP-OCRv5 mobile) | 27.0% | 47.2% | 87.9 (29/29) | 87.0 | 78.4 |
+| pass 1: PP-OCRv6 medium, quality gate | 27.9% | 46.9% | 88.3 (28/29) | 86.9 | 91.3 |
+| pass 2: spaces, KaTeX repairs, vertical lines | 28.5% | 47.4% | 88.3 (29/29) | 87.0 | 91.4 |
+| pass 3: scan furniture, footnote joins, scan bold | **29.1%** | **47.6%** | **88.6 (29/29)** | **96.0** | **91.4** |
+
+Fuzzy match of olmOCR's "present" texts (a direct OCR-quality measure; the official tests need exact matches): 74.0 → 78.7. `--vision off` is unchanged (82.1, 28/29) in the cloud and on macOS. The only gauntlet loss is TECH_1 (−3.3, noted below).
+
+**Open:**
+- Old-scans math is bounded by the formula recognizer on 19th-century type; a stronger permissively trained formula model is the next lever.
+- Handwriting remains far from exact transcription (olmOCR's "present" tests need exact matches).
+- TECH_1 page 14 (a sideways pin table) is unreadable either way; its score moves with OCR noise (−3.3).
+
+**Status:** Accepted.

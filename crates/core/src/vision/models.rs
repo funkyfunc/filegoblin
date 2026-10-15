@@ -19,6 +19,11 @@ pub const TABLE_STRUCTURE: &str = "tatr-structure.onnx";
 pub const OCR_DET: &str = "ppocr-v5-det.onnx";
 pub const OCR_REC: &str = "ppocr-v5-rec.onnx";
 pub const OCR_DICT: &str = "ppocr-v5-dict.txt";
+pub const OCR_V6S_DET: &str = "ppocr-v6s-det.onnx";
+pub const OCR_V6S_REC: &str = "ppocr-v6s-rec.onnx";
+pub const OCR_V6M_DET: &str = "ppocr-v6m-det.onnx";
+pub const OCR_V6M_REC: &str = "ppocr-v6m-rec.onnx";
+pub const OCR_V6_DICT: &str = "ppocr-v6-dict.txt";
 
 fn candidate_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -60,9 +65,9 @@ static BUNDLED: &[(&str, &[u8])] = bundle!(
     "mfr-decoder-step.onnx",
     "mfr-tokenizer.json",
     "tatr-structure.onnx",
-    "ppocr-v5-det.onnx",
-    "ppocr-v5-rec.onnx",
-    "ppocr-v5-dict.txt",
+    "ppocr-v6m-det.onnx",
+    "ppocr-v6m-rec.onnx",
+    "ppocr-v6-dict.txt",
 );
 
 #[cfg(feature = "bundled-models")]

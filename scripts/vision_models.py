@@ -13,9 +13,12 @@ time; filegoblin itself only ever loads the resulting `.onnx` files with rten
 | mfr-decoder-step.onnx    | rebuilt from pix2text-mfr-1.5 decoder weights       | MIT        |
 | mfr-tokenizer.json       | breezedeus/pix2text-mfr-1.5                         | MIT        |
 | tatr-structure.onnx      | microsoft/table-transformer-structure-recognition-v1.1-all | MIT |
-| ppocr-v5-det.onnx        | PaddlePaddle/PP-OCRv5_mobile_det_onnx               | Apache-2.0 |
-| ppocr-v5-rec.onnx        | PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx            | Apache-2.0 |
-| ppocr-v5-dict.txt        | the rec model's `inference.yml` character list      | Apache-2.0 |
+| ppocr-v6m-det.onnx       | PaddlePaddle/PP-OCRv6_medium_det_onnx               | Apache-2.0 |
+| ppocr-v6m-rec.onnx       | PaddlePaddle/PP-OCRv6_medium_rec_onnx               | Apache-2.0 |
+| ppocr-v6-dict.txt        | the rec model's `inference.yml` character list      | Apache-2.0 |
+
+`--ocr v6s` (or `v5`) builds the smaller PP-OCRv6 small or English PP-OCRv5
+mobile pair instead, for comparisons; filegoblin uses the best pair it finds.
 
 Conversions:
 * PP-DocLayoutV3 is exported from transformers at a fixed 800×800 input and
@@ -403,20 +406,33 @@ def table(out, work):
     no_float64(tmp + ".single", os.path.join(out, "tatr-structure.onnx"))
 
 
-def ocr(out, work):
+OCR_SETS = {
+    # name: (det repo, rec repo, det file, rec file, dict file)
+    "v6m": ("PP-OCRv6_medium_det_onnx", "PP-OCRv6_medium_rec_onnx",
+            "ppocr-v6m-det.onnx", "ppocr-v6m-rec.onnx", "ppocr-v6-dict.txt"),
+    "v6s": ("PP-OCRv6_small_det_onnx", "PP-OCRv6_small_rec_onnx",
+            "ppocr-v6s-det.onnx", "ppocr-v6s-rec.onnx", "ppocr-v6-dict.txt"),
+    "v5": ("PP-OCRv5_mobile_det_onnx", "en_PP-OCRv5_mobile_rec_onnx",
+           "ppocr-v5-det.onnx", "ppocr-v5-rec.onnx", "ppocr-v5-dict.txt"),
+}
+
+
+def ocr(out, work, which=None):
     import numpy as np
     import yaml
 
-    for repo, name in (("PP-OCRv5_mobile_det_onnx", "ppocr-v5-det.onnx"), ("en_PP-OCRv5_mobile_rec_onnx", "ppocr-v5-rec.onnx")):
+    which = which or os.environ.get("FILEGOBLIN_OCR_SET", "v6m")
+    det_repo, rec_repo, det_file, rec_file, dict_file = OCR_SETS[which]
+    for repo, name in ((det_repo, det_file), (rec_repo, rec_file)):
         d = os.path.join(work, repo)
         src = fetch(f"PaddlePaddle/{repo}", "inference.onnx", os.path.join(d, "inference.onnx"))
         fetch(f"PaddlePaddle/{repo}", "inference.yml", os.path.join(d, "inference.yml"))
         optimize_for_rten(src, os.path.join(out, name))
         shape = (1, 3, 640, 480) if "det" in repo else (2, 3, 48, 320)
         check_same(src, os.path.join(out, name), {"x": np.random.rand(*shape).astype(np.float32)})
-    cfg = yaml.safe_load(open(os.path.join(work, "en_PP-OCRv5_mobile_rec_onnx", "inference.yml")))
+    cfg = yaml.safe_load(open(os.path.join(work, rec_repo, "inference.yml")))
     chars = cfg["PostProcess"]["character_dict"]
-    with open(os.path.join(out, "ppocr-v5-dict.txt"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out, dict_file), "w", encoding="utf-8") as f:
         f.write("\n".join(str(c) for c in chars) + "\n")
 
 
@@ -429,8 +445,8 @@ remain under their original licenses.
 | file(s) | upstream | license | copyright |
 |---|---|---|---|
 | pp-doclayout-v3.onnx | https://huggingface.co/PaddlePaddle/PP-DocLayoutV3_safetensors | Apache-2.0 | PaddlePaddle Authors |
-| ppocr-v5-det.onnx | https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx | Apache-2.0 | PaddlePaddle Authors |
-| ppocr-v5-rec.onnx, ppocr-v5-dict.txt | https://huggingface.co/PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx | Apache-2.0 | PaddlePaddle Authors |
+| ppocr-v6m-det.onnx | https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx | Apache-2.0 | PaddlePaddle Authors |
+| ppocr-v6m-rec.onnx, ppocr-v6-dict.txt | https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx | Apache-2.0 | PaddlePaddle Authors |
 | mfr-encoder.onnx, mfr-decoder-init.onnx, mfr-decoder-step.onnx, mfr-tokenizer.json | https://huggingface.co/breezedeus/pix2text-mfr-1.5 | MIT | breezedeus (Pix2Text) |
 | tatr-structure.onnx | https://huggingface.co/microsoft/table-transformer-structure-recognition-v1.1-all | MIT | Microsoft Corporation |
 

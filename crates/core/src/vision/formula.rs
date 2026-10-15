@@ -319,6 +319,233 @@ pub fn tidy_latex(s: &str) -> String {
         out.push(c);
         i += 1;
     }
+    katex_safe(&out)
+}
+
+/// Repairs LaTeX that KaTeX — and so most Markdown renderers — refuses, so a
+/// near-miss formula still renders instead of showing as an error:
+/// text-mode and layout commands the recognizer sometimes emits are dropped
+/// or replaced with their math-mode equivalents, plain-TeX `\root … \of`
+/// becomes `\sqrt[…]{…}`, unpaired `\left`/`\right` lose their sizing, and
+/// braces are balanced.
+fn katex_safe(s: &str) -> String {
+    use std::sync::LazyLock;
+    // Layout and text-mode commands with no math-mode meaning. Each pattern
+    // starts with the character before the backslash so that the second
+    // backslash of a row break (`\\d`) is never read as a command.
+    static DROP: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(^|[^\\])(?:\\kern-?\\nulldelimiterspace|\\(?:boldmath|unboldmath|protect|medskip|bigskip|smallskip|hfill|hfil|indent|noindent|d|b|par)(?:([^A-Za-z ])|\s+|$))",
+        )
+        .expect("valid regex")
+    });
+    static RENAME: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(^|[^\\])\\(sb|sp|textsc|l|i|j)(?:([^A-Za-z])|$)").expect("valid regex")
+    });
+    static ROOT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\\root\s*(\{[^{}]*\}|[^\\\s{}]+)\s*\\of\s*").expect("valid regex")
+    });
+    // A size or font switch run into the next letters (`\largex`,
+    // `\ttA`, `\tinyMMV`) is one unknown command to TeX; split the switch
+    // off and drop it (math mode ignores sizes, and the letters are the
+    // content).
+    static GLUED_SWITCH: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(^|[^\\])\\(?:large|Large|LARGE|huge|Huge|tiny|normalsize|tt|rm|it|sf|bf)([A-Za-z]+)",
+        )
+        .expect("valid regex")
+    });
+    static CIRC_LETTER: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\\circ([A-Z])").expect("valid regex"));
+    let mut out = s.to_string();
+    // Twice: a match consumes the character after it, which can be the
+    // backslash of the next droppable command (`\boldmath\protect`).
+    for _ in 0..2 {
+        out = DROP
+            .replace_all(&out, |c: &regex::Captures| {
+                // A dropped command that ended at a space leaves the space,
+                // so `\\vdots\\protect x` does not become `\\vdotsx`.
+                let after = match c.get(2) {
+                    Some(m) => m.as_str(),
+                    None if c[0].ends_with(char::is_whitespace) => " ",
+                    None => "",
+                };
+                format!("{}{after}", &c[1])
+            })
+            .into_owned();
+    }
+    out = RENAME
+        .replace_all(&out, |c: &regex::Captures| {
+            let head = match &c[2] {
+                "sb" => "_",
+                "sp" => "^",
+                "textsc" => "\\text",
+                "l" => "l",
+                "i" => "i",
+                _ => "j",
+            };
+            let sep = if c[1].ends_with(|ch: char| ch.is_ascii_alphabetic())
+                && head.starts_with(|ch: char| ch.is_ascii_alphabetic())
+            {
+                " "
+            } else {
+                ""
+            };
+            format!(
+                "{}{sep}{head}{}",
+                &c[1],
+                c.get(3).map_or("", |m| m.as_str())
+            )
+        })
+        .into_owned();
+    out = ROOT
+        .replace_all(&out, |c: &regex::Captures| {
+            let idx = c[1].trim_start_matches('{').trim_end_matches('}');
+            format!("\\sqrt[{idx}]")
+        })
+        .into_owned();
+    out = GLUED_SWITCH
+        .replace_all(&out, |c: &regex::Captures| {
+            let rest = &c[2];
+            // Real commands that start like a switch.
+            let whole = &c[0][c[1].len() + 1..];
+            if matches!(
+                whole,
+                "itshape" | "rmfamily" | "bfseries" | "sffamily" | "ttfamily" | "rmoustache"
+            ) {
+                return c[0].to_string();
+            }
+            let sep = if c[1].ends_with(|ch: char| ch.is_ascii_alphabetic()) {
+                " "
+            } else {
+                ""
+            };
+            format!("{}{sep}{rest}", &c[1])
+        })
+        .into_owned();
+    out = CIRC_LETTER.replace_all(&out, "\\circ $1").into_owned();
+    // A trailing lone backslash (a cut-off command) can only fail.
+    while out.ends_with('\\') && !out.ends_with("\\\\") {
+        out.pop();
+    }
+    // `\left` and `\right` must pair; when they don't, drop the sizing and
+    // keep the delimiters (`\left.` is an invisible one and goes entirely).
+    let lefts = out.matches("\\left").count()
+        - out.matches("\\leftarrow").count()
+        - out.matches("\\leftrightarrow").count()
+        - out.matches("\\leftharpoon").count()
+        - out.matches("\\leftleftarrows").count();
+    let rights = out.matches("\\right").count()
+        - out.matches("\\rightarrow").count()
+        - out.matches("\\rightharpoon").count()
+        - out.matches("\\rightleftharpoons").count()
+        - out.matches("\\rightrightarrows").count();
+    if lefts != rights {
+        static SIZING: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"\\(?:left|right)(?:\.|([^A-Za-z]))").expect("valid regex")
+        });
+        out = SIZING
+            .replace_all(&out, |c: &regex::Captures| {
+                c.get(1).map_or(String::new(), |m| m.as_str().to_string())
+            })
+            .into_owned();
+    }
+    balance_braces(out.trim())
+}
+
+/// The formula sets a digit other than 0 in bold (`\\mathbf{4}`,
+/// `{\\bf 12}`).
+pub fn has_bold_numeral(s: &str) -> bool {
+    static BOLD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\\(?:mathbf|bm|boldsymbol)\s*\{([^{}]*)\}|\{\s*\\bf\s*([^{}]*)\}")
+            .expect("valid regex")
+    });
+    BOLD.captures_iter(s).any(|c| {
+        c.get(1)
+            .or(c.get(2))
+            .is_some_and(|m| m.as_str().chars().any(|ch| ('1'..='9').contains(&ch)))
+    })
+}
+
+/// Removes bold from a formula: `\mathbf{x}`, `\bm{x}`, `{\bf x}` and a
+/// bare `\bf` become plain. For pages whose print weight carries no meaning
+/// (scans of old books, where worn type and heavy ink read as bold).
+pub fn plain_weight(s: &str) -> String {
+    use std::sync::LazyLock;
+    static WRAP: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\\(?:mathbf|bm|pmb|boldsymbol|textbf)\s*\{([^{}]*)\}")
+            .expect("valid regex")
+    });
+    static GROUP: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\{\s*\\bf\s*([^{}]*)\}").expect("valid regex"));
+    static BARE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\\bf(?:\s+|([^A-Za-z]))").expect("valid regex"));
+    let mut out = s.to_string();
+    for _ in 0..3 {
+        let next = replace_tex(&WRAP, &out, |c| c[1].to_string());
+        if next == out {
+            break;
+        }
+        out = next;
+    }
+    out = replace_tex(&GROUP, &out, |c| c[1].to_string());
+    replace_tex(&BARE, &out, |c| {
+        c.get(1).map_or("", |m| m.as_str()).to_string()
+    })
+}
+
+/// `Regex::replace_all` for LaTeX: when a replacement that starts with a
+/// letter lands right after a control word (`\\vdots` + `v`), a space goes
+/// between them so the two do not fuse into an unknown command.
+fn replace_tex(re: &regex::Regex, s: &str, rep: impl Fn(&regex::Captures) -> String) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last = 0;
+    for c in re.captures_iter(s) {
+        let m = c.get(0).expect("whole match");
+        out.push_str(&s[last..m.start()]);
+        let r = rep(&c);
+        if r.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+            let tail: String = out
+                .chars()
+                .rev()
+                .take_while(char::is_ascii_alphabetic)
+                .collect();
+            if !tail.is_empty() && out[..out.len() - tail.len()].ends_with('\\') {
+                out.push(' ');
+            }
+        }
+        out.push_str(&r);
+        last = m.end();
+    }
+    out.push_str(&s[last..]);
+    out
+}
+
+/// Drops `}` that close nothing and closes groups left open, ignoring
+/// escaped braces (`\{`, `\}`).
+fn balance_braces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for c in s.chars() {
+        if escaped {
+            escaped = false;
+            out.push(c);
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '{' => depth += 1,
+            '}' if depth == 0 => continue,
+            '}' => depth -= 1,
+            _ => {}
+        }
+        out.push(c);
+    }
+    if escaped {
+        out.pop();
+    }
+    out.extend(std::iter::repeat_n('}', depth));
     out
 }
 
@@ -341,7 +568,7 @@ fn canonical_latex(s: &str) -> String {
     let mut out = s.to_string();
     // Emphasis can nest (`\textbf{\textit{a x}}`): unwrap until stable.
     for _ in 0..4 {
-        let next = EMPHASIS.replace_all(&out, "$1").into_owned();
+        let next = replace_tex(&EMPHASIS, &out, |c| c[1].to_string());
         if next == out {
             break;
         }
@@ -387,6 +614,56 @@ mod tests {
             tidy_latex("g ( t ) = \\textstyle \\sum _ { k } b _ { k } \\leqslant 1"),
             "g(t)=\\sum_{k}b_{k}\\leq1"
         );
+    }
+
+    #[test]
+    fn katex_rejects_are_repaired() {
+        assert_eq!(katex_safe(r"\d d(x^{2})=0"), "d(x^{2})=0");
+        assert_eq!(katex_safe(r"x=\root3\of{-1}"), r"x=\sqrt[3]{-1}");
+        assert_eq!(katex_safe(r"w\sb1"), "w_1");
+        assert_eq!(katex_safe(r"\textsc{MMV}"), r"\text{MMV}");
+        assert_eq!(katex_safe(r"\mathrm{\boldmath\kappa}"), r"\mathrm{\kappa}");
+        assert_eq!(katex_safe(r"-40^\circC"), r"-40^\circ C");
+        assert_eq!(katex_safe(r"\frac{a}{b"), r"\frac{a}{b}");
+        assert_eq!(katex_safe(r"a}+b"), "a+b");
+        assert_eq!(katex_safe(r"\{x\}"), r"\{x\}");
+        assert_eq!(katex_safe(r"\left(x+y"), "(x+y");
+        assert_eq!(katex_safe(r"\left(x\right)"), r"\left(x\right)");
+        assert_eq!(katex_safe(r"x\to y\leftarrow z"), r"x\to y\leftarrow z");
+        assert_eq!(katex_safe(r"\delta\beta\iota\ell"), r"\delta\beta\iota\ell");
+        assert_eq!(katex_safe(r"H_{N}=\"), "H_{N}=");
+        assert_eq!(katex_safe(r"a\\d"), r"a\\d");
+        assert_eq!(katex_safe(r"\mathrm{\largex}"), r"\mathrm{x}");
+        assert_eq!(katex_safe(r"u_{\tinyMMV}"), r"u_{MMV}");
+        assert_eq!(katex_safe(r"\ttA+\itl"), r"A+l");
+        assert_eq!(katex_safe(r"\iota+\rho"), r"\iota+\rho");
+        assert_eq!(katex_safe(r"x\\i"), r"x\\i");
+    }
+
+    #[test]
+    fn removed_commands_never_fuse_neighbours() {
+        assert_eq!(plain_weight(r"\vdots\mathbf{v}=1"), r"\vdots v=1");
+        assert_eq!(plain_weight(r"\therefore\mathbf{N}"), r"\therefore N");
+        assert_eq!(katex_safe(r"\vdots\protect x"), r"\vdots x");
+        assert_eq!(katex_safe(r"\cdot\ttA"), r"\cdot A");
+        assert_eq!(tidy_latex(r"\cdot \boldsymbol { x }"), r"\cdot x");
+    }
+
+    #[test]
+    fn bold_numerals_are_spotted() {
+        assert!(has_bold_numeral(r"x^{2}=\mathbf{A}(x^{2}+\mathbf{4})"));
+        assert!(has_bold_numeral(r"{\bf 12}+x"));
+        assert!(!has_bold_numeral(
+            r"\mathbf{A}^{2}+\mathbf{B}^{2}=\mathbf{0}"
+        ));
+    }
+
+    #[test]
+    fn scan_formulas_lose_their_bold() {
+        assert_eq!(plain_weight(r"u=x^{2}-\mathbf{1}"), "u=x^{2}-1");
+        assert_eq!(plain_weight(r"{\bf B}+{\bf0}"), "B+0");
+        assert_eq!(plain_weight(r"\bf x=\mathbf{\mathbf{y}}"), "x=y");
+        assert_eq!(plain_weight(r"\beta+\bfseries"), r"\beta+\bfseries");
     }
 
     #[test]

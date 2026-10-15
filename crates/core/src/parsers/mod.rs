@@ -213,6 +213,7 @@ pub mod pdf_furniture;
 #[cfg(feature = "vision")]
 pub(crate) mod pdf_route;
 pub mod pdf_table;
+pub(crate) mod pdf_textq;
 #[cfg(feature = "vision")]
 pub mod pdf_vision;
 pub mod powerpoint;

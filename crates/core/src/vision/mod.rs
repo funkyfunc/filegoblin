@@ -11,8 +11,8 @@
 //! * [`formula`] — pix2text MFR 1.5 (MIT): formula image → LaTeX.
 //! * [`table`] — Table Transformer v1.1 (MIT, Microsoft): rows, columns,
 //!   header rows and spanning cells of a table image.
-//! * [`ocr`] — PP-OCRv5 (Apache-2.0): server text detection and line
-//!   recognition, for pages that have no text layer.
+//! * [`ocr`] — PP-OCRv6 medium (Apache-2.0): text line detection and
+//!   recognition, for pages that have no usable text layer.
 
 pub mod formula;
 pub mod layout;

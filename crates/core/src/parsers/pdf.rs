@@ -260,6 +260,21 @@ fn close_open_fence(page: &mut String) {
     }
 }
 
+/// A footnote paragraph: starts with a footnote mark (`*`, `†`, `‡`, `§`,
+/// a superscript digit, or a Markdown footnote definition), and is short.
+fn is_footnote_para(p: &str) -> bool {
+    let t = p.trim();
+    let mut cs = t.chars();
+    let starts = match cs.next() {
+        Some('*') => cs.next().is_some_and(|c| c.is_alphanumeric()),
+        Some('†' | '‡' | '§' | '¹' | '²' | '³' | '⁴' | '⁵' | '⁶' | '⁷' | '⁸' | '⁹') => {
+            true
+        }
+        _ => t.starts_with("[^"),
+    };
+    starts && t.split_whitespace().count() <= 80
+}
+
 fn join_pages_healing_dangling(pages: &[String]) -> String {
     let mut out = String::new();
     for p in pages.iter() {
@@ -304,6 +319,46 @@ fn join_pages_healing_dangling(pages: &[String]) -> String {
                 .next()
                 .is_some_and(|c| c.is_lowercase());
 
+        // A footnote at the foot of the page sits between a sentence and its
+        // continuation on the next page: join across it and move the
+        // footnote after the joined paragraph.
+        if starts_lower
+            && let Some((head, foot)) = out.rsplit_once("\n\n")
+            && is_footnote_para(foot)
+            && head
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .map(str::trim)
+                .is_some_and(|l| {
+                    !is_structural(l)
+                        && l.chars()
+                            .last()
+                            .is_some_and(|c| c.is_alphanumeric() || matches!(c, ',' | '-' | '–'))
+                })
+        {
+            let foot = foot.trim().to_string();
+            let mut joined = head.trim_end().to_string();
+            if joined.ends_with('-')
+                && joined[..joined.len() - 1].ends_with(|c: char| c.is_alphabetic())
+            {
+                joined.pop();
+            } else {
+                joined.push(' ');
+            }
+            let (first_para, rest) = p_trimmed
+                .split_once("\n\n")
+                .map_or((p_trimmed, ""), |(a, b)| (a, b));
+            joined.push_str(first_para);
+            joined.push_str("\n\n");
+            joined.push_str(&foot);
+            if !rest.trim().is_empty() {
+                joined.push_str("\n\n");
+                joined.push_str(rest.trim());
+            }
+            out = joined;
+            continue;
+        }
         if ends_dangling && starts_lower {
             let trimmed_len = out.trim_end().len();
             out.truncate(trimmed_len);
@@ -347,7 +402,7 @@ impl Gobble for PdfGobbler {
         // Classification and geometry run back to back for each page, so the
         // page's parsed content is still in pdf_oxide's small per-page cache
         // when the geometry pass reads it.
-        let (kinds, geoms): (Vec<PageKind>, Vec<Option<PageGeom>>) = (0..page_count)
+        let staged: Vec<(PageKind, Option<PageGeom>, bool, bool)> = (0..page_count)
             .into_par_iter()
             .map(|page| {
                 // Cheap preflight: signals only, no rasterization. On any
@@ -362,6 +417,34 @@ impl Gobble for PdfGobbler {
                     let _guard = CLASSIFY.lock().unwrap_or_else(|e| e.into_inner());
                     doc.classify_page(page)
                 };
+                // A page-sized picture under the text: a scan carrying an
+                // OCR text layer made by the scanner's software.
+                // Or invisible text (render mode 3), which is what OCR
+                // software lays over the picture it read — the picture's own
+                // area is not always measurable (inline images, odd codecs).
+                // Or Acrobat ClearScan's rebuilt fonts, which replace the
+                // picture with synthesized type.
+                let image_backed = classified.as_ref().is_ok_and(|c| {
+                    c.signals.image_area_ratio >= 0.5 || c.signals.invisible_text_ratio >= 0.5
+                }) || super::pdf_textq::clearscan_fonts(&doc, page);
+                // The picture itself covers the page, so the platform OCR
+                // engine can read it without rendering.
+                let page_picture = classified
+                    .as_ref()
+                    .is_ok_and(|c| c.signals.image_area_ratio >= 0.5);
+                if std::env::var_os("FILEGOBLIN_DEBUG").is_some()
+                    && let Ok(c) = classified.as_ref()
+                {
+                    eprintln!(
+                        "classify page {}: {:?}, image {:.2}, invisible {:.2}, glyphs {}, garbled {:.2}",
+                        page + 1,
+                        c.kind,
+                        c.signals.image_area_ratio,
+                        c.signals.invisible_text_ratio,
+                        c.signals.text_glyph_count,
+                        c.signals.garbled_ratio
+                    );
+                }
                 let kind = match classified {
                     // A "scan" with no picture on it is a text page whose
                     // text tripped the quality gate (a table of contents'
@@ -381,9 +464,19 @@ impl Gobble for PdfGobbler {
                     PageKind::Empty => None,
                     _ => pdf_furniture::collect_page_geom(&doc, page),
                 };
-                (kind, geom)
+                (kind, geom, image_backed, page_picture)
             })
-            .unzip();
+            .collect();
+        let mut kinds: Vec<PageKind> = Vec::with_capacity(page_count);
+        let mut geoms: Vec<Option<PageGeom>> = Vec::with_capacity(page_count);
+        let mut image_backed: Vec<bool> = Vec::with_capacity(page_count);
+        let mut page_picture: Vec<bool> = Vec::with_capacity(page_count);
+        for (k, g, b, p) in staged {
+            kinds.push(k);
+            geoms.push(g);
+            image_backed.push(b);
+            page_picture.push(p);
+        }
 
         // Stage 2: furniture, decided across the whole document.
         let pdf_furniture::Furniture {
@@ -503,6 +596,64 @@ impl Gobble for PdfGobbler {
                     // TextLayer / ImageText / Mixed: the native converter. For
                     // hybrids, also OCR the page's image so figure text isn't lost.
                     _ => {
+                        // The fast converter's reading comes first: it is the
+                        // fallback for every route below, and its words are
+                        // what the text layer's quality is judged on (the
+                        // raw word list of a layer without space characters
+                        // is one long token per line).
+                        let (mut md, unreadable) =
+                            match convert_page_text(&doc, page, &options, geom, excluded, body) {
+                                Ok(text) => (
+                                    rejoin_letter_spacing(
+                                        &pdf_furniture::remove_gutter_numbers(
+                                            text.trim(),
+                                            &gutters[page],
+                                        ),
+                                        geom,
+                                    ),
+                                    false,
+                                ),
+                                Err(e) => (failed_page_marker(page + 1, &e), true),
+                            };
+                        let quality = super::pdf_textq::measure_words(md.split_whitespace());
+                        let poor_layer = image_backed[page] && quality.is_poor();
+                        if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+                            eprintln!(
+                                "text layer page {}: {} words, single {:.3}, garbage {:.3}, unmapped {:.3}{}{}",
+                                page + 1,
+                                quality.words,
+                                quality.single,
+                                quality.garbage,
+                                quality.unmapped,
+                                if image_backed[page] { ", over a page image" } else { "" },
+                                if poor_layer { " -> re-read from image" } else { "" }
+                            );
+                        }
+                        // A scan whose OCR layer is too damaged to trust
+                        // (formulas spelled as loose letters, made-up words,
+                        // unmappable glyphs) is read again from its image,
+                        // like a scan with no text at all: rendered, by the
+                        // layout and OCR models; without them, by the
+                        // platform OCR engine, but only when one picture is
+                        // the whole page (a ClearScan page's small formula
+                        // images would replace its text with a few symbols).
+                        #[cfg(feature = "vision")]
+                        if poor_layer
+                            && let Some(md) = renderer
+                                .as_ref()
+                                .and_then(|r| super::pdf_vision::convert_scanned_page(r, page))
+                                .filter(|md| !md.trim().is_empty())
+                        {
+                            vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return (md.trim().to_string(), false, true);
+                        }
+                        if poor_layer
+                            && page_picture[page]
+                            && let Some(text) = ocr_scanned_page(&doc, page)
+                            && !text.trim().is_empty()
+                        {
+                            return (text.trim().to_string(), false, true);
+                        }
                         // `--vision smart` keeps plain prose on the fast path.
                         #[cfg(feature = "vision")]
                         let wanted = match mode {
@@ -511,7 +662,9 @@ impl Gobble for PdfGobbler {
                             crate::cli::VisionMode::Smart => {
                                 let why = super::pdf_route::needs_vision(
                                     &doc, page, kind, geom, page_count,
-                                );
+                                )
+                                .or(super::pdf_route::spelled_math(&quality)
+                                    .then_some(super::pdf_route::Reason::Math));
                                 if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
                                     eprintln!(
                                         "route page {}: {}",
@@ -541,20 +694,6 @@ impl Gobble for PdfGobbler {
                             );
                             return (md, false, false);
                         }
-                        let (mut md, unreadable) =
-                            match convert_page_text(&doc, page, &options, geom, excluded, body) {
-                                Ok(text) => (
-                                    rejoin_letter_spacing(
-                                        &pdf_furniture::remove_gutter_numbers(
-                                            text.trim(),
-                                            &gutters[page],
-                                        ),
-                                        geom,
-                                    ),
-                                    false,
-                                ),
-                                Err(e) => (failed_page_marker(page + 1, &e), true),
-                            };
                         if !unreadable && !md.is_empty() {
                             md = recover_page_vector_tables(&doc, page, md, geom, excluded);
                         }
@@ -2173,6 +2312,18 @@ fn find_pipe_table_span(text: &str, target_words: &[&str]) -> Option<(usize, usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sentence_continues_across_a_page_footnote() {
+        let pages = vec![
+            "Body text that runs on to the\n\n*Corresponding author. e-mail: a@b.edu".to_string(),
+            "next page and ends here.\n\nNew paragraph.".to_string(),
+        ];
+        assert_eq!(
+            join_pages_healing_dangling(&pages),
+            "Body text that runs on to the next page and ends here.\n\n*Corresponding author. e-mail: a@b.edu\n\nNew paragraph."
+        );
+    }
     use clap::Parser;
 
     #[test]

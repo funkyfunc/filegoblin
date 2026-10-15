@@ -4,7 +4,7 @@
 # dist-workspace.toml). The archive is platform-independent ONNX, so it is
 # built once and attached next to the per-platform binaries:
 #
-#   filegoblin-vision-models.tar.gz         (~370 MB)
+#   filegoblin-vision-models.tar.gz         (~500 MB)
 #   filegoblin-vision-models.tar.gz.sha256
 #
 # Unpack it into `models/` next to the binary, `~/.filegoblin/models`, or any

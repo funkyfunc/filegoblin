@@ -15,6 +15,10 @@
 //! * **Pictures**: pages that mix text with images.
 //! * **Short documents**: running heads and page numbers are recognised by
 //!   recurrence across pages, which a one- or two-page document cannot show.
+//! * **Formulas spelled as loose letters**: one word in twelve a single
+//!   letter ("f ( x ) = x 2") is a page whose formulas the text layer could
+//!   not spell. (Scans whose OCR layer is damaged are re-read from the image
+//!   before routing; see `pdf_textq`.)
 //!
 //! Fillable forms (ten or more form-field widgets) stay on the fast path:
 //! the layout models read a form's boxes as one page-wide table.
@@ -99,6 +103,14 @@ fn is_form(doc: &PdfDocument, page: usize) -> bool {
             .count()
             >= 10
     })
+}
+
+/// Formulas the text layer spells as loose letters ("f ( x ) = x 2"): a
+/// scan rebuilt into fonts by its scanner, or a page whose formulas are
+/// small pictures between text-layer words. One word in twelve or more is a
+/// single letter other than "a" or "I", where ordinary prose has almost none.
+pub(crate) fn spelled_math(q: &super::pdf_textq::TextQuality) -> bool {
+    q.words >= 30 && q.single >= 0.08
 }
 
 /// Three or more characters set in a math font or drawn from the math

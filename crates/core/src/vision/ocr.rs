@@ -1,10 +1,16 @@
-//! Text recognition for scanned pages with PP-OCRv5 (Apache-2.0).
+//! Text recognition for scanned pages with PP-OCR (Apache-2.0).
 //!
 //! Detection is a DB (differentiable binarization) network: it predicts a
 //! per-pixel "text" probability; connected regions above a threshold become
 //! line boxes, grown back out by the shrink ratio the model was trained with.
 //! Recognition reads each line crop at a fixed height and CTC-decodes the
 //! character sequence.
+//!
+//! Three model generations can be installed: PP-OCRv6 medium and small (50
+//! languages, much better on handwriting and degraded print) and the
+//! English PP-OCRv5 mobile recognizer. The best installed detector and
+//! recognizer are used; `FILEGOBLIN_OCR_DET` / `FILEGOBLIN_OCR_REC`
+//! (`v6m`, `v6s`, `v5`) pick one for comparisons.
 
 use super::models;
 use image::RgbImage;
@@ -15,9 +21,6 @@ use std::sync::OnceLock;
 
 /// Longest side the detector sees. Larger finds smaller text, slower.
 const DET_LONG_SIDE: u32 = 2400;
-const DET_THRESH: f32 = 0.3;
-const BOX_THRESH: f32 = 0.6;
-const UNCLIP: f32 = 1.5;
 const REC_HEIGHT: u32 = 48;
 const REC_BATCH: usize = 24;
 
@@ -26,18 +29,58 @@ struct Ocr {
     rec: Model,
     /// CTC class → text; index 0 is the blank.
     chars: Vec<String>,
+    /// DB post-processing as each detector was trained: pixel threshold,
+    /// mean box score, unclip ratio.
+    det_thresh: f32,
+    box_thresh: f32,
+    unclip: f32,
+}
+
+/// (name, model file, DB thresholds) per detector, best first.
+const DETECTORS: [(&str, &str, (f32, f32, f32)); 3] = [
+    ("v6m", models::OCR_V6M_DET, (0.2, 0.45, 1.4)),
+    ("v6s", models::OCR_V6S_DET, (0.2, 0.45, 1.4)),
+    ("v5", models::OCR_DET, (0.3, 0.6, 1.5)),
+];
+/// (name, model file, dictionary) per recognizer, best first.
+const RECOGNIZERS: [(&str, &str, &str); 3] = [
+    ("v6m", models::OCR_V6M_REC, models::OCR_V6_DICT),
+    ("v6s", models::OCR_V6S_REC, models::OCR_V6_DICT),
+    ("v5", models::OCR_REC, models::OCR_DICT),
+];
+
+/// The first installed entry, or the one `env` names.
+fn pick<T: Copy>(env: &str, list: &[T], name: fn(&T) -> &str, file: fn(&T) -> &str) -> Option<T> {
+    let wanted = std::env::var(env).ok();
+    list.iter()
+        .copied()
+        .filter(|e| wanted.as_deref().is_none_or(|w| w == name(e)))
+        .find(|e| models::find(file(e)).is_some() || models::load(file(e)).is_some())
 }
 
 fn ocr() -> Option<&'static Ocr> {
     static M: OnceLock<Option<Ocr>> = OnceLock::new();
     M.get_or_init(|| {
-        let det = models::load(models::OCR_DET)?;
-        let rec = models::load(models::OCR_REC)?;
-        let dict = models::read_text(models::OCR_DICT)?;
+        let (dn, dfile, (det_thresh, box_thresh, unclip)) =
+            pick("FILEGOBLIN_OCR_DET", &DETECTORS, |e| e.0, |e| e.1)?;
+        let (rn, rfile, dict_file) = pick("FILEGOBLIN_OCR_REC", &RECOGNIZERS, |e| e.0, |e| e.1)?;
+        let det = models::load(dfile)?;
+        let rec = models::load(rfile)?;
+        let dict = models::read_text(dict_file)?;
         let mut chars = vec![String::new()];
         chars.extend(dict.lines().map(|l| l.trim_end_matches('\r').to_string()));
         chars.push(" ".to_string());
-        Some(Ocr { det, rec, chars })
+        if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+            eprintln!("ocr: detector {dn}, recognizer {rn}");
+        }
+        Some(Ocr {
+            det,
+            rec,
+            chars,
+            det_thresh,
+            box_thresh,
+            unclip,
+        })
     })
     .as_ref()
 }
@@ -91,6 +134,19 @@ impl RotBox {
         )
     }
 
+    /// The same box read across instead of along: a quarter turn
+    /// clockwise (`1.0`) or anticlockwise (`-1.0`).
+    fn turned(&self, quarter: f32) -> RotBox {
+        RotBox {
+            cx: self.cx,
+            cy: self.cy,
+            ux: -self.uy * quarter,
+            uy: self.ux * quarter,
+            len: self.thick,
+            thick: self.len,
+        }
+    }
+
     /// Samples the box upright at `height` pixels (bilinear), so a skewed
     /// line is read straight and its neighbours stay out of the crop.
     fn warp(&self, img: &RgbImage, height: u32) -> RgbImage {
@@ -127,13 +183,68 @@ impl RotBox {
 }
 
 /// Detects and reads every text line in the image.
+///
+/// Each line is read once as detected. A box much taller than it is wide —
+/// a line of text running up or down the page, like a spine label or the
+/// caption of a sideways figure — is also read turned a quarter either way,
+/// and the most confident reading wins.
 pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
     let o = ocr()?;
     let t = std::time::Instant::now();
     let boxes = detect(o, img)?;
     let t_det = t.elapsed();
+    let mut best: Vec<(String, f32)> = vec![(String::new(), 0.0); boxes.len()];
+    read_crops(o, &boxes, &mut best, |b| b.warp(img, REC_HEIGHT))?;
+    let tall: Vec<usize> = (0..boxes.len())
+        .filter(|&i| boxes[i].thick >= 2.5 * boxes[i].len && boxes[i].thick >= 40.0)
+        .collect();
+    for quarter in [1.0f32, -1.0] {
+        let sub: Vec<RotBox> = tall.iter().map(|&i| boxes[i].turned(quarter)).collect();
+        let mut alt = vec![(String::new(), 0.0); sub.len()];
+        read_crops(o, &sub, &mut alt, |b| b.warp(img, REC_HEIGHT))?;
+        for (k, &i) in tall.iter().enumerate() {
+            // A turned reading must be clearly better: a single tall glyph
+            // ("l", "1") reads fine upright.
+            if alt[k].1 > best[i].1 + 0.05 && alt[k].0.trim().chars().count() >= 2 {
+                best[i] = alt[k].clone();
+            }
+        }
+    }
     let mut lines: Vec<Line> = Vec::with_capacity(boxes.len());
-    // Batch crops of similar aspect ratio so padding stays small.
+    for (b, (text, score)) in boxes.iter().zip(best) {
+        let t = text.trim().to_string();
+        if t.is_empty() || score < 0.5 {
+            continue;
+        }
+        let (x0, y0, x1, y1) = b.bounds();
+        lines.push(Line {
+            text: t,
+            x0,
+            y0,
+            x1,
+            y1,
+            score,
+        });
+    }
+    if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+        eprintln!(
+            "ocr: {} lines ({} vertical candidates), detect {t_det:?}, recognize {:?}",
+            lines.len(),
+            tall.len(),
+            t.elapsed() - t_det
+        );
+    }
+    Some(lines)
+}
+
+/// Recognizes `boxes` (batched by aspect ratio so padding stays small) and
+/// stores each reading in `out`.
+fn read_crops(
+    o: &Ocr,
+    boxes: &[RotBox],
+    out: &mut [(String, f32)],
+    crop: impl Fn(&RotBox) -> RgbImage,
+) -> Option<()> {
     let mut order: Vec<usize> = (0..boxes.len()).collect();
     order.sort_by(|&a, &b| {
         let ra = boxes[a].len / boxes[a].thick.max(1.0);
@@ -141,35 +252,13 @@ pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
         ra.total_cmp(&rb)
     });
     for chunk in order.chunks(REC_BATCH) {
-        let crops: Vec<RgbImage> = chunk
-            .iter()
-            .map(|&i| boxes[i].warp(img, REC_HEIGHT))
-            .collect();
+        let crops: Vec<RgbImage> = chunk.iter().map(|&i| crop(&boxes[i])).collect();
         let texts = recognize(o, &crops)?;
-        for (&i, (text, score)) in chunk.iter().zip(texts) {
-            let t = text.trim().to_string();
-            if t.is_empty() || score < 0.5 {
-                continue;
-            }
-            let (x0, y0, x1, y1) = boxes[i].bounds();
-            lines.push(Line {
-                text: t,
-                x0,
-                y0,
-                x1,
-                y1,
-                score,
-            });
+        for (&i, r) in chunk.iter().zip(texts) {
+            out[i] = r;
         }
     }
-    if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
-        eprintln!(
-            "ocr: {} lines, detect {t_det:?}, recognize {:?}",
-            lines.len(),
-            t.elapsed() - t_det
-        );
-    }
-    Some(lines)
+    Some(())
 }
 
 /// Line boxes in image pixels.
@@ -201,7 +290,7 @@ fn detect(o: &Ocr, img: &RgbImage) -> Option<Vec<RotBox>> {
     let prob: NdTensor<f32, 4> = out.first()?.clone().try_into().ok()?;
     let (ph, pw) = (prob.size(2), prob.size(3));
     let p: Vec<f32> = (0..ph * pw).map(|i| prob[[0, 0, i / pw, i % pw]]).collect();
-    let mask: Vec<bool> = p.iter().map(|&v| v > DET_THRESH).collect();
+    let mask: Vec<bool> = p.iter().map(|&v| v > o.det_thresh).collect();
     let (sx, sy) = (w as f32 / pw as f32, h as f32 / ph as f32);
 
     // Connected components (8-neighbour) over the binary map; each becomes a
@@ -236,7 +325,7 @@ fn detect(o: &Ocr, img: &RgbImage) -> Option<Vec<RotBox>> {
                 }
             }
         }
-        if pts.len() < 6 || sum / (pts.len() as f32) < BOX_THRESH {
+        if pts.len() < 6 || sum / (pts.len() as f32) < o.box_thresh {
             continue;
         }
         let Some(rb) = principal_box(&pts) else {
@@ -247,7 +336,7 @@ fn detect(o: &Ocr, img: &RgbImage) -> Option<Vec<RotBox>> {
         }
         // The detector predicts shrunk text kernels; grow them back by the
         // DB unclip distance (area × ratio / perimeter).
-        let d = rb.len * rb.thick * UNCLIP / (2.0 * (rb.len + rb.thick));
+        let d = rb.len * rb.thick * o.unclip / (2.0 * (rb.len + rb.thick));
         let mut grown = RotBox {
             len: rb.len + 2.0 * d,
             thick: rb.thick + 2.0 * d,
@@ -269,6 +358,48 @@ fn detect(o: &Ocr, img: &RgbImage) -> Option<Vec<RotBox>> {
         boxes.push(grown);
     }
     Some(boxes)
+}
+
+/// Joins CTC symbols, putting back word spaces the recognizer left out.
+///
+/// Symbols are read at a steady pace — one every few time steps — and a
+/// space is a symbol of its own. The multilingual PP-OCRv6 recognizers
+/// often emit nothing in a space's slot ("couldtell", "borderforfifteen"),
+/// but the slot is still there: a gap of about two symbols between two
+/// letters. Such a gap between two letters or digits of a spaced script
+/// becomes a space; scripts written without spaces (Chinese, Japanese,
+/// Thai…) are left alone.
+fn join_with_missing_spaces(emitted: &[(&str, usize)]) -> String {
+    let mut gaps: Vec<usize> = emitted.windows(2).map(|w| w[1].1 - w[0].1).collect();
+    gaps.sort_unstable();
+    let median = gaps.get(gaps.len() / 2).copied().unwrap_or(0) as f32;
+    let spaced = |s: &str| {
+        s.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || (c.is_alphabetic() && (c as u32) < 0x0590) // Latin, Greek, Cyrillic
+                || matches!(c, ',' | '.' | ';' | ':' | ')' | '!' | '?' | '"' | '\'')
+        })
+    };
+    let mut out = String::new();
+    for (i, &(sym, t)) in emitted.iter().enumerate() {
+        if i > 0 && median >= 2.0 {
+            let (prev, pt) = emitted[i - 1];
+            let gap = (t - pt) as f32;
+            if gap >= (1.8 * median).max(median + 2.5)
+                && prev != " "
+                && sym != " "
+                && spaced(prev)
+                && spaced(sym)
+                && sym
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '"' || c == '(')
+            {
+                out.push(' ');
+            }
+        }
+        out.push_str(sym);
+    }
+    out
 }
 
 /// Rotated rectangle around a point set along its principal axis. Text
@@ -352,8 +483,9 @@ fn recognize(o: &Ocr, crops: &[RgbImage]) -> Option<Vec<(String, f32)>> {
     for k in 0..crops.len() {
         // Only the steps covering this crop's real (unpadded) width.
         let used = ((widths[k] as usize * steps).div_ceil(maxw)).min(steps);
-        let mut text = String::new();
         let (mut prev, mut conf, mut nconf) = (0usize, 0f32, 0usize);
+        // Every emitted symbol with the time step it was read at.
+        let mut emitted: Vec<(&str, usize)> = Vec::new();
         for t in 0..used {
             let (mut best, mut bp) = (0usize, f32::MIN);
             for c in 0..classes {
@@ -365,12 +497,17 @@ fn recognize(o: &Ocr, crops: &[RgbImage]) -> Option<Vec<(String, f32)>> {
             }
             if best != 0 && best != prev {
                 if let Some(s) = o.chars.get(best) {
-                    text.push_str(s);
+                    emitted.push((s.as_str(), t));
                 }
                 conf += bp;
                 nconf += 1;
             }
             prev = best;
+        }
+        let text = join_with_missing_spaces(&emitted);
+        if std::env::var_os("FILEGOBLIN_DEBUG_CTC").is_some() {
+            let v: Vec<String> = emitted.iter().map(|(c, t)| format!("{c}{t}")).collect();
+            eprintln!("ctc used={used} | {} | {text}", v.join(" "));
         }
         res.push((text, if nconf == 0 { 0.0 } else { conf / nconf as f32 }));
     }
@@ -380,6 +517,51 @@ fn recognize(o: &Ocr, crops: &[RgbImage]) -> Option<Vec<(String, f32)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_spaces_come_back_from_symbol_timing() {
+        let syms = |s: &[(&'static str, usize)]| join_with_missing_spaces(s);
+        // "I could tell" with the space after "could" left out.
+        let e = [
+            ("I", 2),
+            (" ", 5),
+            ("c", 8),
+            ("o", 11),
+            ("u", 14),
+            ("l", 17),
+            ("d", 20),
+            ("t", 26),
+            ("e", 29),
+            ("l", 32),
+            ("l", 35),
+        ];
+        assert_eq!(syms(&e), "I could tell");
+        // Ordinary spacing is untouched.
+        let e = [("a", 2), ("m", 5), (" ", 8), ("s", 12), ("o", 15)];
+        assert_eq!(syms(&e), "am so");
+        // Scripts without spaces stay unspaced.
+        let e = [("中", 2), ("文", 5), ("字", 11), ("符", 14)];
+        assert_eq!(syms(&e), "中文字符");
+    }
+
+    #[test]
+    fn quarter_turn_reads_a_tall_box_across() {
+        let b = RotBox {
+            cx: 50.0,
+            cy: 100.0,
+            ux: 1.0,
+            uy: 0.0,
+            len: 20.0,
+            thick: 120.0,
+        };
+        let t = b.turned(-1.0);
+        assert_eq!((t.len, t.thick), (120.0, 20.0));
+        // Anticlockwise: read from the bottom of the page up.
+        assert!((t.ux - 0.0).abs() < 1e-6 && (t.uy + 1.0).abs() < 1e-6);
+        // Same footprint on the page either way.
+        let (a, c) = (b.bounds(), t.bounds());
+        assert!((a.0 - c.0).abs() < 1e-3 && (a.3 - c.3).abs() < 1e-3);
+    }
 
     #[test]
     fn principal_box_follows_a_skewed_line() {

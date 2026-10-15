@@ -83,7 +83,7 @@ fn convert_page_gated(
     if empty_text_regions && crate::vision::ocr::available() {
         // OCR wants more pixels per character than layout does.
         let hi = renderer.render(page, SCAN_LONG_SIDE, SCAN_MAX_SCALE);
-        let ocr = ocr_words(hi.as_ref().unwrap_or(&img));
+        let ocr = ocr_words(hi.as_ref().unwrap_or(&img), false);
         let filled: Vec<Tok> = ocr
             .into_iter()
             .filter(|o| {
@@ -100,13 +100,13 @@ fn convert_page_gated(
         words.extend(filled);
     }
     let table_fallback = |b: &UserBox| table_markdown(doc, page, b, excluded, base_options);
-    let md = assemble(&img, &regions, words, geom.bx, &table_fallback);
+    let md = assemble(&img, &regions, words, geom.bx, &table_fallback, false);
     debug_timing(page, "text layer", t_layout, t.elapsed(), regions.len());
     Some(md)
 }
 
 /// Converts a page that has no text layer: the layout model places regions
-/// and PP-OCRv5 reads the words. `None` when OCR or layout is unavailable.
+/// and PP-OCR reads the words. `None` when OCR or layout is unavailable.
 pub(crate) fn convert_scanned_page(renderer: &Renderer, page: usize) -> Option<String> {
     if !crate::vision::ocr::available() {
         return None;
@@ -119,12 +119,17 @@ fn convert_scanned_page_gated(renderer: &Renderer, page: usize) -> Option<String
     let img = renderer.render(page, SCAN_LONG_SIDE, SCAN_MAX_SCALE)?;
     let regions = layout::detect(&img)?;
     let t_layout = t.elapsed();
-    let words = ocr_words(&img);
+    let words = ocr_words(&img, true);
     let (w, h) = (img.rgb.width() as f32, img.rgb.height() as f32);
     let pb = img.to_user(0.0, 0.0, w, h);
-    let md = assemble(&img, &regions, words, (pb.x0, pb.y0, pb.x1, pb.y1), &|_| {
-        None
-    });
+    let md = assemble(
+        &img,
+        &regions,
+        words,
+        (pb.x0, pb.y0, pb.x1, pb.y1),
+        &|_| None,
+        true,
+    );
     debug_timing(page, "scan", t_layout, t.elapsed(), regions.len());
     Some(md)
 }
@@ -248,9 +253,22 @@ fn drop_doubled(words: Vec<Tok>) -> Vec<Tok> {
 /// OCR words of a rendered page in user space. Each recognized line is split
 /// into words, each given a share of the line's width proportional to its
 /// length.
-fn ocr_words(img: &PageImage) -> Vec<Tok> {
+///
+/// With `drop_folios`, a line that is nothing but a page number ("31",
+/// "-3-", "2.", "Page 12") in the top or bottom 8% of the page is left out:
+/// on a scan there is no second page to recognise it by recurrence, and the
+/// layout model does not always box it as a page number.
+fn ocr_words(img: &PageImage, drop_folios: bool) -> Vec<Tok> {
+    static FOLIO: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^[-–—(\[]?\s*(?:page\s*|p\.\s*)?\d{1,4}\s*[-–—.)\]]?$")
+            .expect("valid regex")
+    });
+    let ih = img.rgb.height() as f32;
     let mut words: Vec<Tok> = Vec::new();
     for l in crate::vision::ocr::read(&img.rgb).unwrap_or_default() {
+        if drop_folios && (l.y1 < 0.08 * ih || l.y0 > 0.92 * ih) && FOLIO.is_match(l.text.trim()) {
+            continue;
+        }
         let total: usize = l.text.chars().count().max(1);
         let mut pos = 0usize;
         for (i, w) in l.text.split(' ').enumerate() {
@@ -296,13 +314,14 @@ fn assemble(
     words: Vec<Tok>,
     bx: (f32, f32, f32, f32),
     table_fallback: &dyn Fn(&UserBox) -> Option<String>,
+    scan: bool,
 ) -> String {
     let (_, by0, _, by1) = bx;
     let ph = (by1 - by0).max(1.0);
 
     // Furniture regions only count near the top or bottom edge: a model that
     // calls a mid-page line a "header" is wrong more often than not.
-    let furniture: Vec<&Region> = regions
+    let mut furniture: Vec<&Region> = regions
         .iter()
         .filter(|r| r.label.is_furniture())
         .filter(|r| {
@@ -310,9 +329,38 @@ fn assemble(
             cy > by1 - 0.2 * ph || cy < by0 + 0.2 * ph
         })
         .collect();
+    // A journal's imprint at the foot or head of an article's first page
+    // ("INTERNATIONAL JOURNAL OF …, VOL. 8, 71–90 (1993) © 1993 John Wiley &
+    // Sons, Inc. CCC 0884-8173/93/010071-20") is publication furniture that
+    // appears once, so recurrence cannot find it and the layout model
+    // usually calls it text.
+    let imprint: Vec<&Region> = regions
+        .iter()
+        .filter(|r| !r.label.is_furniture() && !r.label.is_graphic())
+        .filter(|r| {
+            let cy = (r.bbox.y0 + r.bbox.y1) / 2.0;
+            cy > by1 - 0.18 * ph || cy < by0 + 0.18 * ph
+        })
+        .filter(|r| {
+            let text: Vec<&str> = words
+                .iter()
+                .filter(|w| {
+                    r.bbox
+                        .contains_point((w.b.x0 + w.b.x1) / 2.0, (w.b.y0 + w.b.y1) / 2.0)
+                })
+                .map(|w| w.text.as_str())
+                .collect();
+            text.len() <= 40 && is_imprint(&text.join(" "))
+        })
+        .collect();
+    furniture.extend(imprint.iter().copied());
     let content: Vec<&Region> = regions
         .iter()
-        .filter(|r| !r.label.is_furniture() && r.label != Label::InlineFormula)
+        .filter(|r| {
+            !r.label.is_furniture()
+                && r.label != Label::InlineFormula
+                && !imprint.iter().any(|f| std::ptr::eq(*f, *r))
+        })
         .collect();
 
     // Recognize formulas: display formulas replace their region's text,
@@ -347,6 +395,26 @@ fn assemble(
         }
         let crops_i: Vec<_> = inline.iter().map(|r| crop(img, &r.bbox)).collect();
         latex_inline = formula::recognize(&crops_i, 160);
+        // On a scan of old print, heavy ink and worn type look bold to the
+        // recognizer, and the weight it reports is noise. A bold numeral
+        // (1–9) gives such a page away — authors embolden vectors and
+        // matrices, not digits — so there all bold goes. A modern book's
+        // bold matrices (and its bold zero matrix) stay.
+        let noisy_weight = scan
+            && latex_display
+                .iter()
+                .chain(latex_inline.iter())
+                .flatten()
+                .any(|l| formula::has_bold_numeral(l));
+        if noisy_weight {
+            for l in latex_display
+                .iter_mut()
+                .chain(latex_inline.iter_mut())
+                .flatten()
+            {
+                *l = formula::plain_weight(l);
+            }
+        }
     }
 
     // Tokens: words minus furniture and words under a recognized inline
@@ -474,6 +542,10 @@ fn assemble(
             .expect("non-empty block");
         let key = orphan_key(&bb, &content);
         let md = lines_to_text(&toks, &blk);
+        let cy = (bb.y0 + bb.y1) / 2.0;
+        if (cy > by1 - 0.18 * ph || cy < by0 + 0.18 * ph) && blk.len() <= 40 && is_imprint(&md) {
+            continue;
+        }
         // A lone glyph no region claimed (a QED box, a stray bracket from an
         // equation number) is noise, not content.
         if md.chars().filter(|c| c.is_alphanumeric()).count() <= 1 {
@@ -600,6 +672,18 @@ fn expand_ligatures(s: &str) -> String {
 /// True when most of the word's box lies inside `b`.
 fn covers(b: &UserBox, w: &UserBox) -> bool {
     w.intersection(b) >= 0.5 * w.area().max(0.01)
+}
+
+/// A publisher's imprint line: a copyright notice with a year, a journal
+/// citation ("VOL. 8, 71–90 (1993)"), or a copyright-clearance / ISSN code.
+fn is_imprint(text: &str) -> bool {
+    static IMPRINT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)(?:©|\(c\)|copyright)\s*(?:©\s*)?(?:1[89]|20)\d\d\b|\bCCC\s*\d{4}-\d{3}[\dX]|\bISSN\s*:?\s*\d{4}-\d{3}[\dX]|\bvol\.?\s*\d+\s*,?\s*(?:no\.?\s*\d+\s*,?\s*)?(?:pp\.?\s*)?\d+\s*[-–]\s*\d+\s*\((?:1[89]|20)\d\d\)",
+        )
+        .expect("valid regex")
+    });
+    IMPRINT.is_match(text)
 }
 
 fn crop(img: &PageImage, b: &UserBox) -> image::RgbImage {
@@ -1002,6 +1086,22 @@ mod tests {
         let header = md.lines().next().unwrap();
         assert_eq!(header.matches("Form").count(), 3, "{md}");
         assert!(!header.contains("Form 1040 2025 Form"), "{md}");
+    }
+
+    #[test]
+    fn publisher_imprints_are_recognised() {
+        assert!(is_imprint(
+            "INTERNATIONAL JOURNAL OF INTELLIGENT SYSTEMS, VOL. 8, 71–90 (1993)"
+        ));
+        assert!(is_imprint(
+            "© 1993 John Wiley & Sons, Inc. CCC 0884-8173/93/010071-20"
+        ));
+        assert!(is_imprint(
+            "Copyright © 2019 Elsevier B.V. All rights reserved."
+        ));
+        assert!(is_imprint("ISSN 0018-9286"));
+        assert!(!is_imprint("The committee met in 1993 to review volume 8."));
+        assert!(!is_imprint("See Table 3 (1993) and Section 2."));
     }
 
     #[test]
