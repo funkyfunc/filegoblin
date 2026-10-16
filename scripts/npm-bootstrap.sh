@@ -51,7 +51,23 @@ for name in $NAMES; do
 JSON
   echo "placeholder: $name"
   npm publish "$dir" --access public --tag bootstrap
-  npm deprecate "$name@0.0.0-bootstrap" "Placeholder; install filegoblin instead." || true
+  PLACEHOLDERS="${PLACEHOLDERS:-} $name"
+done
+
+# A new package takes a few minutes to become visible after publishing, and
+# it cannot be deprecated until then; retry for up to ten minutes.
+for name in ${PLACEHOLDERS:-}; do
+  tries=0
+  until npm deprecate "$name@0.0.0-bootstrap" "Placeholder; install filegoblin instead." 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 20 ]; then
+      echo "  could not deprecate $name@0.0.0-bootstrap yet; run later:"
+      echo "  npm deprecate \"$name@0.0.0-bootstrap\" \"Placeholder; install filegoblin instead.\""
+      break
+    fi
+    echo "  waiting for $name to become visible..."
+    sleep 30
+  done
 done
 
 for name in $NAMES; do
