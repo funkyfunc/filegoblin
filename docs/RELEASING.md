@@ -26,15 +26,24 @@ git push origin main v1.15.0
 **Package names:**
 - **PyPI:**
   - `filegoblin`: one wheel per platform.
-  - `filegoblin-models` and `filegoblin-models-part1…N`: the weights, installed by `filegoblin[models]`.
+  - `filegoblin-models` and one `filegoblin-model-<name>` per model: the weights, installed by `filegoblin[models]`.
 - **npm:**
   - `filegoblin`: the launcher, from `npm/`.
   - `@filegoblin/<os>-<cpu>`: one package per platform with the binary.
-  - `@filegoblin/models` and `@filegoblin/models-part1…N`: the weights.
+  - `@filegoblin/models` and one `@filegoblin/model-<name>` per model: the weights.
   - Everything except the launcher is in the `@filegoblin` scope, so only members of the npm organisation `filegoblin` can publish the binaries the launcher runs.
-- **Building locally:** `scripts/package_registries.py` builds all of these from dist's archives and the model archive.
+- **Building locally:** `scripts/package_registries.py` builds all of these from dist's archives and the model archive. `scripts/package_registries.py names pypi` (or `npm`) lists every name.
 
-The weights are split into pieces under 90 MiB, named `<model>.part<i>of<n>`. This keeps them under PyPI's 100 MB per-file limit, and under the size limits of company package mirrors. filegoblin joins the pieces when it loads a model.
+The model packages are one per model, named for what it does:
+
+| Package (`filegoblin-model-…` on PyPI, `@filegoblin/model-…` on npm) | Contents |
+|---|---|
+| `layout-1`, `layout-2` | page layout and reading order (PP-DocLayoutV3, 134 MB, in halves) |
+| `formula-encoder`, `formula-decoder` | formulas to LaTeX (pix2text MFR 1.5) |
+| `tables-1`, `tables-2` | table structure (Table Transformer v1.1, 118 MB, in halves) |
+| `ocr-detector`, `ocr-recognizer` | OCR for scanned pages (PP-OCRv6 medium) |
+
+The two models over PyPI's 100 MB per-file limit come in halves; company package mirrors often have the same limit. filegoblin joins the halves when it loads the model. The splits are fixed in `MODEL_PACKAGES` in `scripts/package_registries.py`, so the names never change, and the build fails if a model outgrows its split.
 
 ## One-time registry setup
 
@@ -47,10 +56,13 @@ Both registries use **trusted publishing**: no tokens are stored in the reposito
 
 The publishing lives in `publish.yml`, not in the dist-generated `release.yml`, because PyPI's trusted publishing does not work from reusable workflows ([pypa/gh-action-pypi-publish#166](https://github.com/pypa/gh-action-pypi-publish/issues/166)), and dist's publish jobs are reusable workflows. `publish.yml` starts when a tag run of Release succeeds, and downloads the packages that run built. You can also run it by hand (Actions → Publish → Run workflow) with the ID of a Release run. Prereleases (`v1.2.3-rc.1`) are not published automatically.
 
-**PyPI.** On pypi.org (Your account → Publishing), add a **pending publisher** for each of the eight project names:
+**PyPI.** On pypi.org (Your account → Publishing), add a **pending publisher** for each of the ten project names. `scripts/package_registries.py names pypi` prints them:
 - `filegoblin`
 - `filegoblin-models`
-- `filegoblin-models-part1` through `filegoblin-models-part6`
+- `filegoblin-model-layout-1`, `filegoblin-model-layout-2`
+- `filegoblin-model-formula-encoder`, `filegoblin-model-formula-decoder`
+- `filegoblin-model-tables-1`, `filegoblin-model-tables-2`
+- `filegoblin-model-ocr-detector`, `filegoblin-model-ocr-recognizer`
 
 Each one uses owner `funkyfunc`, repository `filegoblin`, workflow `publish.yml` and environment `pypi`. Pending publishers work before a project exists; the first upload creates it.
 
@@ -60,6 +72,6 @@ Each release adds about 510 MB across the model projects. PyPI allows 10 GB per 
 1. It publishes a deprecated `0.0.0-bootstrap` placeholder for each `@filegoblin/…` package that does not exist yet.
 2. It points every package, `filegoblin` included, at `publish.yml` with environment `npm` using `npm trust github`.
 
-A new trusted-publisher configuration expires if nothing publishes with it within two days, so run the script shortly before pushing the release tag. If the number of model parts changes (`package_registries.py` prints them), run the script again with that number. New `@filegoblin/models-part<N>` names need the same bootstrap, and on PyPI the matching `filegoblin-models-part<N>` projects need a pending publisher.
+A new trusted-publisher configuration expires if nothing publishes with it within two days, so run the script shortly before pushing the release tag. The script takes its package names from `package_registries.py names npm`. If a model package is ever added, run it again (it skips what already exists), and add a pending publisher for the matching PyPI project.
 
 Re-running `publish.yml` is safe: versions that are already on a registry are skipped.

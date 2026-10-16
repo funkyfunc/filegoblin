@@ -36,7 +36,7 @@ Builds are published for macOS (Apple Silicon and Intel), Linux (x86_64 and aarc
 - `filegoblin --install-models` downloads this version's model archive from the GitHub release, checks its SHA-256 and unpacks it into `~/.filegoblin/models`. You can pass a directory instead, and set `FILEGOBLIN_MODELS_URL` to point at an internal mirror. filegoblin only downloads when you ask it to.
 - `filegoblin --models-status` shows where each model was found.
 
-**Behind a corporate network.** The PyPI and npm model packages carry the weights themselves, split into pieces under the registries' 100 MB per-file limit. They install from a company mirror (Artifactory, Nexus, CodeArtifact) like any other package, with no access to github.com.
+**Behind a corporate network.** The PyPI and npm model packages carry the weights themselves, one package per model, with the two largest models in halves to stay under the registries' 100 MB per-file limit. They install from a company mirror (Artifactory, Nexus, CodeArtifact) like any other package, with no access to github.com.
 
 **Air-gapped machines.** Copy the full download. Alternatively, put the `filegoblin-vision-models.tar.gz` archive on a shared read-only path and name it in `FILEGOBLIN_MODELS`. That variable takes a `PATH`-style list. Licenses are in `LICENSES.md` inside the archive.
 

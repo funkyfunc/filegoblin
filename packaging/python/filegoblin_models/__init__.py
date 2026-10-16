@@ -2,9 +2,11 @@
 order), pix2text MFR (formulas to LaTeX), Table Transformer (tables) and
 PP-OCRv6 (scan OCR). Licenses are in ``data/LICENSES.md``.
 
-The weights are stored in pieces under ``data/`` (PyPI limits the size of a
-single file); filegoblin joins them when it loads a model. The pieces arrive
-through the ``filegoblin-models-part*`` packages this one depends on.
+The weights arrive through the ``filegoblin-model-*`` packages this one
+depends on, one per model (``filegoblin-model-layout-1``,
+``filegoblin-model-ocr-recognizer``, …). PyPI limits the size of a single
+file, so the two largest models come in halves, which filegoblin joins when
+it loads them.
 """
 
 from pathlib import Path

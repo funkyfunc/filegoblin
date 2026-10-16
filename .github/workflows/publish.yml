@@ -11,10 +11,11 @@ name: Publish
 # trusted publishing does not work from reusable workflows
 # (pypa/gh-action-pypi-publish#166) and dist publish jobs are reusable ones.
 #
-#   PyPI: filegoblin (one wheel per platform), filegoblin-models,
-#         filegoblin-models-part1..N  (`pip install "filegoblin[models]"`)
-#   npm:  filegoblin, @filegoblin/<os>-<cpu>, @filegoblin/models,
-#         @filegoblin/models-part1..N
+#   PyPI: filegoblin (one wheel per platform), filegoblin-models and one
+#         filegoblin-model-<name> per model  (`pip install "filegoblin[models]"`)
+#   npm:  filegoblin, @filegoblin/<os>-<cpu>, @filegoblin/models and one
+#         @filegoblin/model-<name> per model
+#   (`scripts/package_registries.py names pypi|npm` lists them all.)
 #
 # The packages are built and smoke-tested by the `registry-packages` job of
 # the Release run (vision-models.yml) and downloaded from it here. Re-running

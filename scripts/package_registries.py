@@ -8,9 +8,10 @@ model directory (or the `filegoblin-vision-models.tar.gz` archive).
 PyPI (stdlib-built wheels, no build backend needed):
     filegoblin                   one wheel per platform: the native binary and
                                  a small launcher; extra `models` pulls in…
-    filegoblin-models            the model package (launcher-visible paths),
-                                 which depends on…
-    filegoblin-models-part1..N   the weights, in pieces under 90 MiB each
+    filegoblin-models            the model package (launcher-visible paths,
+                                 licenses), which depends on…
+    filegoblin-model-<name>      one package per model (or half of one),
+                                 see MODEL_PACKAGES
 
 npm (everything but the launcher in the @filegoblin scope, so only the
 filegoblin organisation can publish the packages the launcher runs):
@@ -18,15 +19,18 @@ filegoblin organisation can publish the packages the launcher runs):
                                  dependencies on…
     @filegoblin/<os>-<cpu>       one package per platform with the binary
     @filegoblin/models           which depends on…
-    @filegoblin/models-part1..N  the weights, in pieces
+    @filegoblin/model-<name>     one package per model (or half of one)
 
 Both registries limit file sizes (PyPI: 100 MB per file by default), and
-company package mirrors often do too, so the weights are split into pieces
-named `<model>.part<i>of<n>`; filegoblin joins them when it loads a model.
+company package mirrors often do too. Each model gets its own package, named
+for what it does; a model too big for one package is split into equal
+halves (`model-layout-1`, `model-layout-2`) whose files are named
+`<model>.part<i>of<n>`, and filegoblin joins them when it loads the model.
 
 usage:
     package_registries.py pypi --version V --archives DIR --models DIR|ARCHIVE --out DIR
     package_registries.py npm  --version V --archives DIR --models DIR|ARCHIVE --out DIR
+    package_registries.py names pypi|npm    the package names a release publishes
 """
 
 import argparse
@@ -45,21 +49,28 @@ import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-PIECE = 90 * 1024 * 1024  # largest piece of one model file
-PART_MAX = 95 * 1024 * 1024  # largest model part package (before compression)
+PART_MAX = 95 * 1024 * 1024  # largest model package (before compression)
 
-# The model files a release ships, and the license files that go with them.
-MODEL_FILES = [
-    "pp-doclayout-v3.onnx",
-    "mfr-encoder.onnx",
-    "mfr-decoder-init.onnx",
-    "mfr-decoder-step.onnx",
-    "mfr-tokenizer.json",
-    "tatr-structure.onnx",
-    "ppocr-v6m-det.onnx",
-    "ppocr-v6m-rec.onnx",
-    "ppocr-v6-dict.txt",
+# One package per model, named for what it does: (name, description, files,
+# number of equal pieces). A model too big for one package (PART_MAX) is
+# split into that many packages, `<name>-1`, `<name>-2`, … The counts are
+# fixed here so the package names never change from one release to the
+# next; the build fails if a model outgrows its split.
+MODEL_PACKAGES = [
+    ("layout", "page layout and reading order (PP-DocLayoutV3, Apache-2.0)",
+     ["pp-doclayout-v3.onnx"], 2),
+    ("formula-encoder", "formula recognition, image encoder (pix2text MFR 1.5, MIT)",
+     ["mfr-encoder.onnx"], 1),
+    ("formula-decoder", "formula recognition, LaTeX decoder and tokenizer (pix2text MFR 1.5, MIT)",
+     ["mfr-decoder-init.onnx", "mfr-decoder-step.onnx", "mfr-tokenizer.json"], 1),
+    ("tables", "table structure (Table Transformer v1.1, MIT)",
+     ["tatr-structure.onnx"], 2),
+    ("ocr-detector", "text line detection for scanned pages (PP-OCRv6 medium, Apache-2.0)",
+     ["ppocr-v6m-det.onnx"], 1),
+    ("ocr-recognizer", "text recognition for scanned pages (PP-OCRv6 medium, Apache-2.0)",
+     ["ppocr-v6m-rec.onnx", "ppocr-v6-dict.txt"], 1),
 ]
+# The license files, which go in the filegoblin-models package itself.
 LICENSE_FILES = ["LICENSES.md", "LICENSE-APACHE-2.0.txt", "LICENSE-MIT.txt"]
 
 # dist target -> (PyPI platform tag or None for "compute from the binary",
@@ -118,41 +129,48 @@ def model_dir(source: Path, scratch: Path) -> Path:
     return inner if inner.is_dir() else out
 
 
-def plan_pieces(models: Path) -> list:
-    """[(piece file name, source path, offset, length)], every model file
-    split into pieces of at most PIECE bytes (small files stay whole)."""
-    pieces = []
-    for name in MODEL_FILES + LICENSE_FILES:
-        p = models / name
-        if not p.is_file():
-            if name in LICENSE_FILES:
-                continue
-            raise SystemExit(f"model file missing: {p}")
-        size = p.stat().st_size
-        n = max(1, -(-size // PIECE))
+def model_package_names() -> list:
+    """[(package suffix, description)] for every model package, in order."""
+    names = []
+    for key, desc, _, n in MODEL_PACKAGES:
         if n == 1:
-            pieces.append((name, p, 0, size))
+            names.append((key, desc))
         else:
-            for i in range(n):
-                off = i * PIECE
-                pieces.append((f"{name}.part{i + 1}of{n}", p, off, min(PIECE, size - off)))
-    return pieces
+            names += [(f"{key}-{i}", f"{desc}, half {i} of {n}" if n == 2 else f"{desc}, piece {i} of {n}")
+                      for i in range(1, n + 1)]
+    return names
 
 
-def pack_parts(pieces: list) -> list:
-    """Groups pieces into parts of at most PART_MAX bytes (first fit,
-    largest first), each part a list of pieces."""
-    parts = []
-    for piece in sorted(pieces, key=lambda x: -x[3]):
-        for part in parts:
-            if sum(x[3] for x in part) + piece[3] <= PART_MAX:
-                part.append(piece)
-                break
-        else:
-            parts.append([piece])
-    for part in parts:
-        part.sort(key=lambda x: x[0])
-    return parts
+def plan_model_packages(models: Path) -> list:
+    """[(package suffix, description, [pieces])], a piece being (file name
+    in the package, source path, offset, length)."""
+    out = []
+    for key, desc, files, n in MODEL_PACKAGES:
+        paths = [models / f for f in files]
+        for p in paths:
+            if not p.is_file():
+                raise SystemExit(f"model file missing: {p}")
+        if n == 1:
+            pieces = [(p.name, p, 0, p.stat().st_size) for p in paths]
+            if sum(x[3] for x in pieces) > PART_MAX:
+                raise SystemExit(f"{key}: {sum(x[3] for x in pieces)} bytes, too big for one package; raise its split")
+            out.append((key, desc, pieces))
+            continue
+        if len(paths) != 1:
+            raise SystemExit(f"{key}: only a single-file model can be split")
+        p = paths[0]
+        size = p.stat().st_size
+        step = -(-size // n)
+        if step > PART_MAX:
+            raise SystemExit(f"{key}: {size} bytes does not fit in {n} packages; raise its split")
+        for (suffix, d), i in zip([x for x in model_package_names() if x[0].startswith(f"{key}-")], range(n)):
+            off = i * step
+            out.append((suffix, d, [(f"{p.name}.part{i + 1}of{n}", p, off, min(step, size - off))]))
+    return out
+
+
+def license_files(models: Path) -> list:
+    return [models / f for f in LICENSE_FILES if (models / f).is_file()]
 
 
 def read_piece(piece) -> bytes:
@@ -266,18 +284,21 @@ def build_pypi(version: str, archives: dict, models: Path, out: Path) -> list:
             )
         )
     if models is not None:
-        parts = pack_parts(plan_pieces(models))
-        for i, part in enumerate(parts, 1):
-            w = Wheel(out, f"filegoblin-models-part{i}", version, "py3-none-any")
-            for piece in part:
+        parts = plan_model_packages(models)
+        for suffix, desc, pieces in parts:
+            name = f"filegoblin-model-{suffix}"
+            w = Wheel(out, name, version, "py3-none-any")
+            for piece in pieces:
                 w.add(f"filegoblin_models/data/{piece[0]}", read_piece(piece))
             built.append(
                 w.finish(
                     metadata(
-                        f"filegoblin-models-part{i}",
+                        name,
                         version,
-                        f"filegoblin PDF vision model weights, part {i} of {len(parts)} "
-                        "(install filegoblin[models] instead)",
+                        f"filegoblin PDF vision model: {desc}",
+                        readme=f"Part of the PDF vision models for [filegoblin]({HOMEPAGE}): {desc}. "
+                        'Install `pip install "filegoblin[models]"` instead of this package; '
+                        "it pulls in all of them.\n",
                     )
                 )
             )
@@ -286,16 +307,21 @@ def build_pypi(version: str, archives: dict, models: Path, out: Path) -> list:
             "filegoblin_models/__init__.py",
             (pkg / "filegoblin_models" / "__init__.py").read_bytes(),
         )
+        for lic in license_files(models):
+            w.add(f"filegoblin_models/data/{lic.name}", lic.read_bytes())
+        model_list = "".join(f"- `filegoblin-model-{suffix}`: {desc}\n" for suffix, desc, _ in parts)
         built.append(
             w.finish(
                 metadata(
                     "filegoblin-models",
                     version,
                     "PDF vision models for filegoblin (layout, formulas, tables, scan OCR)",
-                    requires=[f"filegoblin-models-part{i}=={version}" for i in range(1, len(parts) + 1)],
-                    readme="PDF vision models for [filegoblin](https://github.com/funkyfunc/filegoblin). "
-                    'Install with `pip install "filegoblin[models]"`. '
-                    "Model licenses (Apache-2.0 and MIT) are in `filegoblin_models/data/LICENSES.md`.\n",
+                    requires=[f"filegoblin-model-{suffix}=={version}" for suffix, _, _ in parts],
+                    readme=f"PDF vision models for [filegoblin]({HOMEPAGE}). "
+                    'Install with `pip install "filegoblin[models]"`.\n\n'
+                    "This package pulls in one package per model:\n\n"
+                    + model_list
+                    + "\nModel licenses (Apache-2.0 and MIT) are in `filegoblin_models/data/LICENSES.md`.\n",
                 )
             )
         )
@@ -353,39 +379,48 @@ def build_npm(version: str, archives: dict, models: Path, out: Path) -> list:
         platform_names.append(name)
 
     if models is not None:
-        parts = pack_parts(plan_pieces(models))
+        parts = plan_model_packages(models)
         part_names = []
-        for i, part in enumerate(parts, 1):
-            name = f"@filegoblin/models-part{i}"
-            d = out / f"models-part{i}"
+        for suffix, desc, pieces in parts:
+            name = f"@filegoblin/model-{suffix}"
+            d = out / f"model-{suffix}"
             (d / "models").mkdir(parents=True)
-            for piece in part:
+            for piece in pieces:
                 (d / "models" / piece[0]).write_bytes(read_piece(piece))
             shutil.copy(REPO / "LICENSE", d / "LICENSE")
+            (d / "README.md").write_text(
+                f"# {name}\n\nPart of the PDF vision models for [filegoblin]({HOMEPAGE}): {desc}.\n\n"
+                "Install `@filegoblin/models` instead of this package; it pulls in all of them:\n\n"
+                "```bash\nnpm install -g filegoblin @filegoblin/models\n```\n"
+            )
             write_json(
                 d / "package.json",
                 {
                     "name": name,
                     **npm_common(version),
-                    "description": f"filegoblin PDF vision model weights, part {i} of {len(parts)} "
-                    "(install `@filegoblin/models` instead)",
-                    "files": ["models", "LICENSE"],
+                    "description": f"filegoblin PDF vision model: {desc} (install @filegoblin/models instead)",
+                    "files": ["models", "README.md", "LICENSE"],
                 },
             )
             dirs.append(d)
             part_names.append(name)
         d = out / "models"
-        d.mkdir()
+        (d / "models").mkdir(parents=True)
+        for lic in license_files(models):
+            shutil.copy(lic, d / "models" / lic.name)
         shutil.copy(REPO / "packaging" / "npm-models" / "index.js", d / "index.js")
         write_json(d / "parts.json", part_names)
         shutil.copy(REPO / "LICENSE", d / "LICENSE")
+        model_list = "".join(f"- `@filegoblin/model-{suffix}`: {desc}\n" for suffix, desc, _ in parts)
         (d / "README.md").write_text(
             "# @filegoblin/models\n\nPDF vision models for "
-            "[filegoblin](https://github.com/funkyfunc/filegoblin): layout and reading order, "
+            f"[filegoblin]({HOMEPAGE}): layout and reading order, "
             "formulas as LaTeX, tables, and OCR for scanned pages.\n\n"
             "```bash\nnpm install -g filegoblin @filegoblin/models\n```\n\n"
             "The `filegoblin` launcher finds this package next to it and uses the models. "
-            "Model licenses (Apache-2.0 and MIT) are in the `models/LICENSES.md` file of the part packages.\n"
+            "It pulls in one package per model:\n\n"
+            + model_list
+            + "\nModel licenses (Apache-2.0 and MIT) are in `models/LICENSES.md`.\n"
         )
         write_json(
             d / "package.json",
@@ -394,7 +429,7 @@ def build_npm(version: str, archives: dict, models: Path, out: Path) -> list:
                 **npm_common(version),
                 "description": "PDF vision models for filegoblin (layout, formulas, tables, scan OCR)",
                 "main": "index.js",
-                "files": ["index.js", "parts.json", "README.md", "LICENSE"],
+                "files": ["index.js", "parts.json", "models", "README.md", "LICENSE"],
                 "dependencies": {n: version for n in part_names},
             },
         )
@@ -414,7 +449,19 @@ def build_npm(version: str, archives: dict, models: Path, out: Path) -> list:
 # --------------------------------------------------------------------------
 
 
+def names(registry: str) -> list:
+    """Every package name a release publishes to `registry`."""
+    models = [x[0] for x in model_package_names()]
+    if registry == "pypi":
+        return ["filegoblin", "filegoblin-models"] + [f"filegoblin-model-{m}" for m in models]
+    platforms = [f"@filegoblin/{t[1]}-{t[2]}" for t in TARGETS.values()]
+    return ["filegoblin"] + platforms + ["@filegoblin/models"] + [f"@filegoblin/model-{m}" for m in models]
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "names":
+        print("\n".join(names(sys.argv[2])))
+        return
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("registry", choices=["pypi", "npm"])
     ap.add_argument("--version", required=True)

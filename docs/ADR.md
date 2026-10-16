@@ -1030,13 +1030,13 @@ arXiv math (522 PDFs, 2,927 tests) after ablation: 84.6%. Fuzzy match of olmOCR'
   - The model archive is still attached on its own.
 - **PyPI:**
   - `filegoblin` is one wheel per platform: the binary plus a small launcher.
-  - `filegoblin[models]` adds `filegoblin-models`, which pulls in `filegoblin-models-part1…N`, the weights.
+  - `filegoblin[models]` adds `filegoblin-models`, which pulls in one package per model: `filegoblin-model-layout-1`/`-2`, `-formula-encoder`, `-formula-decoder`, `-tables-1`/`-2`, `-ocr-detector` and `-ocr-recognizer`.
 - **npm:**
   - `filegoblin` is the launcher, and `@filegoblin/<os>-<cpu>` packages carry the binaries.
-  - `@filegoblin/models` adds the weights through `@filegoblin/models-part1…N`.
+  - `@filegoblin/models` adds the weights through the same per-model packages, `@filegoblin/model-…`.
   - Everything except the launcher is in the `@filegoblin` scope, owned by the npm organisation `filegoblin`. With unscoped names, anyone could publish a not-yet-claimed name (a platform added later, or any of them before the first release), and `npm install filegoblin` would then run their binary.
 - **The weights travel inside the registry packages** rather than being fetched at install or run time. Company mirrors usually proxy PyPI and npm but block github.com. pip has no post-install hooks, and npm install scripts are often disabled.
-- **Weights are split into pieces** under 90 MiB, named `<model>.part<i>of<n>`. The model loader joins them in memory, and the pieces may sit in different directories (the npm parts do).
+- **One package per model, named for what it does.** The two models over the 100 MB limit, layout (134 MB) and tables (118 MB), come in equal halves (`-1`, `-2`) whose files are named `<model>.part<i>of<n>`. The model loader joins them in memory, and the halves may sit in different directories (on npm they do). The splits are fixed in `scripts/package_registries.py` (`MODEL_PACKAGES`) so the package names never change, and the build fails if a model outgrows its split. An earlier layout bin-packed anonymous 90 MiB pieces into `models-part1…6`; it was replaced before any release because the names said nothing about the contents.
 - **`FILEGOBLIN_MODELS` takes a `PATH`-style list.** The pip and npm launchers append the model package's directories to it, after any directory the user set.
 - **`--install-models [DIR]`** downloads this version's model archive from the GitHub release, checks its SHA-256 against the published `.sha256`, and unpacks it into `~/.filegoblin/models`. `FILEGOBLIN_MODELS_URL` points it at a mirror or at a local file. filegoblin never downloads models on its own.
 - **`--models-status`** shows where each model is found.

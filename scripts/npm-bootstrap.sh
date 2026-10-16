@@ -12,20 +12,15 @@
 # A new trusted-publisher configuration expires if no publish uses it within
 # two days, so push the release tag soon after running this.
 #
-# usage: scripts/npm-bootstrap.sh [PARTS]   (PARTS: number of model parts, default 6;
-#        `ls npm-packages | grep -c models-part` after package_registries.py)
+# usage: scripts/npm-bootstrap.sh
+#        (the package names come from `scripts/package_registries.py names npm`)
 set -eu
 
-PARTS=${1:-6}
+cd "$(dirname "$0")/.."
 REPO=funkyfunc/filegoblin
 WORKFLOW=publish.yml
 ENVIRONMENT=npm
-
-NAMES="filegoblin"
-for p in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do NAMES="$NAMES @filegoblin/$p"; done
-NAMES="$NAMES @filegoblin/models"
-i=1
-while [ "$i" -le "$PARTS" ]; do NAMES="$NAMES @filegoblin/models-part$i"; i=$((i + 1)); done
+NAMES=$(python3 scripts/package_registries.py names npm)
 
 npm --version | awk -F. '{ if ($1 < 11 || ($1 == 11 && $2 < 15)) { print "npm >= 11.15.0 is needed for `npm trust` (npm install -g npm@latest)"; exit 1 } }'
 npm whoami > /dev/null || { echo "log in first: npm login"; exit 1; }
