@@ -1040,7 +1040,7 @@ arXiv math (522 PDFs, 2,927 tests) after ablation: 84.6%. Fuzzy match of olmOCR'
 - **`FILEGOBLIN_MODELS` takes a `PATH`-style list.** The pip and npm launchers append the model package's directories to it, after any directory the user set.
 - **`--install-models [DIR]`** downloads this version's model archive from the GitHub release, checks its SHA-256 against the published `.sha256`, and unpacks it into `~/.filegoblin/models`. `FILEGOBLIN_MODELS_URL` points it at a mirror or at a local file. filegoblin never downloads models on its own.
 - **`--models-status`** shows where each model is found.
-- **Publishing** uses trusted publishing (OIDC) on both registries, with no stored tokens: PyPI trusts `publish.yml` with environment `pypi`, and npm trusts `publish.yml` with environment `release`. This matches the owner's other repositories.
+- **Publishing** uses trusted publishing (OIDC) on both registries, with no stored tokens: PyPI trusts `publish.yml` with environment `pypi`, and npm trusts `publish.yml` with environment `npm`. One workflow serves both registries, with one environment per registry.
   - It is a separate top-level workflow, started when a tag run of Release succeeds, rather than a dist publish job. dist publish jobs are reusable workflows, and PyPI's trusted publishing does not work from those (pypa/gh-action-pypi-publish#166).
   - npm cannot configure a trusted publisher for a package that does not exist yet. `scripts/npm-bootstrap.sh` publishes a deprecated placeholder for each new `@filegoblin/…` name, then runs `npm trust github` for every package. Setup is in docs/RELEASING.md.
 

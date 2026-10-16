@@ -2,10 +2,10 @@ name: Publish
 
 # Publishes a release to PyPI and npm once the Release workflow (dist) has
 # built it. Auth is tokenless through trusted publishing (OIDC): pushing the
-# tag is the approval. The `pypi` and `release` environments have no
+# tag is the approval. The `pypi` and `npm` environments have no
 # protection rules; they exist only to scope the trusted-publisher identities
 # (PyPI: workflow publish.yml + environment pypi; npm: workflow publish.yml +
-# environment release). See docs/RELEASING.md for the one-time setup.
+# environment npm). See docs/RELEASING.md for the one-time setup.
 #
 # This is its own top-level workflow, not a dist publish job, because PyPI's
 # trusted publishing does not work from reusable workflows
@@ -70,7 +70,7 @@ jobs:
   npm:
     needs: check
     runs-on: ubuntu-latest
-    environment: release # scopes the npm trusted-publisher identity (no gate)
+    environment: npm # scopes the npm trusted-publisher identity (no gate)
     permissions:
       id-token: write # mint the short-lived OIDC token for trusted publishing
       actions: read # download the Release run's artifacts

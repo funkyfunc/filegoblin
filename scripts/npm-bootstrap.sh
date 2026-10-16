@@ -7,7 +7,7 @@
 # @filegoblin package that does not exist yet, this publishes a placeholder
 # version (0.0.0-bootstrap, under the dist-tag `bootstrap`, deprecated right
 # away), then points every package's trusted publisher at
-# .github/workflows/publish.yml with environment `release`.
+# .github/workflows/publish.yml with environment `npm`.
 #
 # A new trusted-publisher configuration expires if no publish uses it within
 # two days, so push the release tag soon after running this.
@@ -19,7 +19,7 @@ set -eu
 PARTS=${1:-6}
 REPO=funkyfunc/filegoblin
 WORKFLOW=publish.yml
-ENVIRONMENT=release
+ENVIRONMENT=npm
 
 NAMES="filegoblin"
 for p in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do NAMES="$NAMES @filegoblin/$p"; done

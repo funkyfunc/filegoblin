@@ -43,7 +43,7 @@ Both registries use **trusted publishing**: no tokens are stored in the reposito
 | Registry | Workflow | Environment |
 |---|---|---|
 | PyPI | `publish.yml` | `pypi` |
-| npm | `publish.yml` | `release` |
+| npm | `publish.yml` | `npm` |
 
 The publishing lives in `publish.yml`, not in the dist-generated `release.yml`, because PyPI's trusted publishing does not work from reusable workflows ([pypa/gh-action-pypi-publish#166](https://github.com/pypa/gh-action-pypi-publish/issues/166)), and dist's publish jobs are reusable workflows. `publish.yml` starts when a tag run of Release succeeds, and downloads the packages that run built. You can also run it by hand (Actions → Publish → Run workflow) with the ID of a Release run. Prereleases (`v1.2.3-rc.1`) are not published automatically.
 
@@ -58,7 +58,7 @@ Each release adds about 510 MB across the model projects. PyPI allows 10 GB per 
 
 **npm.** npm only lets you configure a trusted publisher on a package that already exists, and trusted publishing cannot do a package's first publish. `scripts/npm-bootstrap.sh` handles both steps. Run it yourself, logged in to npm with 2FA and npm 11.15 or later:
 1. It publishes a deprecated `0.0.0-bootstrap` placeholder for each `@filegoblin/…` package that does not exist yet.
-2. It points every package, `filegoblin` included, at `publish.yml` with environment `release` using `npm trust github`.
+2. It points every package, `filegoblin` included, at `publish.yml` with environment `npm` using `npm trust github`.
 
 A new trusted-publisher configuration expires if nothing publishes with it within two days, so run the script shortly before pushing the release tag. If the number of model parts changes (`package_registries.py` prints them), run the script again with that number. New `@filegoblin/models-part<N>` names need the same bootstrap, and on PyPI the matching `filegoblin-models-part<N>` projects need a pending publisher.
 
