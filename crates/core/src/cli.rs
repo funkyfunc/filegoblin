@@ -325,6 +325,20 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities")]
     pub cache_clear: bool,
 
+    /// Download this version's PDF vision models (~500 MB, SHA-256 checked)
+    /// into DIR, or ~/.filegoblin/models, and exit
+    ///
+    /// The source is the GitHub release, or the URL in FILEGOBLIN_MODELS_URL
+    /// (for an internal mirror). Not needed with the filegoblin-full download
+    /// or the `filegoblin[models]` / `filegoblin-models` packages, which carry
+    /// the models already.
+    #[arg(long, value_name = "DIR", num_args = 0..=1, help_heading = "Developer Utilities")]
+    pub install_models: Option<Option<std::path::PathBuf>>,
+
+    /// Show where the PDF vision models are found (and which are missing) and exit
+    #[arg(long, help_heading = "Developer Utilities")]
+    pub models_status: bool,
+
     /// Run as an MCP (Model Context Protocol) stdio server exposing a `convert` tool
     #[arg(long, help_heading = "Developer Utilities")]
     pub mcp: bool,

@@ -1018,3 +1018,35 @@ arXiv math (522 PDFs, 2,927 tests) after ablation: 84.6%. Fuzzy match of olmOCR'
 - TECH_1 page 14 (a sideways pin table) is unreadable either way; its score moves with OCR noise (−3.3).
 
 **Status:** Accepted.
+
+## 2026-10-15: Two flavours of every release, and the models through PyPI and npm
+
+**Context:** the PDF vision models are about 510 MB. Some users want one download that just works, including offline and behind corporate firewalls. Others want the converter without them. Package registries limit file sizes (PyPI: 100 MB per file by default), and so do the company mirrors that sit in front of them. Until now the release offered only a lite binary plus a separate model archive, and nothing was published to PyPI or npm.
+
+**Decision:**
+- **GitHub releases carry both flavours.**
+  - `filegoblin-<target>` is dist's lite build.
+  - `filegoblin-full-<target>` is one binary with the models compiled in (`bundled-models`). It is built in `vision-models.yml` with link-time optimization off: half a gigabyte of embedded weights would make LTO slow and memory-hungry, for no speed gain. A test build took 111 s and peaked at 4 GB of memory.
+  - The model archive is still attached on its own.
+- **PyPI:**
+  - `filegoblin` is one wheel per platform: the binary plus a small launcher.
+  - `filegoblin[models]` adds `filegoblin-models`, which pulls in `filegoblin-models-part1…N`, the weights.
+- **npm:**
+  - `filegoblin` is the launcher, and `filegoblin-<os>-<cpu>` packages carry the binaries. These are unscoped, so no npm organisation is needed.
+  - `filegoblin-models` adds the weights through `filegoblin-models-part1…N`.
+- **The weights travel inside the registry packages** rather than being fetched at install or run time. Company mirrors usually proxy PyPI and npm but block github.com. pip has no post-install hooks, and npm install scripts are often disabled.
+- **Weights are split into pieces** under 90 MiB, named `<model>.part<i>of<n>`. The model loader joins them in memory, and the pieces may sit in different directories (the npm parts do).
+- **`FILEGOBLIN_MODELS` takes a `PATH`-style list.** The pip and npm launchers append the model package's directories to it, after any directory the user set.
+- **`--install-models [DIR]`** downloads this version's model archive from the GitHub release, checks its SHA-256 against the published `.sha256`, and unpacks it into `~/.filegoblin/models`. `FILEGOBLIN_MODELS_URL` points it at a mirror or at a local file. filegoblin never downloads models on its own.
+- **`--models-status`** shows where each model is found.
+- **Publishing** is a dist publish job (`publish-packages.yml`). Each registry is skipped until its secret is set (see docs/RELEASING.md).
+
+**Verified locally**, with the Linux x86_64 build and the real model archive:
+- `pip install "filegoblin[models]"` from the built wheels and `npm install filegoblin filegoblin-models` from the packed tarballs both found all nine models.
+- Both produced output byte-identical to a run with the models read straight from disk.
+- The lite installs report the models missing.
+- `--install-models` works over HTTP and from a local file.
+
+The CI workflows pass actionlint (one new runner label is not in its list yet), and `dist plan` passes. The release pipeline itself still has to run on a real tag: no release has completed yet, because the last attempts (v1.13.0, v1.14.0) failed on a dist configuration error that has since been fixed.
+
+**Status:** Accepted.

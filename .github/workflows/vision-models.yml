@@ -1,14 +1,18 @@
-# Builds the PDF vision model archive for a release.
+# Builds the PDF vision model archive for a release, and the "full"
+# downloads that carry the models inside the binary.
 #
 # Called by dist's release workflow (`global-artifacts-jobs` in
-# dist-workspace.toml). The archive is platform-independent ONNX, so it is
-# built once and attached next to the per-platform binaries:
+# dist-workspace.toml). Everything uploaded as an `artifacts-*` artifact is
+# attached to the GitHub release by dist's host job:
 #
-#   filegoblin-vision-models.tar.gz         (~500 MB)
-#   filegoblin-vision-models.tar.gz.sha256
+#   filegoblin-vision-models.tar.gz (+ .sha256)   the models alone (~440 MB):
+#       unpack into `models/` next to the binary or ~/.filegoblin/models,
+#       or run `filegoblin --install-models`, which fetches it.
+#   filegoblin-full-<target>.tar.xz / .zip (+ .sha256)
+#       one binary with the models compiled in (`bundled-models`): download,
+#       unpack, run. Nothing else to install, no network access needed.
 #
-# Unpack it into `models/` next to the binary, `~/.filegoblin/models`, or any
-# directory named by FILEGOBLIN_MODELS.
+# dist's own `filegoblin-<target>` archives are the lite build (no models).
 name: vision-models
 
 on:
@@ -44,3 +48,137 @@ jobs:
           path: |
             filegoblin-vision-models.tar.gz
             filegoblin-vision-models.tar.gz.sha256
+
+  # One binary per platform with the models compiled in. Same features and
+  # runners as dist's builds; link-time optimization is off because it would
+  # push half a gigabyte of embedded weights through LTO (memory, time) for
+  # no speed gain in the model code, which is rten's own.
+  full:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: enable windows longpaths
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: artifacts-vision-models
+      - name: Unpack models
+        run: |
+          mkdir -p out
+          tar -C out -xzf filegoblin-vision-models.tar.gz
+          ls -la out/models
+      - name: Build
+        env:
+          FILEGOBLIN_MODELS_DIR: ${{ github.workspace }}/out/models
+        run: |
+          cargo build --profile dist --target ${{ matrix.target }} -p filegoblin \
+            --features "web ocr wasm rag transcribe vision bundled-models" \
+            --config 'profile.dist.lto=false' --config 'profile.dist.codegen-units=16'
+      - name: Package
+        id: package
+        run: |
+          T=${{ matrix.target }}
+          NAME=filegoblin-full-$T
+          EXE=filegoblin
+          [ "${{ runner.os }}" = "Windows" ] && EXE=filegoblin.exe
+          mkdir -p "$NAME"
+          cp "target/$T/dist/$EXE" "$NAME/"
+          cp LICENSE README.md "$NAME/"
+          cp out/models/LICENSES.md "$NAME/MODEL-LICENSES.md"
+          cp out/models/LICENSE-*.txt "$NAME/"
+          "./$NAME/$EXE" --models-status | tee status.txt
+          grep -q "built into this binary" status.txt
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ARCHIVE="$NAME.zip"
+            7z a -tzip "$ARCHIVE" "$NAME" > /dev/null
+          else
+            ARCHIVE="$NAME.tar.xz"
+            tar -cJf "$ARCHIVE" "$NAME"
+          fi
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+          ls -la "$ARCHIVE"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-full-${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+
+  # The PyPI wheels and npm packages (published by publish-packages.yml once
+  # the GitHub release exists). Built here, where the repository is checked
+  # out and the lite archives and models are at hand.
+  registry-packages:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: version
+        env:
+          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+        run: |
+          V="${TAG#v}"
+          [ -n "$V" ] || V=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/cli/Cargo.toml | head -1)
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+      - name: Fetch the lite archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-build-local-*
+          path: archives
+          merge-multiple: true
+      - name: Fetch the models
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-vision-models
+          path: archives
+      - name: Build wheels
+        run: |
+          python scripts/package_registries.py pypi --version "${{ steps.version.outputs.version }}" \
+            --archives archives --models archives/filegoblin-vision-models.tar.gz --out wheels
+      - name: Build npm packages
+        run: |
+          python scripts/package_registries.py npm --version "${{ steps.version.outputs.version }}" \
+            --archives archives --models archives/filegoblin-vision-models.tar.gz --out npm-packages
+      - name: Check the Linux wheel installs and finds its models
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install --no-index --find-links wheels "filegoblin[models]==${{ steps.version.outputs.version }}"
+          /tmp/venv/bin/filegoblin --models-status | tee status.txt
+          grep -q "All release models found" status.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: registry-packages
+          path: |
+            wheels
+            npm-packages
+          retention-days: 7

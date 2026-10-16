@@ -465,9 +465,9 @@ impl Gobble for PdfGobbler {
                 HINT.call_once(|| {
                     eprintln!(
                         "filegoblin: PDF vision models not found — using the fast converter. \
-                         For math, tables, columns and scans install them (`just get-vision-models`, \
-                         or unpack the release's filegoblin-vision-models.tar.gz into ~/.filegoblin/models). \
-                         `--vision off` silences this."
+                         For math, tables, columns and scans run `filegoblin --install-models` \
+                         (or use the filegoblin-full download, `pip install \"filegoblin[models]\"`, \
+                         or `npm i filegoblin-models`). `--vision off` silences this."
                     );
                 });
             }

@@ -55,7 +55,7 @@ fn pick<T: Copy>(env: &str, list: &[T], name: fn(&T) -> &str, file: fn(&T) -> &s
     list.iter()
         .copied()
         .filter(|e| wanted.as_deref().is_none_or(|w| w == name(e)))
-        .find(|e| models::find(file(e)).is_some() || models::load(file(e)).is_some())
+        .find(|e| models::available(file(e)))
 }
 
 fn ocr() -> Option<&'static Ocr> {

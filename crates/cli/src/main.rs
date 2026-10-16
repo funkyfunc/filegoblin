@@ -80,6 +80,32 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if args.models_status {
+        #[cfg(feature = "vision")]
+        print!("{}", filegoblin_core::vision::models::status_report());
+        #[cfg(not(feature = "vision"))]
+        println!("This build has no PDF vision support (built without the `vision` feature).");
+        return Ok(());
+    }
+    if let Some(dir) = args.install_models.clone() {
+        #[cfg(feature = "vision")]
+        {
+            if filegoblin_core::vision::models::bundled_build() {
+                eprintln!("This binary already has the models built in; nothing to install.");
+                return Ok(());
+            }
+            filegoblin_core::vision::install::install(dir, args.quiet)?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "vision"))]
+        {
+            let _ = dir;
+            anyhow::bail!(
+                "this build has no PDF vision support (built without the `vision` feature)"
+            );
+        }
+    }
+
     // MCP server mode owns stdin/stdout entirely: no mascot, no stdin-as-target
     // fallback, no path requirement.
     if args.mcp {

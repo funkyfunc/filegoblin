@@ -15,6 +15,7 @@
 //!   recognition, for pages that have no usable text layer.
 
 pub mod formula;
+pub mod install;
 pub mod layout;
 pub mod models;
 pub mod ocr;

@@ -38,7 +38,8 @@ npx filegoblin report.pdf -q | pbcopy
 To use `filegoblin` directly without the `npx` prefix:
 
 ```bash
-npm install -g filegoblin
+npm install -g filegoblin                     # converter
+npm install -g filegoblin filegoblin-models   # plus the PDF vision models (~510 MB)
 ```
 
 Now `filegoblin` is available anywhere in your terminal:
@@ -47,7 +48,15 @@ Now `filegoblin` is available anywhere in your terminal:
 filegoblin document.pdf > context.md
 ```
 
-*(Note: Precompiled native binaries are fetched for macOS Apple Silicon/Intel, Linux x86_64/arm64, and Windows x64. If a precompiled binary is not yet available for your specific architecture, `filegoblin` can also be installed directly via `cargo install filegoblin`.)*
+**PDF vision models.** `filegoblin-models` adds:
+- layout and reading order;
+- formulas written out as LaTeX;
+- table structure;
+- OCR for scanned pages.
+
+All of them are models bundled with filegoblin that run locally. `--vision smart`, the default, uses them only on the pages that need them. The weights come from the npm registry, split into packages under 100 MB, so they install through a company npm mirror too. Without them, filegoblin uses its fast converter, plus Apple Vision OCR on macOS. You can add them later with `filegoblin --install-models` (downloads from the GitHub release) and check what it finds with `filegoblin --models-status`.
+
+*(Precompiled binaries are fetched for macOS Apple Silicon/Intel, Linux x86_64/arm64, and Windows x64. On other platforms, install with `cargo install --git https://github.com/funkyfunc/filegoblin filegoblin`.)*
 
 ---
 

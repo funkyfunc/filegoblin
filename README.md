@@ -16,10 +16,29 @@
 
 ## 📦 Installation
 
-**Pre-built binary (recommended).** Grab the archive for your platform from the
-[latest release](https://github.com/funkyfunc/filegoblin/releases/latest), unpack it,
-and put `filegoblin` on your `PATH`. Builds are published for macOS (Apple Silicon
-and Intel), Linux (x86_64 and aarch64), and Windows (x86_64).
+Every release comes in two flavours:
+
+- **with the PDF vision models** for layout and reading order, formulas as LaTeX, tables, and OCR on scanned pages (~510 MB);
+- **lite**, without them: the fast geometric converter, plus Apple Vision OCR on macOS.
+
+Everything else is the same.
+
+| Channel | Lite | With the models |
+|---|---|---|
+| GitHub release ([latest](https://github.com/funkyfunc/filegoblin/releases/latest)) | `filegoblin-<target>` archive | `filegoblin-full-<target>` archive: one binary with the models compiled in |
+| PyPI | `pip install filegoblin` | `pip install "filegoblin[models]"` |
+| npm | `npm i -g filegoblin` | `npm i -g filegoblin filegoblin-models` |
+| Cargo | `cargo install --git https://github.com/funkyfunc/filegoblin filegoblin` | then `filegoblin --install-models` |
+
+Builds are published for macOS (Apple Silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64).
+
+**Getting the models later.**
+- `filegoblin --install-models` downloads this version's model archive from the GitHub release, checks its SHA-256 and unpacks it into `~/.filegoblin/models`. You can pass a directory instead, and set `FILEGOBLIN_MODELS_URL` to point at an internal mirror. filegoblin only downloads when you ask it to.
+- `filegoblin --models-status` shows where each model was found.
+
+**Behind a corporate network.** The PyPI and npm model packages carry the weights themselves, split into pieces under the registries' 100 MB per-file limit. They install from a company mirror (Artifactory, Nexus, CodeArtifact) like any other package, with no access to github.com.
+
+**Air-gapped machines.** Copy the full download. Alternatively, put the `filegoblin-vision-models.tar.gz` archive on a shared read-only path and name it in `FILEGOBLIN_MODELS`. That variable takes a `PATH`-style list. Licenses are in `LICENSES.md` inside the archive.
 
 **From source** — needs a Rust toolchain (1.87+):
 
@@ -34,7 +53,7 @@ dependency:
 | Want | Add | Build needs |
 |---|---|---|
 | OCR on Linux/Windows | `--features ocr` | `just get-brains` for the weights (macOS uses Apple Vision, no flag) |
-| PDF vision models (layout, reading order, formulas → LaTeX, tables, scan OCR) | `--features vision` (on in release builds) | The weights: `just get-vision-models` (the release's `filegoblin-vision-models.tar.gz`, SHA-256 checked) or `just build-vision-models`; found in `models/` next to the binary, `~/.filegoblin/models`, or `$FILEGOBLIN_MODELS`. Add `bundled-models` with `FILEGOBLIN_MODELS_DIR` set to compile them into one binary |
+| PDF vision models (layout, reading order, formulas → LaTeX, tables, scan OCR) | `--features vision` (on in release builds) | The weights: `filegoblin --install-models` (the release's `filegoblin-vision-models.tar.gz`, SHA-256 checked) or `just build-vision-models`. filegoblin finds them in `models/` next to the binary, in `~/.filegoblin/models`, or in `$FILEGOBLIN_MODELS`. Add `bundled-models` with `FILEGOBLIN_MODELS_DIR` set to compile them into one binary |
 | Audio/video transcription | `--features transcribe` | `cmake` + a C/C++ compiler; downloads a ~574 MB model on first use |
 | Metal-accelerated transcription (macOS only) | `--features transcribe-metal` | Xcode Command Line Tools. **Does not build on Linux/Windows** |
 | WASM plugins | `--features wasm` | — |
@@ -45,15 +64,7 @@ dependency:
 cargo install --git https://github.com/funkyfunc/filegoblin filegoblin --features transcribe-metal
 ```
 
-**PDF vision models — install them or don't.** The release binary carries the
-model runtime, not the weights (~370 MB). Without the weights it behaves exactly
-like the fast converter (one stderr note per run; `--vision off` silences it).
-With them, `--vision smart` (the default) uses them only on pages that need them.
-The weights are plain files with no network access at runtime: IT can vet the
-archive once (licenses in `LICENSES.md` inside it, checksums in `manifest.json`)
-and put it on a shared read-only path named by `FILEGOBLIN_MODELS`, or copy it to
-air-gapped machines. Anyone who wants a single self-contained file can build one
-with `--features vision,bundled-models`.
+Without the models, `--vision smart` (the default) behaves exactly like the fast converter, with one note per run on stderr; `--vision off` silences it. With the models, it uses them only on the pages that need them. Anyone building from source can make a single self-contained binary with `--features vision,bundled-models` and `FILEGOBLIN_MODELS_DIR` set.
 
 ---
 

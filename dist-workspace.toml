@@ -20,5 +20,8 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 # on exactly that.) `vision` adds the model runtime only; the weights ship as
 # a separate release asset built by the vision-models job below.
 features = ["web", "ocr", "wasm", "rag", "transcribe", "vision"]
-# Builds the vision model archive once per release and attaches it.
+# Builds the vision model archive once per release and attaches it, along
+# with the filegoblin-full-<target> archives (models compiled in).
 global-artifacts-jobs = ["./vision-models"]
+# Publishes the PyPI wheels and npm packages after the GitHub release exists.
+publish-jobs = ["./publish-packages"]
