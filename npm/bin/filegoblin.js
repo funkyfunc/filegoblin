@@ -14,11 +14,11 @@ function getPlatformPackageName() {
   const platform = process.platform;
   const arch = process.arch;
 
-  if (platform === 'darwin' && arch === 'arm64') return 'filegoblin-darwin-arm64';
-  if (platform === 'darwin' && arch === 'x64') return 'filegoblin-darwin-x64';
-  if (platform === 'linux' && arch === 'x64') return 'filegoblin-linux-x64';
-  if (platform === 'linux' && arch === 'arm64') return 'filegoblin-linux-arm64';
-  if (platform === 'win32' && arch === 'x64') return 'filegoblin-win32-x64';
+  if (platform === 'darwin' && arch === 'arm64') return '@filegoblin/darwin-arm64';
+  if (platform === 'darwin' && arch === 'x64') return '@filegoblin/darwin-x64';
+  if (platform === 'linux' && arch === 'x64') return '@filegoblin/linux-x64';
+  if (platform === 'linux' && arch === 'arm64') return '@filegoblin/linux-arm64';
+  if (platform === 'win32' && arch === 'x64') return '@filegoblin/win32-x64';
   return null;
 }
 
@@ -36,14 +36,14 @@ function ensureExecutable(file) {
   }
 }
 
-// The PDF vision models, when the `filegoblin-models` package is installed
+// The PDF vision models, when the `@filegoblin/models` package is installed
 // next to this one: their directories are passed to the binary through
 // FILEGOBLIN_MODELS (after any directory the user set there).
 function modelEnvironment() {
   const env = Object.assign({}, process.env);
   let dirs = [];
   try {
-    dirs = require('filegoblin-models').paths();
+    dirs = require('@filegoblin/models').paths();
   } catch (_) {
     return env;
   }

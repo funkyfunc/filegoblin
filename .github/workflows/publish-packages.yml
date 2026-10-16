@@ -4,14 +4,15 @@
 #
 #   PyPI: filegoblin (one wheel per platform, lite binary + launcher)
 #         filegoblin-models, filegoblin-models-part1..N   (`filegoblin[models]`)
-#   npm:  filegoblin, filegoblin-<os>-<cpu>
-#         filegoblin-models, filegoblin-models-part1..N
+#   npm:  filegoblin, @filegoblin/<os>-<cpu>
+#         @filegoblin/models, @filegoblin/models-part1..N
 #
 # Each registry is skipped, with a warning, until it is set up:
 #   PyPI: a `PYPI_API_TOKEN` repository secret, or trusted publishing for
 #         this workflow on pypi.org plus the repository variable
 #         `PYPI_TRUSTED_PUBLISHING=true`.
-#   npm:  an `NPM_TOKEN` repository secret (an automation token).
+#   npm:  an `NPM_TOKEN` repository secret: an automation token of an
+#         account that owns `filegoblin` and is in the `filegoblin` org.
 # Re-running is safe: versions already on a registry are skipped.
 name: publish-packages
 
@@ -82,13 +83,14 @@ jobs:
       - name: Publish
         if: steps.setup.outputs.enabled == 'true'
         run: |
-          # Dependencies first: platform packages and model parts, then
-          # filegoblin-models, then the filegoblin launcher.
+          # Dependencies first (platform packages and model parts, then
+          # @filegoblin/models, then the filegoblin launcher), as listed by
+          # package_registries.py.
           set -e
           # Artifacts do not keep file modes.
-          chmod +x npm-packages/filegoblin-*-*/bin/filegoblin 2>/dev/null || true
-          for d in npm-packages/filegoblin-*-*/ npm-packages/filegoblin-models/ npm-packages/filegoblin/; do
-            [ -d "$d" ] || continue
+          chmod +x npm-packages/platform-*/bin/filegoblin 2>/dev/null || true
+          while read -r dir; do
+            d="npm-packages/$dir"
             name=$(node -p "require('./$d/package.json').name")
             version=$(node -p "require('./$d/package.json').version")
             if npm view "$name@$version" version > /dev/null 2>&1; then
@@ -96,4 +98,4 @@ jobs:
               continue
             fi
             npm publish "$d" --access public
-          done
+          done < npm-packages/publish-order.txt

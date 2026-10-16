@@ -39,7 +39,7 @@ To use `filegoblin` directly without the `npx` prefix:
 
 ```bash
 npm install -g filegoblin                     # converter
-npm install -g filegoblin filegoblin-models   # plus the PDF vision models (~510 MB)
+npm install -g filegoblin @filegoblin/models   # plus the PDF vision models (~510 MB)
 ```
 
 Now `filegoblin` is available anywhere in your terminal:
@@ -48,7 +48,7 @@ Now `filegoblin` is available anywhere in your terminal:
 filegoblin document.pdf > context.md
 ```
 
-**PDF vision models.** `filegoblin-models` adds:
+**PDF vision models.** `@filegoblin/models` adds:
 - layout and reading order;
 - formulas written out as LaTeX;
 - table structure;

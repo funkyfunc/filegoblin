@@ -51,10 +51,10 @@
   },
   "homepage": "https://github.com/funkyfunc/filegoblin#readme",
   "optionalDependencies": {
-    "filegoblin-darwin-arm64": "1.14.0",
-    "filegoblin-darwin-x64": "1.14.0",
-    "filegoblin-linux-x64": "1.14.0",
-    "filegoblin-linux-arm64": "1.14.0",
-    "filegoblin-win32-x64": "1.14.0"
+    "@filegoblin/darwin-arm64": "1.14.0",
+    "@filegoblin/darwin-x64": "1.14.0",
+    "@filegoblin/linux-x64": "1.14.0",
+    "@filegoblin/linux-arm64": "1.14.0",
+    "@filegoblin/win32-x64": "1.14.0"
   }
 }

@@ -1032,8 +1032,9 @@ arXiv math (522 PDFs, 2,927 tests) after ablation: 84.6%. Fuzzy match of olmOCR'
   - `filegoblin` is one wheel per platform: the binary plus a small launcher.
   - `filegoblin[models]` adds `filegoblin-models`, which pulls in `filegoblin-models-part1…N`, the weights.
 - **npm:**
-  - `filegoblin` is the launcher, and `filegoblin-<os>-<cpu>` packages carry the binaries. These are unscoped, so no npm organisation is needed.
-  - `filegoblin-models` adds the weights through `filegoblin-models-part1…N`.
+  - `filegoblin` is the launcher, and `@filegoblin/<os>-<cpu>` packages carry the binaries.
+  - `@filegoblin/models` adds the weights through `@filegoblin/models-part1…N`.
+  - Everything except the launcher is in the `@filegoblin` scope, owned by the npm organisation `filegoblin`. With unscoped names, anyone could publish a not-yet-claimed name (a platform added later, or any of them before the first release), and `npm install filegoblin` would then run their binary.
 - **The weights travel inside the registry packages** rather than being fetched at install or run time. Company mirrors usually proxy PyPI and npm but block github.com. pip has no post-install hooks, and npm install scripts are often disabled.
 - **Weights are split into pieces** under 90 MiB, named `<model>.part<i>of<n>`. The model loader joins them in memory, and the pieces may sit in different directories (the npm parts do).
 - **`FILEGOBLIN_MODELS` takes a `PATH`-style list.** The pip and npm launchers append the model package's directories to it, after any directory the user set.
@@ -1042,7 +1043,7 @@ arXiv math (522 PDFs, 2,927 tests) after ablation: 84.6%. Fuzzy match of olmOCR'
 - **Publishing** is a dist publish job (`publish-packages.yml`). Each registry is skipped until its secret is set (see docs/RELEASING.md).
 
 **Verified locally**, with the Linux x86_64 build and the real model archive:
-- `pip install "filegoblin[models]"` from the built wheels and `npm install filegoblin filegoblin-models` from the packed tarballs both found all nine models.
+- `pip install "filegoblin[models]"` from the built wheels and `npm install filegoblin @filegoblin/models` from the packed tarballs both found all nine models.
 - Both produced output byte-identical to a run with the models read straight from disk.
 - The lite installs report the models missing.
 - `--install-models` works over HTTP and from a local file.

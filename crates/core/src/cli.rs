@@ -330,7 +330,7 @@ pub struct Cli {
     ///
     /// The source is the GitHub release, or the URL in FILEGOBLIN_MODELS_URL
     /// (for an internal mirror). Not needed with the filegoblin-full download
-    /// or the `filegoblin[models]` / `filegoblin-models` packages, which carry
+    /// or the `filegoblin[models]` / `@filegoblin/models` packages, which carry
     /// the models already.
     #[arg(long, value_name = "DIR", num_args = 0..=1, help_heading = "Developer Utilities")]
     pub install_models: Option<Option<std::path::PathBuf>>,

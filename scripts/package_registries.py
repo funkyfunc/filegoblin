@@ -12,12 +12,13 @@ PyPI (stdlib-built wheels, no build backend needed):
                                  which depends on…
     filegoblin-models-part1..N   the weights, in pieces under 90 MiB each
 
-npm:
+npm (everything but the launcher in the @filegoblin scope, so only the
+filegoblin organisation can publish the packages the launcher runs):
     filegoblin                   the launcher (npm/), with optional
                                  dependencies on…
-    filegoblin-<os>-<cpu>        one package per platform with the binary
-    filegoblin-models            which depends on…
-    filegoblin-models-part1..N   the weights, in pieces
+    @filegoblin/<os>-<cpu>       one package per platform with the binary
+    @filegoblin/models           which depends on…
+    @filegoblin/models-part1..N  the weights, in pieces
 
 Both registries limit file sizes (PyPI: 100 MB per file by default), and
 company package mirrors often do too, so the weights are split into pieces
@@ -320,7 +321,8 @@ def npm_common(version: str) -> dict:
 
 def build_npm(version: str, archives: dict, models: Path, out: Path) -> list:
     """Package directories, ready for `npm publish <dir>`, in publish order
-    (dependencies before the packages that need them)."""
+    (dependencies before the packages that need them); the order is also
+    written to `publish-order.txt`. Directory names drop the scope."""
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
@@ -328,8 +330,8 @@ def build_npm(version: str, archives: dict, models: Path, out: Path) -> list:
     platform_names = []
     for target, archive in sorted(archives.items()):
         _, os_name, cpu, binname = TARGETS[target]
-        name = f"filegoblin-{os_name}-{cpu}"
-        d = out / name
+        name = f"@filegoblin/{os_name}-{cpu}"
+        d = out / f"platform-{os_name}-{cpu}"
         (d / "bin").mkdir(parents=True)
         b = d / "bin" / binname
         b.write_bytes(extract_binary(archive, binname))
@@ -354,8 +356,8 @@ def build_npm(version: str, archives: dict, models: Path, out: Path) -> list:
         parts = pack_parts(plan_pieces(models))
         part_names = []
         for i, part in enumerate(parts, 1):
-            name = f"filegoblin-models-part{i}"
-            d = out / name
+            name = f"@filegoblin/models-part{i}"
+            d = out / f"models-part{i}"
             (d / "models").mkdir(parents=True)
             for piece in part:
                 (d / "models" / piece[0]).write_bytes(read_piece(piece))
@@ -366,29 +368,29 @@ def build_npm(version: str, archives: dict, models: Path, out: Path) -> list:
                     "name": name,
                     **npm_common(version),
                     "description": f"filegoblin PDF vision model weights, part {i} of {len(parts)} "
-                    "(install `filegoblin-models` instead)",
+                    "(install `@filegoblin/models` instead)",
                     "files": ["models", "LICENSE"],
                 },
             )
             dirs.append(d)
             part_names.append(name)
-        d = out / "filegoblin-models"
+        d = out / "models"
         d.mkdir()
         shutil.copy(REPO / "packaging" / "npm-models" / "index.js", d / "index.js")
         write_json(d / "parts.json", part_names)
         shutil.copy(REPO / "LICENSE", d / "LICENSE")
         (d / "README.md").write_text(
-            "# filegoblin-models\n\nPDF vision models for "
+            "# @filegoblin/models\n\nPDF vision models for "
             "[filegoblin](https://github.com/funkyfunc/filegoblin): layout and reading order, "
             "formulas as LaTeX, tables, and OCR for scanned pages.\n\n"
-            "```bash\nnpm install -g filegoblin filegoblin-models\n```\n\n"
+            "```bash\nnpm install -g filegoblin @filegoblin/models\n```\n\n"
             "The `filegoblin` launcher finds this package next to it and uses the models. "
             "Model licenses (Apache-2.0 and MIT) are in the `models/LICENSES.md` file of the part packages.\n"
         )
         write_json(
             d / "package.json",
             {
-                "name": "filegoblin-models",
+                "name": "@filegoblin/models",
                 **npm_common(version),
                 "description": "PDF vision models for filegoblin (layout, formulas, tables, scan OCR)",
                 "main": "index.js",
@@ -405,6 +407,7 @@ def build_npm(version: str, archives: dict, models: Path, out: Path) -> list:
     pkg["optionalDependencies"] = {n: version for n in platform_names}
     write_json(d / "package.json", pkg)
     dirs.append(d)
+    (out / "publish-order.txt").write_text("".join(f"{x.name}\n" for x in dirs))
     return dirs
 
 

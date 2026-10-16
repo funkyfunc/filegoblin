@@ -244,7 +244,7 @@ pub fn status_report() -> String {
         out.push_str("All release models found: `--vision smart` (the default) will use them.\n");
     } else {
         out.push_str(&format!(
-            "{missing} missing. Run `filegoblin --install-models`, install the `filegoblin[models]` (pip) or `filegoblin-models` (npm) package, or use the filegoblin-full download.\n"
+            "{missing} missing. Run `filegoblin --install-models`, install the `filegoblin[models]` (pip) or `@filegoblin/models` (npm) package, or use the filegoblin-full download.\n"
         ));
     }
     out

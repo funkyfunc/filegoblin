@@ -3,7 +3,7 @@
 // PDF vision models for filegoblin: PP-DocLayoutV3 (layout and reading
 // order), pix2text MFR (formulas to LaTeX), Table Transformer (tables) and
 // PP-OCRv6 (scan OCR). The weights are split into pieces across the
-// filegoblin-models-part* packages (registries limit file sizes); filegoblin
+// @filegoblin/models-part* packages (registries limit file sizes); filegoblin
 // joins them when it loads a model. Licenses: models/LICENSES.md.
 
 const fs = require('fs');

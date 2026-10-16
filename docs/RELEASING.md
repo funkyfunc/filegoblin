@@ -29,8 +29,9 @@ git push origin main v1.15.0
   - `filegoblin-models` and `filegoblin-models-part1…N`: the weights, installed by `filegoblin[models]`.
 - **npm:**
   - `filegoblin`: the launcher, from `npm/`.
-  - `filegoblin-<os>-<cpu>`: one package per platform with the binary.
-  - `filegoblin-models` and `filegoblin-models-part1…N`: the weights.
+  - `@filegoblin/<os>-<cpu>`: one package per platform with the binary.
+  - `@filegoblin/models` and `@filegoblin/models-part1…N`: the weights.
+  - Everything except the launcher is in the `@filegoblin` scope, so only members of the npm organisation `filegoblin` can publish the binaries the launcher runs.
 - **Building locally:** `scripts/package_registries.py` builds all of these from dist's archives and the model archive.
 
 The weights are split into pieces under 90 MiB, named `<model>.part<i>of<n>`. This keeps them under PyPI's 100 MB per-file limit, and under the size limits of company package mirrors. filegoblin joins the pieces when it loads a model.
@@ -45,6 +46,6 @@ Until a registry is set up, its publish job is skipped with a warning; the GitHu
 
 Each release adds about 510 MB across the model projects. PyPI allows 10 GB per project; when a model project gets close, delete old releases of it.
 
-**npm.** Create an automation token on npmjs.com for the account that owns `filegoblin`, and add it as the repository secret `NPM_TOKEN`. The platform and model packages are unscoped (`filegoblin-linux-x64`, `filegoblin-models-part1`, …), so no npm organisation is needed.
+**npm.** Create an automation token on npmjs.com for an account that owns the `filegoblin` package and is a member of the `filegoblin` organisation (which owns the `@filegoblin` scope), and add it as the repository secret `NPM_TOKEN`.
 
 Re-running a publish job is safe: versions that are already on a registry are skipped.

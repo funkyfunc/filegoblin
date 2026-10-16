@@ -27,7 +27,7 @@ Everything else is the same.
 |---|---|---|
 | GitHub release ([latest](https://github.com/funkyfunc/filegoblin/releases/latest)) | `filegoblin-<target>` archive | `filegoblin-full-<target>` archive: one binary with the models compiled in |
 | PyPI | `pip install filegoblin` | `pip install "filegoblin[models]"` |
-| npm | `npm i -g filegoblin` | `npm i -g filegoblin filegoblin-models` |
+| npm | `npm i -g filegoblin` | `npm i -g filegoblin @filegoblin/models` |
 | Cargo | `cargo install --git https://github.com/funkyfunc/filegoblin filegoblin` | then `filegoblin --install-models` |
 
 Builds are published for macOS (Apple Silicon and Intel), Linux (x86_64 and aarch64), and Windows (x86_64).
