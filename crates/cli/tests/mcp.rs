@@ -27,10 +27,18 @@ fn mcp_handshake_and_convert() {
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#.to_string(),
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string(),
         r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_string(),
-        format!(
-            r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"convert","arguments":{{"source":"{}"}}}}}}"#,
-            repo_root.join("test_assets/dummy.csv").display()
-        ),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "convert",
+                "arguments": {
+                    "source": repo_root.join("test_assets/dummy.csv").to_str().unwrap()
+                }
+            }
+        })
+        .to_string(),
         r#"{"jsonrpc":"2.0","id":4,"method":"resources/list"}"#.to_string(),
         r#"{"jsonrpc":"2.0","id":5,"method":"ping"}"#.to_string(),
         "this is not json".to_string(),
