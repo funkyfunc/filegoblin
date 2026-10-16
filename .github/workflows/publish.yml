@@ -1,0 +1,107 @@
+name: Publish
+
+# Publishes a release to PyPI and npm once the Release workflow (dist) has
+# built it. Auth is tokenless through trusted publishing (OIDC): pushing the
+# tag is the approval. The `pypi` and `release` environments have no
+# protection rules; they exist only to scope the trusted-publisher identities
+# (PyPI: workflow publish.yml + environment pypi; npm: workflow publish.yml +
+# environment release). See docs/RELEASING.md for the one-time setup.
+#
+# This is its own top-level workflow, not a dist publish job, because PyPI's
+# trusted publishing does not work from reusable workflows
+# (pypa/gh-action-pypi-publish#166) and dist publish jobs are reusable ones.
+#
+#   PyPI: filegoblin (one wheel per platform), filegoblin-models,
+#         filegoblin-models-part1..N  (`pip install "filegoblin[models]"`)
+#   npm:  filegoblin, @filegoblin/<os>-<cpu>, @filegoblin/models,
+#         @filegoblin/models-part1..N
+#
+# The packages are built and smoke-tested by the `registry-packages` job of
+# the Release run (vision-models.yml) and downloaded from it here. Re-running
+# is safe: versions already on a registry are skipped.
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: "ID of a successful Release run to publish (from its URL)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # A finished tag build of Release (pull-request runs only plan), or a
+    # manual run. Prereleases (v1.2.3-rc.1) are not published automatically.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       !contains(github.event.workflow_run.head_branch, '-'))
+    outputs:
+      run-id: ${{ steps.run.outputs.id }}
+    steps:
+      - id: run
+        run: echo "id=${{ inputs.run-id || github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+
+  pypi:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: pypi # scopes the PyPI trusted-publisher identity (no gate)
+    permissions:
+      id-token: write # mint the short-lived OIDC token for trusted publishing
+      actions: read # download the Release run's artifacts
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: registry-packages
+          run-id: ${{ needs.check.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheels
+          skip-existing: true
+
+  npm:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: release # scopes the npm trusted-publisher identity (no gate)
+    permissions:
+      id-token: write # mint the short-lived OIDC token for trusted publishing
+      actions: read # download the Release run's artifacts
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: registry-packages
+          run-id: ${{ needs.check.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node ships older.
+      - run: npm install -g npm@latest
+      - name: Publish
+        run: |
+          # Dependencies first (platform packages and model parts, then
+          # @filegoblin/models, then the filegoblin launcher), in the order
+          # package_registries.py wrote. No NODE_AUTH_TOKEN: npm detects the
+          # OIDC environment, authenticates itself and attaches provenance.
+          set -e
+          # Artifacts do not keep file modes.
+          chmod +x npm-packages/platform-*/bin/filegoblin 2>/dev/null || true
+          while read -r dir; do
+            d="npm-packages/$dir"
+            name=$(node -p "require('./$d/package.json').name")
+            version=$(node -p "require('./$d/package.json').version")
+            if npm view "$name@$version" version > /dev/null 2>&1; then
+              echo "$name@$version is already published"
+              continue
+            fi
+            npm publish "$d" --access public --provenance
+          done < npm-packages/publish-order.txt

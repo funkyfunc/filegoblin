@@ -23,5 +23,6 @@ features = ["web", "ocr", "wasm", "rag", "transcribe", "vision"]
 # Builds the vision model archive once per release and attaches it, along
 # with the filegoblin-full-<target> archives (models compiled in).
 global-artifacts-jobs = ["./vision-models"]
-# Publishes the PyPI wheels and npm packages after the GitHub release exists.
-publish-jobs = ["./publish-packages"]
+# PyPI and npm publishing is not a dist job: it runs in publish.yml, a
+# top-level workflow triggered when this one finishes, because PyPI's trusted
+# publishing does not work from reusable workflows (pypa/gh-action-pypi-publish#166).

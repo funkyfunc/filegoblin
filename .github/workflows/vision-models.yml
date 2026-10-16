@@ -132,8 +132,8 @@ jobs:
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.archive }}.sha256
 
-  # The PyPI wheels and npm packages (published by publish-packages.yml once
-  # the GitHub release exists). Built here, where the repository is checked
+  # The PyPI wheels and npm packages (published by publish.yml, which starts
+  # when this Release run succeeds). Built here, where the repository is checked
   # out and the lite archives and models are at hand.
   registry-packages:
     needs: build
@@ -181,4 +181,4 @@ jobs:
           path: |
             wheels
             npm-packages
-          retention-days: 7
+          retention-days: 30

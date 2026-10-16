@@ -21,7 +21,7 @@ git push origin main v1.15.0
 | `custom-vision-models` → `full` | `filegoblin-full-<target>.tar.xz` / `.zip`: one binary with the models compiled in (`bundled-models`) |
 | `custom-vision-models` → `registry-packages` | PyPI wheels and npm packages, built and smoke-tested (not attached to the release) |
 | `host` (dist) | the GitHub release, with everything above except the registry packages |
-| `custom-publish-packages` | uploads to PyPI and npm |
+| `publish.yml` (its own workflow, started when Release finishes) | uploads the registry packages to PyPI and npm |
 
 **Package names:**
 - **PyPI:**
@@ -38,14 +38,28 @@ The weights are split into pieces under 90 MiB, named `<model>.part<i>of<n>`. Th
 
 ## One-time registry setup
 
-Until a registry is set up, its publish job is skipped with a warning; the GitHub release goes out regardless.
+Both registries use **trusted publishing**: no tokens are stored in the repository. Each registry trusts one workflow file plus one GitHub environment, and pushing the tag is the approval. Neither environment has protection rules; GitHub creates them on first use.
 
-**PyPI.** Choose one of these:
-- **A token:** create an API token on pypi.org and add it as the repository secret `PYPI_API_TOKEN`. The first upload creates the projects, so the token must be account-wide at first. Once the projects exist, replace it with a token scoped to them.
-- **Trusted publishing:** on pypi.org, add a pending publisher for each project name: `filegoblin`, `filegoblin-models` and `filegoblin-models-part1` through `part6`. Use repository `funkyfunc/filegoblin`, workflow `release.yml`, and no environment. Then set the repository variable `PYPI_TRUSTED_PUBLISHING` to `true`.
+| Registry | Workflow | Environment |
+|---|---|---|
+| PyPI | `publish.yml` | `pypi` |
+| npm | `publish.yml` | `release` |
 
-Each release adds about 510 MB across the model projects. PyPI allows 10 GB per project; when a model project gets close, delete old releases of it.
+The publishing lives in `publish.yml`, not in the dist-generated `release.yml`, because PyPI's trusted publishing does not work from reusable workflows ([pypa/gh-action-pypi-publish#166](https://github.com/pypa/gh-action-pypi-publish/issues/166)), and dist's publish jobs are reusable workflows. `publish.yml` starts when a tag run of Release succeeds, and downloads the packages that run built. You can also run it by hand (Actions → Publish → Run workflow) with the ID of a Release run. Prereleases (`v1.2.3-rc.1`) are not published automatically.
 
-**npm.** Create an automation token on npmjs.com for an account that owns the `filegoblin` package and is a member of the `filegoblin` organisation (which owns the `@filegoblin` scope), and add it as the repository secret `NPM_TOKEN`.
+**PyPI.** On pypi.org (Your account → Publishing), add a **pending publisher** for each of the eight project names:
+- `filegoblin`
+- `filegoblin-models`
+- `filegoblin-models-part1` through `filegoblin-models-part6`
 
-Re-running a publish job is safe: versions that are already on a registry are skipped.
+Each one uses owner `funkyfunc`, repository `filegoblin`, workflow `publish.yml` and environment `pypi`. Pending publishers work before a project exists; the first upload creates it.
+
+Each release adds about 510 MB across the model projects. PyPI allows 10 GB per project, so when one gets close, delete its old releases.
+
+**npm.** npm only lets you configure a trusted publisher on a package that already exists, and trusted publishing cannot do a package's first publish. `scripts/npm-bootstrap.sh` handles both steps. Run it yourself, logged in to npm with 2FA and npm 11.15 or later:
+1. It publishes a deprecated `0.0.0-bootstrap` placeholder for each `@filegoblin/…` package that does not exist yet.
+2. It points every package, `filegoblin` included, at `publish.yml` with environment `release` using `npm trust github`.
+
+A new trusted-publisher configuration expires if nothing publishes with it within two days, so run the script shortly before pushing the release tag. If the number of model parts changes (`package_registries.py` prints them), run the script again with that number. New `@filegoblin/models-part<N>` names need the same bootstrap, and on PyPI the matching `filegoblin-models-part<N>` projects need a pending publisher.
+
+Re-running `publish.yml` is safe: versions that are already on a registry are skipped.
