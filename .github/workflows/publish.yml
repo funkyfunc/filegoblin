@@ -63,6 +63,10 @@ jobs:
           name: registry-packages
           run-id: ${{ needs.check.outputs.run-id }}
           github-token: ${{ github.token }}
+      # The nine model projects don't exist on PyPI yet (see "Model
+      # packages" in docs/RELEASING.md); delete this step once they do.
+      - name: Base package only (model projects not on PyPI yet)
+        run: rm -f wheels/filegoblin_model*
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: wheels
