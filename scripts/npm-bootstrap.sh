@@ -54,15 +54,17 @@ JSON
   PLACEHOLDERS="${PLACEHOLDERS:-} $name"
 done
 
-# A new package takes a few minutes to become visible after publishing, and
-# it cannot be deprecated until then; retry for up to ten minutes.
+# A new package takes a few minutes to become visible after publishing
+# (npm stages it first, adding its own 0.0.0-stage version), and it cannot be
+# deprecated until then; retry for up to ten minutes. `<1.0.0` covers both
+# placeholder versions.
 for name in ${PLACEHOLDERS:-}; do
   tries=0
-  until npm deprecate "$name@0.0.0-bootstrap" "Placeholder; install filegoblin instead." 2>/dev/null; do
+  until npm deprecate "$name@<1.0.0" "Placeholder; install filegoblin instead." 2>/dev/null; do
     tries=$((tries + 1))
     if [ "$tries" -ge 20 ]; then
-      echo "  could not deprecate $name@0.0.0-bootstrap yet; run later:"
-      echo "  npm deprecate \"$name@0.0.0-bootstrap\" \"Placeholder; install filegoblin instead.\""
+      echo "  could not deprecate $name's placeholders yet; run later:"
+      echo "  npm deprecate \"$name@<1.0.0\" \"Placeholder; install filegoblin instead.\""
       break
     fi
     echo "  waiting for $name to become visible..."
