@@ -453,47 +453,6 @@ fn katex_safe(s: &str) -> String {
     balance_braces(out.trim())
 }
 
-/// The formula sets a digit other than 0 in bold (`\\mathbf{4}`,
-/// `{\\bf 12}`).
-pub fn has_bold_numeral(s: &str) -> bool {
-    static BOLD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"\\(?:mathbf|bm|boldsymbol)\s*\{([^{}]*)\}|\{\s*\\bf\s*([^{}]*)\}")
-            .expect("valid regex")
-    });
-    BOLD.captures_iter(s).any(|c| {
-        c.get(1)
-            .or(c.get(2))
-            .is_some_and(|m| m.as_str().chars().any(|ch| ('1'..='9').contains(&ch)))
-    })
-}
-
-/// Removes bold from a formula: `\mathbf{x}`, `\bm{x}`, `{\bf x}` and a
-/// bare `\bf` become plain. For pages whose print weight carries no meaning
-/// (scans of old books, where worn type and heavy ink read as bold).
-pub fn plain_weight(s: &str) -> String {
-    use std::sync::LazyLock;
-    static WRAP: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"\\(?:mathbf|bm|pmb|boldsymbol|textbf)\s*\{([^{}]*)\}")
-            .expect("valid regex")
-    });
-    static GROUP: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"\{\s*\\bf\s*([^{}]*)\}").expect("valid regex"));
-    static BARE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"\\bf(?:\s+|([^A-Za-z]))").expect("valid regex"));
-    let mut out = s.to_string();
-    for _ in 0..3 {
-        let next = replace_tex(&WRAP, &out, |c| c[1].to_string());
-        if next == out {
-            break;
-        }
-        out = next;
-    }
-    out = replace_tex(&GROUP, &out, |c| c[1].to_string());
-    replace_tex(&BARE, &out, |c| {
-        c.get(1).map_or("", |m| m.as_str()).to_string()
-    })
-}
-
 /// `Regex::replace_all` for LaTeX: when a replacement that starts with a
 /// letter lands right after a control word (`\\vdots` + `v`), a space goes
 /// between them so the two do not fuse into an unknown command.
@@ -642,28 +601,9 @@ mod tests {
 
     #[test]
     fn removed_commands_never_fuse_neighbours() {
-        assert_eq!(plain_weight(r"\vdots\mathbf{v}=1"), r"\vdots v=1");
-        assert_eq!(plain_weight(r"\therefore\mathbf{N}"), r"\therefore N");
         assert_eq!(katex_safe(r"\vdots\protect x"), r"\vdots x");
         assert_eq!(katex_safe(r"\cdot\ttA"), r"\cdot A");
         assert_eq!(tidy_latex(r"\cdot \boldsymbol { x }"), r"\cdot x");
-    }
-
-    #[test]
-    fn bold_numerals_are_spotted() {
-        assert!(has_bold_numeral(r"x^{2}=\mathbf{A}(x^{2}+\mathbf{4})"));
-        assert!(has_bold_numeral(r"{\bf 12}+x"));
-        assert!(!has_bold_numeral(
-            r"\mathbf{A}^{2}+\mathbf{B}^{2}=\mathbf{0}"
-        ));
-    }
-
-    #[test]
-    fn scan_formulas_lose_their_bold() {
-        assert_eq!(plain_weight(r"u=x^{2}-\mathbf{1}"), "u=x^{2}-1");
-        assert_eq!(plain_weight(r"{\bf B}+{\bf0}"), "B+0");
-        assert_eq!(plain_weight(r"\bf x=\mathbf{\mathbf{y}}"), "x=y");
-        assert_eq!(plain_weight(r"\beta+\bfseries"), r"\beta+\bfseries");
     }
 
     #[test]

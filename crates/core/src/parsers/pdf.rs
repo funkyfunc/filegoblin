@@ -260,21 +260,6 @@ fn close_open_fence(page: &mut String) {
     }
 }
 
-/// A footnote paragraph: starts with a footnote mark (`*`, `†`, `‡`, `§`,
-/// a superscript digit, or a Markdown footnote definition), and is short.
-fn is_footnote_para(p: &str) -> bool {
-    let t = p.trim();
-    let mut cs = t.chars();
-    let starts = match cs.next() {
-        Some('*') => cs.next().is_some_and(|c| c.is_alphanumeric()),
-        Some('†' | '‡' | '§' | '¹' | '²' | '³' | '⁴' | '⁵' | '⁶' | '⁷' | '⁸' | '⁹') => {
-            true
-        }
-        _ => t.starts_with("[^"),
-    };
-    starts && t.split_whitespace().count() <= 80
-}
-
 fn join_pages_healing_dangling(pages: &[String]) -> String {
     let mut out = String::new();
     for p in pages.iter() {
@@ -319,46 +304,6 @@ fn join_pages_healing_dangling(pages: &[String]) -> String {
                 .next()
                 .is_some_and(|c| c.is_lowercase());
 
-        // A footnote at the foot of the page sits between a sentence and its
-        // continuation on the next page: join across it and move the
-        // footnote after the joined paragraph.
-        if starts_lower
-            && let Some((head, foot)) = out.rsplit_once("\n\n")
-            && is_footnote_para(foot)
-            && head
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .map(str::trim)
-                .is_some_and(|l| {
-                    !is_structural(l)
-                        && l.chars()
-                            .last()
-                            .is_some_and(|c| c.is_alphanumeric() || matches!(c, ',' | '-' | '–'))
-                })
-        {
-            let foot = foot.trim().to_string();
-            let mut joined = head.trim_end().to_string();
-            if joined.ends_with('-')
-                && joined[..joined.len() - 1].ends_with(|c: char| c.is_alphabetic())
-            {
-                joined.pop();
-            } else {
-                joined.push(' ');
-            }
-            let (first_para, rest) = p_trimmed
-                .split_once("\n\n")
-                .map_or((p_trimmed, ""), |(a, b)| (a, b));
-            joined.push_str(first_para);
-            joined.push_str("\n\n");
-            joined.push_str(&foot);
-            if !rest.trim().is_empty() {
-                joined.push_str("\n\n");
-                joined.push_str(rest.trim());
-            }
-            out = joined;
-            continue;
-        }
         if ends_dangling && starts_lower {
             let trimmed_len = out.trim_end().len();
             out.truncate(trimmed_len);
@@ -2313,17 +2258,6 @@ fn find_pipe_table_span(text: &str, target_words: &[&str]) -> Option<(usize, usi
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_sentence_continues_across_a_page_footnote() {
-        let pages = vec![
-            "Body text that runs on to the\n\n*Corresponding author. e-mail: a@b.edu".to_string(),
-            "next page and ends here.\n\nNew paragraph.".to_string(),
-        ];
-        assert_eq!(
-            join_pages_healing_dangling(&pages),
-            "Body text that runs on to the next page and ends here.\n\n*Corresponding author. e-mail: a@b.edu\n\nNew paragraph."
-        );
-    }
     use clap::Parser;
 
     #[test]

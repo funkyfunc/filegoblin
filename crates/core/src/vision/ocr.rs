@@ -134,19 +134,6 @@ impl RotBox {
         )
     }
 
-    /// The same box read across instead of along: a quarter turn
-    /// clockwise (`1.0`) or anticlockwise (`-1.0`).
-    fn turned(&self, quarter: f32) -> RotBox {
-        RotBox {
-            cx: self.cx,
-            cy: self.cy,
-            ux: -self.uy * quarter,
-            uy: self.ux * quarter,
-            len: self.thick,
-            thick: self.len,
-        }
-    }
-
     /// Samples the box upright at `height` pixels (bilinear), so a skewed
     /// line is read straight and its neighbours stay out of the crop.
     fn warp(&self, img: &RgbImage, height: u32) -> RgbImage {
@@ -183,11 +170,6 @@ impl RotBox {
 }
 
 /// Detects and reads every text line in the image.
-///
-/// Each line is read once as detected. A box much taller than it is wide —
-/// a line of text running up or down the page, like a spine label or the
-/// caption of a sideways figure — is also read turned a quarter either way,
-/// and the most confident reading wins.
 pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
     let o = ocr()?;
     let t = std::time::Instant::now();
@@ -195,21 +177,6 @@ pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
     let t_det = t.elapsed();
     let mut best: Vec<(String, f32)> = vec![(String::new(), 0.0); boxes.len()];
     read_crops(o, &boxes, &mut best, |b| b.warp(img, REC_HEIGHT))?;
-    let tall: Vec<usize> = (0..boxes.len())
-        .filter(|&i| boxes[i].thick >= 2.5 * boxes[i].len && boxes[i].thick >= 40.0)
-        .collect();
-    for quarter in [1.0f32, -1.0] {
-        let sub: Vec<RotBox> = tall.iter().map(|&i| boxes[i].turned(quarter)).collect();
-        let mut alt = vec![(String::new(), 0.0); sub.len()];
-        read_crops(o, &sub, &mut alt, |b| b.warp(img, REC_HEIGHT))?;
-        for (k, &i) in tall.iter().enumerate() {
-            // A turned reading must be clearly better: a single tall glyph
-            // ("l", "1") reads fine upright.
-            if alt[k].1 > best[i].1 + 0.05 && alt[k].0.trim().chars().count() >= 2 {
-                best[i] = alt[k].clone();
-            }
-        }
-    }
     let mut lines: Vec<Line> = Vec::with_capacity(boxes.len());
     for (b, (text, score)) in boxes.iter().zip(best) {
         let t = text.trim().to_string();
@@ -228,9 +195,8 @@ pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
     }
     if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
         eprintln!(
-            "ocr: {} lines ({} vertical candidates), detect {t_det:?}, recognize {:?}",
+            "ocr: {} lines, detect {t_det:?}, recognize {:?}",
             lines.len(),
-            tall.len(),
             t.elapsed() - t_det
         );
     }
@@ -542,25 +508,6 @@ mod tests {
         // Scripts without spaces stay unspaced.
         let e = [("中", 2), ("文", 5), ("字", 11), ("符", 14)];
         assert_eq!(syms(&e), "中文字符");
-    }
-
-    #[test]
-    fn quarter_turn_reads_a_tall_box_across() {
-        let b = RotBox {
-            cx: 50.0,
-            cy: 100.0,
-            ux: 1.0,
-            uy: 0.0,
-            len: 20.0,
-            thick: 120.0,
-        };
-        let t = b.turned(-1.0);
-        assert_eq!((t.len, t.thick), (120.0, 20.0));
-        // Anticlockwise: read from the bottom of the page up.
-        assert!((t.ux - 0.0).abs() < 1e-6 && (t.uy + 1.0).abs() < 1e-6);
-        // Same footprint on the page either way.
-        let (a, c) = (b.bounds(), t.bounds());
-        assert!((a.0 - c.0).abs() < 1e-3 && (a.3 - c.3).abs() < 1e-3);
     }
 
     #[test]

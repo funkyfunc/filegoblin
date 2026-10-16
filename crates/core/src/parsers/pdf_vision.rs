@@ -100,7 +100,7 @@ fn convert_page_gated(
         words.extend(filled);
     }
     let table_fallback = |b: &UserBox| table_markdown(doc, page, b, excluded, base_options);
-    let md = assemble(&img, &regions, words, geom.bx, &table_fallback, false);
+    let md = assemble(&img, &regions, words, geom.bx, &table_fallback);
     debug_timing(page, "text layer", t_layout, t.elapsed(), regions.len());
     Some(md)
 }
@@ -122,14 +122,9 @@ fn convert_scanned_page_gated(renderer: &Renderer, page: usize) -> Option<String
     let words = ocr_words(&img, true);
     let (w, h) = (img.rgb.width() as f32, img.rgb.height() as f32);
     let pb = img.to_user(0.0, 0.0, w, h);
-    let md = assemble(
-        &img,
-        &regions,
-        words,
-        (pb.x0, pb.y0, pb.x1, pb.y1),
-        &|_| None,
-        true,
-    );
+    let md = assemble(&img, &regions, words, (pb.x0, pb.y0, pb.x1, pb.y1), &|_| {
+        None
+    });
     debug_timing(page, "scan", t_layout, t.elapsed(), regions.len());
     Some(md)
 }
@@ -314,7 +309,6 @@ fn assemble(
     words: Vec<Tok>,
     bx: (f32, f32, f32, f32),
     table_fallback: &dyn Fn(&UserBox) -> Option<String>,
-    scan: bool,
 ) -> String {
     let (_, by0, _, by1) = bx;
     let ph = (by1 - by0).max(1.0);
@@ -395,26 +389,6 @@ fn assemble(
         }
         let crops_i: Vec<_> = inline.iter().map(|r| crop(img, &r.bbox)).collect();
         latex_inline = formula::recognize(&crops_i, 160);
-        // On a scan of old print, heavy ink and worn type look bold to the
-        // recognizer, and the weight it reports is noise. A bold numeral
-        // (1–9) gives such a page away — authors embolden vectors and
-        // matrices, not digits — so there all bold goes. A modern book's
-        // bold matrices (and its bold zero matrix) stay.
-        let noisy_weight = scan
-            && latex_display
-                .iter()
-                .chain(latex_inline.iter())
-                .flatten()
-                .any(|l| formula::has_bold_numeral(l));
-        if noisy_weight {
-            for l in latex_display
-                .iter_mut()
-                .chain(latex_inline.iter_mut())
-                .flatten()
-            {
-                *l = formula::plain_weight(l);
-            }
-        }
     }
 
     // Tokens: words minus furniture and words under a recognized inline
