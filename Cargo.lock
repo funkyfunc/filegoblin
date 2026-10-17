@@ -1684,7 +1684,7 @@ checksum = "3296eb97d869113eaf148a6bdf01884e90b3828ad7ae2340b0f93362fc158611"
 
 [[package]]
 name = "filegoblin"
-version = "1.14.0"
+version = "1.15.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "filegoblin-core"
-version = "1.14.0"
+version = "1.15.0"
 dependencies = [
  "aho-corasick",
  "anyhow",

@@ -1,6 +1,6 @@
 [package]
 name = "filegoblin-core"
-version = "1.14.0"
+version = "1.15.0"
 edition = "2024"
 rust-version = "1.87"
 description = "Conversion engine behind filegoblin: any file, URL, or media into clean Markdown."
