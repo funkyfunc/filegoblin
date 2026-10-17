@@ -108,5 +108,7 @@ jobs:
               echo "$name@$version is already published"
               continue
             fi
-            npm publish "$d" --access public --provenance
+            # "./" matters: npm reads a bare "npm-packages/<dir>" as the
+            # GitHub repo <owner>/<repo> and refuses to fetch it (EALLOWGIT).
+            npm publish "./$d" --access public --provenance
           done < npm-packages/publish-order.txt
