@@ -50,6 +50,9 @@ The documentation set is deliberately small. Do not add new top-level docs.
 - **`README.md`** — what it is, capabilities, usage. You MUST keep the
   "Project Structure" and "Current Capabilities" sections truthful when adding
   or removing features.
+- **`docs/RELEASING.md`** — how a release is built, where it is published
+  (GitHub Releases, PyPI, npm), the registry setup, and known release failures.
+  Keep it truthful when you change packaging or the release workflows.
 - **`docs/ADR.md`** — append an entry for every significant technical decision
   (context, decision, status). This is the project's memory; it is honest about
   reverts and dead ends. When docs and code disagree, the code and ADR win.
@@ -64,6 +67,22 @@ When the User asks for a handoff / end of session:
 2. Overwrite `docs/agent_context/HANDOFF.md` with: what was just completed, any
    broken tests or pending bugs, and the immediate next steps.
 3. Commit and push so the context survives to the next machine.
-4. Bump the version: patch for fixes, minor for features. Update `version` in
-   every crate's `Cargo.toml` to match, tag the commit (`vX.Y.Z`), and push the
-   tag — the release workflow triggers on tags.
+4. Do **not** bump the version or tag as part of a handoff. A `vX.Y.Z` tag
+   publishes permanent versions to PyPI and npm, so release only when the User
+   asks for one (see §7).
+
+## 7. Releases and Publishing
+- Pushing a `vX.Y.Z` tag builds and publishes everything: the GitHub release
+  (lite and `filegoblin-full` archives, plus the model archive), PyPI
+  (`filegoblin`) and npm (`filegoblin` plus the `@filegoblin/*` platform and
+  model packages). Publishing is tokenless trusted publishing from
+  `.github/workflows/publish.yml`.
+- Release only when the User asks. Patch for fixes, minor for features.
+  Follow `docs/RELEASING.md`: it lists every file that pins the version, the
+  checks to run before tagging, every package name, and known failures.
+- Creating a brand-new package name on PyPI or npm needs the User (a logged-in
+  account with 2FA or a passkey). Prepare the exact command and hand it over;
+  never handle their passwords, codes or tokens.
+- If it is available, the `registry-release` skill (private repo
+  `funkyfunc/agent-skills`) automates this procedure and has preflight and
+  registry-status scripts.

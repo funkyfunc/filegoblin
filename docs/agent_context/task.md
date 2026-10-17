@@ -185,10 +185,10 @@
 
 ### Pending Items
 - [ ] **Multi-Channel Distribution:**
-  - PyPI: Python wheels via Maturin (`pip install filegoblin`)
-  - Crates.io: publish `filegoblin` CLI and `filegoblin-core` library crate
-  - Homebrew Tap: `brew install funkyfunc/tap/filegoblin`
-  - GitHub Releases: precompiled binaries via `cargo-dist`
+  - [x] GitHub Releases via `cargo-dist`; PyPI `filegoblin` and npm `filegoblin` + `@filegoblin/*` via trusted publishing (first released in v1.15.0; docs/RELEASING.md)
+  - [ ] PyPI model projects (`filegoblin-models`, `filegoblin-model-*`): one-time upload, docs/RELEASING.md "Model packages on PyPI" (Release run 38998830497's artifacts expire around 2026-11-16)
+  - [ ] Crates.io: publish `filegoblin` CLI and `filegoblin-core` library crate
+  - [ ] Homebrew Tap: `brew install funkyfunc/tap/filegoblin`
 
 
 

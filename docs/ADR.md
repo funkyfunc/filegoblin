@@ -1053,3 +1053,25 @@ arXiv math (522 PDFs, 2,927 tests) after ablation: 84.6%. Fuzzy match of olmOCR'
 The CI workflows pass actionlint (one new runner label is not in its list yet), and `dist plan` passes. The release pipeline itself still has to run on a real tag: no release has completed yet, because the last attempts (v1.13.0, v1.14.0) failed on a dist configuration error that has since been fixed.
 
 **Status:** Accepted.
+
+## 2026-10-17: First registry release (v1.15.0)
+
+**Context.** v1.15.0 is the first release to reach PyPI and npm. Getting it out took three fixes, and it showed two limits of the registries.
+
+**Decision.**
+- Releases happen only when the User asks. The handoff protocol no longer bumps the version or tags (GEMINI.md §6–7): a tag now publishes permanent versions to PyPI and npm, about 510 MB of models on npm alone.
+- PyPI publishes the base package only until the nine model projects exist. An account can hold at most three pending publishers, so those projects get a one-time token upload instead (docs/RELEASING.md, "Model packages on PyPI"). Until then the "Base package only" step in `publish.yml` deletes the model wheels before the upload.
+- `publish.yml` runs `npm publish "./$d"`. Without `./`, npm reads `npm-packages/<dir>` as the GitHub repo `<owner>/<repo>` and refuses to fetch it (EALLOWGIT); the first v1.15.0 publish failed on its first package because of this.
+- On reruns, `publish.yml` treats npm's "Cannot publish over previously staged version" 409 as done (an earlier run uploaded it and npm is still processing it), and retries Sigstore's TLOG_CREATE_ENTRY_ERROR 409 up to three times. Any other npm error still fails the job.
+
+**What went wrong first.** The first v1.15.0 tag failed at `dist plan`: the commit labelled "release: v1.15.0" didn't bump the Cargo versions. docs/RELEASING.md now lists every file that pins the version, and `dist plan --tag=vX.Y.Z` before tagging catches it.
+
+**Observed.**
+- Release takes about 80 minutes, most of it the Intel macOS builds.
+- npm makes a new version visible 1–20 minutes after the publish succeeds; the 81 MB formula encoder was the slowest.
+- The npm page showed no README because `latest` was the hand-published 1.12.0, which predates `npm/README.md`. 1.15.0 fixed it.
+- Verified: `uvx filegoblin@1.15.0` (macOS arm64, Linux x86_64), `npx filegoblin@1.15.0` (macOS), and `npm install filegoblin @filegoblin/models` with `--models-status` finding all nine models (Linux).
+
+**Open.** The model packages are versioned with filegoblin, so every release re-uploads the same weights to both registries, and npm keeps every version. Versioning the model packages separately, and publishing them only when a model changes, would avoid that.
+
+**Status:** Accepted.
