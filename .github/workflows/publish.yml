@@ -110,5 +110,28 @@ jobs:
             fi
             # "./" matters: npm reads a bare "npm-packages/<dir>" as the
             # GitHub repo <owner>/<repo> and refuses to fetch it (EALLOWGIT).
-            npm publish "./$d" --access public --provenance
+            #
+            # Two 409s are not real failures. "Cannot publish over previously
+            # staged version": an earlier run published it and npm is still
+            # processing it (large packages take minutes to appear), so it's
+            # done. TLOG_CREATE_ENTRY_ERROR: Sigstore's transparency log
+            # rejected a retry of its own entry before anything was uploaded,
+            # so publishing again is safe.
+            for attempt in 1 2 3; do
+              if npm publish "./$d" --access public --provenance > publish.log 2>&1; then
+                cat publish.log
+                break
+              fi
+              cat publish.log
+              if grep -q "previously staged version" publish.log; then
+                echo "$name@$version was published by an earlier run; npm is still processing it"
+                break
+              fi
+              if grep -q TLOG_CREATE_ENTRY_ERROR publish.log && [ "$attempt" -lt 3 ]; then
+                echo "transparency log conflict; publishing $name again"
+                sleep 15
+                continue
+              fi
+              exit 1
+            done
           done < npm-packages/publish-order.txt
