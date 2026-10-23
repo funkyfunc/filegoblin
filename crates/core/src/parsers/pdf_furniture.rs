@@ -95,6 +95,82 @@ pub(crate) fn page_box(doc: &PdfDocument, page: usize, words: &[GWord]) -> (f32,
     }
 }
 
+/// The part of the media box a viewer shows: its intersection with the
+/// CropBox. A printer's PDF draws crop marks, colour bars and job slugs
+/// ("TIS final pgs 6 … 5/2/09 10:37:35") outside the crop, where no reader
+/// sees them. A CropBox that would hide most of the page is taken for a
+/// mistake and ignored.
+fn visible_part(
+    doc: &PdfDocument,
+    page: usize,
+    media: (f32, f32, f32, f32),
+) -> (f32, f32, f32, f32) {
+    let Some([a, b, c, d]) = crop_box(doc, page) else {
+        return media;
+    };
+    let (cx0, cx1) = (a.min(c), a.max(c));
+    let (cy0, cy1) = (b.min(d), b.max(d));
+    let v = (
+        media.0.max(cx0),
+        media.1.max(cy0),
+        media.2.min(cx1),
+        media.3.min(cy1),
+    );
+    let area = |b: (f32, f32, f32, f32)| (b.2 - b.0).max(0.0) * (b.3 - b.1).max(0.0);
+    if area(v) >= 0.25 * area(media) {
+        v
+    } else {
+        media
+    }
+}
+
+/// The page's `/CropBox` (inherited from its page tree when set there).
+fn crop_box(doc: &PdfDocument, page: usize) -> Option<[f32; 4]> {
+    let page = doc.get_page(page).ok()?;
+    let raw = page.as_dict()?.get("CropBox")?;
+    let arr = doc.resolve_object(raw).ok()?;
+    let arr = arr.as_array()?;
+    if arr.len() < 4 {
+        return None;
+    }
+    let mut v = [0f32; 4];
+    for (slot, o) in v.iter_mut().zip(arr) {
+        let o = doc.resolve_object(o).ok()?;
+        *slot = o.as_real().or_else(|| o.as_integer().map(|i| i as f64))? as f32;
+    }
+    Some(v)
+}
+
+/// The parts of the media box outside what a viewer shows, as rectangles to
+/// leave out of the conversion (see [`visible_part`]).
+pub(crate) fn outside_visible(doc: &PdfDocument, page: usize) -> Vec<Rect> {
+    let Ok((a, b, c, d)) = doc.get_page_media_box(page) else {
+        return Vec::new();
+    };
+    if rotated(doc, page) {
+        return Vec::new();
+    }
+    let media = (a.min(c), b.min(d), a.max(c), b.max(d));
+    let (x0, y0, x1, y1) = visible_part(doc, page, media);
+    let (mx0, my0, mx1, my1) = media;
+    [
+        (mx0, my0, mx1, y0), // below
+        (mx0, y1, mx1, my1), // above
+        (mx0, y0, x0, y1),   // left
+        (x1, y0, mx1, y1),   // right
+    ]
+    .into_iter()
+    .filter(|&(l, b, r, t)| r - l > 0.5 && t - b > 0.5)
+    .map(|(l, b, r, t)| Rect::new(l, b, r - l, t - b))
+    .collect()
+}
+
+/// The page has a `/Rotate` of 90, 180 or 270 degrees.
+pub(crate) fn rotated(doc: &PdfDocument, page: usize) -> bool {
+    doc.get_page_rotation(page)
+        .is_ok_and(|r| r.rem_euclid(360) != 0)
+}
+
 /// Collects line and word geometry for one page.
 pub(crate) fn collect_page_geom(doc: &PdfDocument, page: usize) -> Option<PageGeom> {
     let to_word = |w: &pdf_oxide::layout::Word| GWord {
@@ -137,6 +213,36 @@ pub(crate) fn collect_page_geom(doc: &PdfDocument, page: usize) -> Option<PageGe
         })
         .collect();
     let bx = page_box(doc, page, &words);
+    // Only what a viewer shows is the page's text. (On a page with /Rotate,
+    // pdf_oxide reports rotated runs in the displayed frame, which the crop
+    // box is not in; those pages keep all their words.)
+    let seen = if rotated(doc, page) {
+        (f32::MIN, f32::MIN, f32::MAX, f32::MAX)
+    } else {
+        visible_part(doc, page, bx)
+    };
+    let shown = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        cx >= seen.0 && cx <= seen.2 && cy >= seen.1 && cy <= seen.3
+    };
+    let mut words = words;
+    words.retain(|w| shown(w.x0, w.y0, w.x1, w.y1));
+    let mut lines = lines;
+    for l in lines.iter_mut() {
+        let n = l.words.len();
+        l.words.retain(|w| shown(w.x0, w.y0, w.x1, w.y1));
+        if l.words.len() < n && !l.words.is_empty() {
+            l.text = l
+                .words
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            l.x0 = l.words.iter().map(|w| w.x0).fold(f32::MAX, f32::min);
+            l.x1 = l.words.iter().map(|w| w.x1).fold(f32::MIN, f32::max);
+        }
+    }
+    lines.retain(|l| !l.words.is_empty() && shown(l.x0, l.y0, l.x1, l.y1));
     let glued = glued_runs(&lines);
     let mut geom = PageGeom {
         bx,
@@ -557,13 +663,22 @@ fn folio_number(text: &str) -> Option<u32> {
     // a folio as "I", giving "I 18 I".
     let mut arabic = None;
     let mut roman = None;
+    let mut numbers = 0;
+    let mut of = false;
     for t in &toks {
         let lower = t.to_lowercase();
         if matches!(lower.as_str(), "page" | "pg" | "p" | "of") {
+            of |= lower == "of";
             continue;
         }
         if let Ok(n) = t.parse::<u32>() {
             arabic = arabic.or(Some(n));
+            numbers += 1;
+            // Two numbers are a folio only as "Page 3 of 6"; otherwise they
+            // are a range ("243–56)" closing a citation), a date, a value.
+            if numbers > 1 && !of {
+                return None;
+            }
             continue;
         }
         if is_roman(t) {
@@ -594,6 +709,8 @@ pub(crate) struct Furniture {
     pub rects: Vec<Vec<Rect>>,
     /// Line numbers, for contextual removal from the converted text.
     pub gutters: Vec<Vec<GutterHit>>,
+    /// The line-number columns among `rects`, per page.
+    pub gutter_rects: Vec<Vec<Rect>>,
 }
 
 /// One occurrence of a candidate running line: (page, line index, distance
@@ -709,16 +826,33 @@ pub(crate) fn detect_furniture(pages: &[Option<PageGeom>]) -> Furniture {
 
     // ---- Line-number gutters ----------------------------------------------
     let mut gutters: Vec<Vec<GutterHit>> = vec![Vec::new(); n_pages];
+    let mut gutter_rects: Vec<Vec<Rect>> = vec![Vec::new(); n_pages];
     for (pi, p) in pages.iter().enumerate() {
         if let Some(p) = p {
             let (rects, hits) = line_number_gutters(p, body);
-            out[pi].extend(rects);
+            out[pi].extend(rects.iter().cloned());
+            gutter_rects[pi] = rects;
             gutters[pi] = hits;
+        }
+    }
+    if std::env::var_os("FILEGOBLIN_DEBUG_FURNITURE").is_some() {
+        for (pi, (rects, p)) in out.iter().zip(pages).enumerate() {
+            let Some(p) = p else { continue };
+            for r in rects {
+                let text: Vec<&str> = p
+                    .lines
+                    .iter()
+                    .filter(|l| excluded(std::slice::from_ref(r), l.x0, l.y0, l.x1, l.y1))
+                    .map(|l| l.text.as_str())
+                    .collect();
+                eprintln!("furniture page {}: {:?}", pi + 1, text);
+            }
         }
     }
     Furniture {
         rects: out,
         gutters,
+        gutter_rects,
     }
 }
 
@@ -1175,6 +1309,8 @@ mod tests {
         assert_eq!(folio_number("xiv"), Some(14));
         assert_eq!(folio_number("Mild"), None);
         assert_eq!(folio_number("Revenue 2023"), None);
+        assert_eq!(folio_number("243–56)"), None);
+        assert_eq!(folio_number("12 / 2023"), None);
     }
 
     #[test]

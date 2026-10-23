@@ -15,7 +15,7 @@ use super::pdf_furniture::{self, PageGeom};
 use crate::vision::UserBox;
 use crate::vision::formula;
 use crate::vision::layout::{self, Label, Region};
-use crate::vision::render::{PageImage, Renderer};
+use crate::vision::render::{DisplayFrame, PageImage, Renderer};
 use pdf_oxide::PdfDocument;
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::RectFilterMode;
@@ -36,21 +36,28 @@ struct Tok {
     /// The text layer writes this word flush against the previous word of
     /// the same line (no space between them in the line's text).
     glued: bool,
+    /// The text layer sets the word in a math font (or as math symbols).
+    math: bool,
 }
 
 /// Converts one text-layer page with the layout model. `None` when the page
 /// cannot be rendered or the model is unavailable — the caller then falls
 /// back to the geometric converter.
+///
+/// With the markdown comes whether a column the furniture pass took for
+/// line numbers lies inside a table the model found: those numbers are then
+/// the table's, and the caller leaves them in the text.
 pub(crate) fn convert_page(
     renderer: &Renderer,
     doc: &PdfDocument,
     page: usize,
     geom: &PageGeom,
     excluded: &[Rect],
+    gutters: &[Rect],
     base_options: &pdf_oxide::converters::ConversionOptions,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     crate::vision::PageGate::global()
-        .run(|| convert_page_gated(renderer, doc, page, geom, excluded, base_options))
+        .run(|| convert_page_gated(renderer, doc, page, geom, excluded, gutters, base_options))
 }
 
 fn convert_page_gated(
@@ -59,74 +66,244 @@ fn convert_page_gated(
     page: usize,
     geom: &PageGeom,
     excluded: &[Rect],
+    gutters: &[Rect],
     base_options: &pdf_oxide::converters::ConversionOptions,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     let t = std::time::Instant::now();
-    let img = renderer.render(page, RENDER_LONG_SIDE, MAX_SCALE)?;
+    // A page with /Rotate is assembled as it is displayed: the layout model
+    // reads the turned page, and pdf_oxide reports rotated text that way.
+    let frame = display_frame(doc, page);
+    let render = |long: f32, scale: f32| {
+        let img = renderer.render(page, long, scale)?;
+        match frame {
+            Some(f) => img.in_display_frame(f),
+            None => Some(img),
+        }
+    };
+    let img = render(RENDER_LONG_SIDE, MAX_SCALE)?;
+    let page_box = frame.map_or(geom.bx, |f| f.page_box());
     let regions = layout::detect(&img)?;
+    debug_regions(page, &regions);
     let t_layout = t.elapsed();
-    let mut words = span_words(doc, page, excluded).unwrap_or_default();
+    // A "line-number gutter" inside a table region is the table's number
+    // column (row IDs, sample numbers): its words stay.
+    let in_table = |g: &&Rect| {
+        frame.is_none()
+            && regions.iter().any(|r| {
+                r.label == Label::Table
+                    && r.bbox
+                        .contains_point(g.x + g.width / 2.0, g.y + g.height / 2.0)
+            })
+    };
+    let table_numbers = gutters.iter().any(|g| in_table(&g));
+    let kept_excluded: Vec<Rect>;
+    let excluded: &[Rect] = if table_numbers {
+        kept_excluded = excluded
+            .iter()
+            .filter(|e| {
+                !gutters.iter().filter(in_table).any(|g| {
+                    (g.x - e.x).abs() < 0.01
+                        && (g.y - e.y).abs() < 0.01
+                        && (g.width - e.width).abs() < 0.01
+                        && (g.height - e.height).abs() < 0.01
+                })
+            })
+            .cloned()
+            .collect();
+        &kept_excluded
+    } else {
+        excluded
+    };
+    // Glyph positions are raw page space, and a rotated glyph reports no
+    // advance; rotated pages take their words from the spans.
+    let mut words = match frame {
+        Some(_) => span_words(doc, page, excluded, frame),
+        None => {
+            glyph_words(doc, page, geom, excluded).or_else(|| span_words(doc, page, excluded, None))
+        }
+    }
+    .unwrap_or_default();
     // Regions the model sees as text but the text layer leaves empty are
     // pictures of text (a scanned page behind a thin text layer, a pasted
     // image of a paragraph or table): read those with OCR.
-    let empty_text_regions = regions.iter().any(|r| {
-        !r.label.is_furniture()
-            && !r.label.is_graphic()
-            && r.label != Label::InlineFormula
-            && r.label != Label::DisplayFormula
-            && r.bbox.area() > 2000.0
-            && !words.iter().any(|w| {
-                r.bbox
-                    .contains_point((w.b.x0 + w.b.x1) / 2.0, (w.b.y0 + w.b.y1) / 2.0)
-            })
-    });
-    if empty_text_regions && crate::vision::ocr::available() {
+    let empty_text_regions: Vec<&Region> = regions
+        .iter()
+        .filter(|r| {
+            !r.label.is_furniture()
+                && !r.label.is_graphic()
+                && r.label != Label::InlineFormula
+                && r.label != Label::DisplayFormula
+                && r.bbox.area() > 2000.0
+                && !words.iter().any(|w| {
+                    r.bbox
+                        .contains_point((w.b.x0 + w.b.x1) / 2.0, (w.b.y0 + w.b.y1) / 2.0)
+                })
+        })
+        .collect();
+    if !empty_text_regions.is_empty() && crate::vision::ocr::available() {
         // OCR wants more pixels per character than layout does.
-        let hi = renderer.render(page, SCAN_LONG_SIDE, SCAN_MAX_SCALE);
+        let hi = render(SCAN_LONG_SIDE, SCAN_MAX_SCALE);
         let ocr = ocr_words(hi.as_ref().unwrap_or(&img), false);
+        // Only inside the regions the text layer leaves empty: elsewhere an
+        // OCR word's estimated box can miss the text-layer word it repeats.
         let filled: Vec<Tok> = ocr
             .into_iter()
             .filter(|o| {
                 let (cx, cy) = ((o.b.x0 + o.b.x1) / 2.0, (o.b.y0 + o.b.y1) / 2.0);
-                // Only where the text layer has nothing: never duplicate it.
                 !words
                     .iter()
                     .any(|w| w.b.intersection(&o.b) > 0.3 * o.b.area().min(w.b.area()))
-                    && regions
+                    && empty_text_regions
                         .iter()
-                        .any(|r| !r.label.is_furniture() && r.bbox.contains_point(cx, cy))
+                        .any(|r| r.bbox.contains_point(cx, cy))
             })
             .collect();
         words.extend(filled);
     }
     let table_fallback = |b: &UserBox| table_markdown(doc, page, b, excluded, base_options);
-    let md = assemble(&img, &regions, words, geom.bx, &table_fallback);
+    // Ruling lines are read once, and only for a page that has a table.
+    let paths: std::cell::OnceCell<Vec<pdf_oxide::elements::PathContent>> =
+        std::cell::OnceCell::new();
+    // (Ruling lines are raw page space; a rotated page's tables are left to
+    // the model.)
+    let ruled = |b: &UserBox, toks: &[Tok]| {
+        if frame.is_some() {
+            return None;
+        }
+        let paths = paths.get_or_init(|| doc.extract_paths(page).unwrap_or_default());
+        ruled_structure(paths, geom.bx.3, b, toks)
+    };
+    let md = assemble(&img, &regions, words, page_box, &ruled, &table_fallback);
     debug_timing(page, "text layer", t_layout, t.elapsed(), regions.len());
-    Some(md)
+    Some((md, table_numbers))
 }
 
 /// Converts a page that has no text layer: the layout model places regions
 /// and PP-OCR reads the words. `None` when OCR or layout is unavailable.
-pub(crate) fn convert_scanned_page(renderer: &Renderer, page: usize) -> Option<String> {
+pub(crate) fn convert_scanned_page(
+    renderer: &Renderer,
+    page: usize,
+    frame: Option<DisplayFrame>,
+) -> Option<String> {
     if !crate::vision::ocr::available() {
         return None;
     }
-    crate::vision::PageGate::global().run(|| convert_scanned_page_gated(renderer, page))
+    crate::vision::PageGate::global().run(|| convert_scanned_page_gated(renderer, page, frame))
 }
 
-fn convert_scanned_page_gated(renderer: &Renderer, page: usize) -> Option<String> {
+/// The displayed frame of a page with `/Rotate` (`None` for an upright
+/// page).
+pub(crate) fn display_frame(doc: &PdfDocument, page: usize) -> Option<DisplayFrame> {
+    let rot = doc.get_page_rotation(page).ok()?.rem_euclid(360);
+    let (a, b, c, d) = doc.get_page_media_box(page).ok()?;
+    matches!(rot, 90 | 180 | 270).then_some(DisplayFrame {
+        rot,
+        media: (a.min(c), b.min(d), a.max(c), b.max(d)),
+    })
+}
+
+/// Nothing on the page stands out from its background beyond a few specks.
+/// Any pixel more than a tenth of the range away from the background counts
+/// as marked, light or dark: small print blurs to grey in a thumbnail but
+/// stays well off the paper's tone.
+fn is_blank(img: &image::RgbImage) -> bool {
+    let luma =
+        |p: &image::Rgb<u8>| (u32::from(p[0]) * 3 + u32::from(p[1]) * 6 + u32::from(p[2])) / 10;
+    let mut hist = [0u32; 256];
+    for p in img.pixels() {
+        hist[luma(p) as usize] += 1;
+    }
+    let total: u32 = hist.iter().sum();
+    let (mut seen, mut background) = (0u32, 255usize);
+    for (v, &n) in hist.iter().enumerate() {
+        seen += n;
+        if seen * 2 >= total {
+            background = v;
+            break;
+        }
+    }
+    let marked: u32 = hist
+        .iter()
+        .enumerate()
+        .filter(|(v, _)| v.abs_diff(background) > 24)
+        .map(|(_, &n)| n)
+        .sum();
+    marked * 2000 <= total
+}
+
+fn convert_scanned_page_gated(
+    renderer: &Renderer,
+    page: usize,
+    frame: Option<DisplayFrame>,
+) -> Option<String> {
+    // A blank page (a book's empty verso, a separator sheet) has nothing for
+    // the models to find, and a thumbnail shows that for a fraction of the
+    // cost of reading it.
+    if renderer
+        .render(page, 400.0, 1.0)
+        .is_some_and(|thumb| is_blank(&thumb.rgb))
+    {
+        return Some(String::new());
+    }
     let t = std::time::Instant::now();
+    // In the displayed frame, so the OCR's lines run left to right.
     let img = renderer.render(page, SCAN_LONG_SIDE, SCAN_MAX_SCALE)?;
+    let img = match frame {
+        Some(f) => img.in_display_frame(f)?,
+        None => img,
+    };
     let regions = layout::detect(&img)?;
     let t_layout = t.elapsed();
     let words = ocr_words(&img, true);
     let (w, h) = (img.rgb.width() as f32, img.rgb.height() as f32);
     let pb = img.to_user(0.0, 0.0, w, h);
-    let md = assemble(&img, &regions, words, (pb.x0, pb.y0, pb.x1, pb.y1), &|_| {
-        None
-    });
+    let md = assemble(
+        &img,
+        &regions,
+        words,
+        (pb.x0, pb.y0, pb.x1, pb.y1),
+        &|_, _| None,
+        &|_| None,
+    );
+    // OCR writes the inline formulas the layout model did not box as prose.
+    let md = super::pdf_math::wrap_math_runs(&md);
     debug_timing(page, "scan", t_layout, t.elapsed(), regions.len());
     Some(md)
+}
+
+/// Words of the text layer from glyph positions ([`super::pdf_words`]): word
+/// breaks where the text layer has a space character or where the pen moves
+/// clearly further than between the line's letters. `None` when the page's
+/// glyphs cannot be read or are mostly rotated.
+fn glyph_words(
+    doc: &PdfDocument,
+    page: usize,
+    geom: &PageGeom,
+    excluded: &[Rect],
+) -> Option<Vec<Tok>> {
+    let chars = super::pdf_words::on_page(doc.extract_chars(page).ok()?, geom.bx);
+    let words = super::pdf_words::glyph_words(&chars)?;
+    let theirs: Vec<&str> = geom.words.iter().map(|w| w.text.as_str()).collect();
+    if !super::pdf_words::agrees(&words, &theirs) {
+        return None;
+    }
+    let toks = words
+        .into_iter()
+        .filter(|w| !pdf_furniture::excluded(excluded, w.x0, w.y0, w.x1, w.y1))
+        .map(|w| Tok {
+            text: expand_ligatures(&w.text),
+            b: UserBox {
+                x0: w.x0,
+                y0: w.y0,
+                x1: w.x1,
+                y1: w.y1,
+            },
+            size: w.size,
+            glued: w.glued,
+            math: w.math,
+        })
+        .collect();
+    Some(drop_doubled(toks))
 }
 
 /// Words of the text layer, taken from the converter's own text spans so
@@ -134,7 +311,17 @@ fn convert_scanned_page_gated(renderer: &Renderer, page: usize) -> Option<String
 /// rules (word boxes alone misjudge both tight italics and OCR text layers
 /// whose glyph widths are wrong). A word that starts a span which the
 /// previous span runs into without a space is marked `glued`.
-fn span_words(doc: &PdfDocument, page: usize, excluded: &[Rect]) -> Option<Vec<Tok>> {
+///
+/// On a rotated page (`frame`), pdf_oxide reports rotated runs — and on a
+/// 180° page all runs — in the displayed frame; the rest are mapped there
+/// here, so every word is in one frame. Character offsets stay in raw space,
+/// so words inside a mapped run are placed proportionally.
+fn span_words(
+    doc: &PdfDocument,
+    page: usize,
+    excluded: &[Rect],
+    frame: Option<DisplayFrame>,
+) -> Option<Vec<Tok>> {
     let spans = doc.extract_spans(page).ok()?;
     let mut words = Vec::new();
     let mut prev: Option<&pdf_oxide::layout::TextSpan> = None;
@@ -144,7 +331,12 @@ fn span_words(doc: &PdfDocument, page: usize, excluded: &[Rect]) -> Option<Vec<T
         if n == 0 {
             continue;
         }
-        let exact = s.char_x_offsets.len() == n && s.char_widths.len() == n;
+        let displayed = frame.is_some_and(|f| f.rot == 180 || s.rotation_degrees != 0.0);
+        let to_frame = |b: UserBox| match frame {
+            Some(f) if !displayed => f.map(&b),
+            _ => b,
+        };
+        let exact = !displayed && s.char_x_offsets.len() == n && s.char_widths.len() == n;
         let x_at = |i: usize| {
             if exact {
                 s.char_x_offsets[i]
@@ -216,9 +408,10 @@ fn span_words(doc: &PdfDocument, page: usize, excluded: &[Rect]) -> Option<Vec<T
                     let text: String = chars[i..j].iter().collect();
                     words.push(Tok {
                         text: expand_ligatures(&text),
-                        b: UserBox { x0, y0, x1, y1 },
+                        b: to_frame(UserBox { x0, y0, x1, y1 }),
                         size: s.font_size,
                         glued: i == 0 && runs_on,
+                        math: false,
                     });
                 }
             }
@@ -280,12 +473,31 @@ fn ocr_words(img: &PageImage, drop_folios: bool) -> Vec<Tok> {
                     size: b.height(),
                     b,
                     glued: false,
+                    math: false,
                 });
             }
             pos += n;
         }
     }
     words
+}
+
+fn debug_regions(page: usize, regions: &[Region]) {
+    if std::env::var_os("FILEGOBLIN_DEBUG_REGIONS").is_some() {
+        for r in regions {
+            eprintln!(
+                "region page {} #{} {:?} {:.2} ({:.1}, {:.1}, {:.1}, {:.1})",
+                page + 1,
+                r.order,
+                r.label,
+                r.score,
+                r.bbox.x0,
+                r.bbox.y0,
+                r.bbox.x1,
+                r.bbox.y1
+            );
+        }
+    }
 }
 
 fn debug_timing(
@@ -308,6 +520,7 @@ fn assemble(
     regions: &[Region],
     words: Vec<Tok>,
     bx: (f32, f32, f32, f32),
+    ruled: &dyn Fn(&UserBox, &[Tok]) -> Option<crate::vision::table::Structure>,
     table_fallback: &dyn Fn(&UserBox) -> Option<String>,
 ) -> String {
     let (_, by0, _, by1) = bx;
@@ -363,14 +576,16 @@ fn assemble(
     // searched for — as the text it is than as LaTeX; the text layer (or
     // OCR) already has it.
     let tables: Vec<&Region> = regions.iter().filter(|r| r.label == Label::Table).collect();
-    let inline: Vec<&Region> = regions
+    let mut inline: Vec<Region> = regions
         .iter()
         .filter(|r| r.label == Label::InlineFormula)
         .filter(|r| {
             let (cx, cy) = ((r.bbox.x0 + r.bbox.x1) / 2.0, (r.bbox.y0 + r.bbox.y1) / 2.0);
             !tables.iter().any(|t| t.bbox.contains_point(cx, cy))
         })
+        .cloned()
         .collect();
+    complete_inline_formulas(&mut inline, &words, regions);
     let display_idx: Vec<usize> = content
         .iter()
         .enumerate()
@@ -441,6 +656,7 @@ fn assemble(
             b: r.bbox,
             size: r.bbox.height(),
             glued: false,
+            math: false,
         });
     }
 
@@ -491,12 +707,19 @@ fn assemble(
                 None => text(),
             },
             Label::DocTitle => heading(1, &text()),
+            // A caption is one line of text however it wraps on the page, so
+            // a table's title can be recognised as its heading.
+            Label::FigureTitle => text().split_whitespace().collect::<Vec<_>>().join(" "),
             Label::ParagraphTitle => {
                 let t = text();
                 heading(heading_level(&t), &t)
             }
-            Label::Table => crate::vision::table::recognize(img, &r.bbox)
+            Label::Table => ruled(&r.bbox, &toks)
                 .and_then(|st| grid_markdown(&st, &toks, &members[i]))
+                .or_else(|| {
+                    crate::vision::table::recognize(img, &r.bbox)
+                        .and_then(|st| grid_markdown(&st, &toks, &members[i]))
+                })
                 .or_else(|| table_fallback(&r.bbox))
                 .unwrap_or_else(text),
             _ => text(),
@@ -547,7 +770,106 @@ fn assemble(
         }
         out.push_str(md);
     }
-    out
+    if page_has_math {
+        super::pdf_math::join_split_inline(&super::pdf_math::absorb_operator_names(&out))
+    } else {
+        out
+    }
+}
+
+/// Inline formulas completed from the text layer, which knows which words
+/// are set in math fonts. The layout model boxes inline formulas tightly and
+/// misses some: a box is grown over math words that touch it on its line
+/// (`T ΔE` boxed as `ΔE`), and a run of two or more math words, or one word
+/// of several math glyphs, that no formula box holds becomes a formula of
+/// its own. Words inside tables, figures, display formulas and page
+/// furniture are left alone.
+fn complete_inline_formulas(inline: &mut Vec<Region>, words: &[Tok], regions: &[Region]) {
+    let centre = |b: &UserBox| ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0);
+    let elsewhere = |t: &Tok| {
+        let (cx, cy) = centre(&t.b);
+        regions.iter().any(|r| {
+            (r.label == Label::Table
+                || r.label == Label::DisplayFormula
+                || r.label.is_graphic()
+                || r.label.is_furniture())
+                && r.bbox.contains_point(cx, cy)
+        })
+    };
+    let math: Vec<&Tok> = words.iter().filter(|t| t.math && !elsewhere(t)).collect();
+    if math.is_empty() {
+        return;
+    }
+    let same_line = |a: &UserBox, b: &UserBox| {
+        let overlap = a.y1.min(b.y1) - a.y0.max(b.y0);
+        overlap >= 0.5 * a.height().min(b.height()).max(0.1)
+    };
+    let touches = |a: &UserBox, t: &Tok| {
+        let gap = (t.b.x0 - a.x1).max(a.x0 - t.b.x1);
+        same_line(a, &t.b) && gap <= 0.3 * t.size.max(1.0)
+    };
+    for r in inline.iter_mut() {
+        loop {
+            let grow = math.iter().find(|t| {
+                let (cx, cy) = centre(&t.b);
+                !r.bbox.contains_point(cx, cy) && touches(&r.bbox, t)
+            });
+            match grow {
+                Some(t) => r.bbox = r.bbox.union(&t.b),
+                None => break,
+            }
+        }
+    }
+    // Runs of math words no formula holds, left to right on their lines.
+    let mut loose: Vec<&Tok> = math
+        .into_iter()
+        .filter(|t| {
+            let (cx, cy) = centre(&t.b);
+            !inline.iter().any(|r| r.bbox.contains_point(cx, cy))
+        })
+        .collect();
+    // Lines top to bottom (a word joins the line whose first word it
+    // overlaps), then left to right: a total order, as sorting needs.
+    loose.sort_by(|a, b| centre(&b.b).1.total_cmp(&centre(&a.b).1));
+    let mut line_of: Vec<usize> = Vec::with_capacity(loose.len());
+    let mut firsts: Vec<UserBox> = Vec::new();
+    for t in &loose {
+        match firsts.iter().rposition(|f| same_line(f, &t.b)) {
+            Some(l) => line_of.push(l),
+            None => {
+                firsts.push(t.b);
+                line_of.push(firsts.len() - 1);
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..loose.len()).collect();
+    order.sort_by(|&a, &b| {
+        line_of[a]
+            .cmp(&line_of[b])
+            .then(loose[a].b.x0.total_cmp(&loose[b].b.x0))
+    });
+    let loose: Vec<&Tok> = order.into_iter().map(|i| loose[i]).collect();
+    let mut runs: Vec<(UserBox, usize, usize)> = Vec::new(); // (box, words, glyphs)
+    for t in loose {
+        match runs.last_mut() {
+            Some((b, n, g)) if touches(b, t) && t.b.x0 >= b.x0 => {
+                *b = b.union(&t.b);
+                *n += 1;
+                *g += t.text.chars().count();
+            }
+            _ => runs.push((t.b, 1, t.text.chars().count())),
+        }
+    }
+    for (bbox, n, glyphs) in runs {
+        if n >= 2 || glyphs >= 3 {
+            inline.push(Region {
+                label: Label::InlineFormula,
+                score: 0.5,
+                bbox,
+                order: 0,
+            });
+        }
+    }
 }
 
 /// True when `next` reads as the continuation of the paragraph that ends
@@ -734,6 +1056,15 @@ fn join_line(toks: &[Tok], line: &[usize]) -> String {
             // A hyphen set as its own word at the end of a line is the
             // line-break hyphen of the word before it.
             || ((t == "-" || t == "\u{ad}") && line.last() == Some(&i))
+            // A hyphen set against the word after it but apart from the
+            // word before, by less than a word space ("ATTENTION -BASED"),
+            // joins the compound.
+            || (t.starts_with('-')
+                && t[1..].starts_with(char::is_alphabetic)
+                && prev.is_some_and(|p| {
+                    p.text.ends_with(char::is_alphabetic)
+                        && tok.b.x0 - p.b.x1 < 0.25 * p.size.max(1.0)
+                }))
             // A lone sign or currency symbol set just before a number
             // belongs to it ("− 92" → "−92").
             || prev.is_some_and(|p| {
@@ -864,6 +1195,14 @@ fn orphan_key(bb: &UserBox, content: &[&Region]) -> f32 {
     f32::MAX
 }
 
+/// "Table 3: …", "TABLE II. …", "Exhibit 4 – …": a table's title.
+static TABLE_TITLE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"^(?:Table|TABLE|Exhibit|EXHIBIT)\s+(?:[0-9]+[A-Za-z]?(?:[-.][0-9]+)*|[IVXLC]+)\b",
+    )
+    .expect("valid regex")
+});
+
 static LEADER: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"(?:\s?\.){4,}").expect("valid regex"));
 
@@ -904,32 +1243,35 @@ fn grid_markdown(
         let (cx, cy) = ((t.b.x0 + t.b.x1) / 2.0, (t.b.y0 + t.b.y1) / 2.0);
         cells[nearest(cy, &rspan)][nearest(cx, &cspan)].push(ti);
     }
+    // Rows the model merged: the row-label cell holds several lines, and
+    // another column has lines at the same heights — each line is a row of
+    // its own. (A value with its standard error beneath it has one label
+    // line, and stays one row.)
+    if let Some(split) = split_stacked_rows(st, toks, &cells) {
+        return grid_markdown(&split, toks, idx);
+    }
+    // A cell's lines read as one: a line ending in a hyphen continues
+    // without a space ("Automotive-⏎Industrial").
+    let cell_text = |members: &[usize]| {
+        let mut text = String::new();
+        for l in visual_lines(toks, members) {
+            let line = join_line(toks, &l);
+            if !text.is_empty() && !text.ends_with('-') {
+                text.push(' ');
+            }
+            text.push_str(&line);
+        }
+        // Dot leaders ("Hettinger.........") are layout, not content.
+        LEADER.replace_all(&text, "").trim().replace('|', "\\|")
+    };
     let mut grid: Vec<Vec<String>> = cells
         .iter()
-        .map(|row| {
-            row.iter()
-                .map(|c| {
-                    // A cell's lines read as one: a line ending in a hyphen
-                    // continues without a space ("Automotive-⏎Industrial").
-                    let mut text = String::new();
-                    for l in visual_lines(toks, c) {
-                        let line = join_line(toks, &l);
-                        if !text.is_empty() && !text.ends_with('-') {
-                            text.push(' ');
-                        }
-                        text.push_str(&line);
-                    }
-                    // Dot leaders ("Hettinger.........") are layout, not content.
-                    LEADER.replace_all(&text, "").trim().replace('|', "\\|")
-                })
-                .collect()
-        })
+        .map(|row| row.iter().map(|c| cell_text(c)).collect())
         .collect();
-    // Spans are read from the grid as filled from the text layer and each
-    // cell belongs to one span only, the largest. Reading a span from cells
-    // an earlier span had already filled repeated its text once per overlap
-    // (the model's spans overlap on dense forms: "Form 1040 … Form 1040 …").
-    let filled = grid.clone();
+    // Each cell belongs to one span only, the largest. Reading a span from
+    // cells an earlier span had already filled repeated its text once per
+    // overlap (the model's spans overlap on dense forms: "Form 1040 … Form
+    // 1040 …").
     let mut claimed = vec![vec![false; nc]; nr];
     let mut spans: Vec<&UserBox> = st.spans.iter().collect();
     spans.sort_by(|a, b| b.area().total_cmp(&a.area()));
@@ -949,13 +1291,16 @@ fn grid_markdown(
         if rs.len() * cs.len() < 2 || rs.iter().any(|&r| cs.iter().any(|&c| claimed[r][c])) {
             continue;
         }
-        let text = rs
-            .iter()
-            .flat_map(|&r| cs.iter().map(move |&c| (r, c)))
-            .map(|(r, c)| filled[r][c].as_str())
-            .filter(|t| !t.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
+        // A span is read from all of its words at once, in visual order:
+        // read cell by cell, a heading centred over two columns came out as
+        // "KE 10 mg/kg 3 YTRUDA every 2 or weeks".
+        let mut members: Vec<usize> = Vec::new();
+        for &r in &rs {
+            for &c in &cs {
+                members.extend_from_slice(&cells[r][c]);
+            }
+        }
+        let text = cell_text(&members);
         for &r in &rs {
             for &c in &cs {
                 grid[r][c] = text.clone();
@@ -965,6 +1310,18 @@ fn grid_markdown(
     }
     // Drop empty rows and columns.
     grid.retain(|row| row.iter().any(|c| !c.is_empty()));
+    // A title the table region took in as its first row ("Table 3: …" in
+    // one cell, or across all of them) is the table's caption, not its
+    // header: it goes above the table.
+    let mut title = None;
+    if let Some(first) = grid.first() {
+        let filled: Vec<&String> = first.iter().filter(|c| !c.is_empty()).collect();
+        let one_text = !filled.is_empty() && filled.iter().all(|c| *c == filled[0]);
+        if one_text && TABLE_TITLE.is_match(filled[0]) && grid.len() > 2 {
+            title = Some(filled[0].replace("\\|", "|"));
+            grid.remove(0);
+        }
+    }
     let keep: Vec<usize> = (0..nc)
         .filter(|&c| grid.iter().any(|row| !row[c].is_empty()))
         .collect();
@@ -972,6 +1329,10 @@ fn grid_markdown(
         return None;
     }
     let mut out = String::new();
+    if let Some(t) = title {
+        out.push_str(&t);
+        out.push_str("\n\n");
+    }
     for (ri, row) in grid.iter().enumerate() {
         out.push('|');
         for &c in &keep {
@@ -989,6 +1350,328 @@ fn grid_markdown(
         }
     }
     Some(out.trim_end().to_string())
+}
+
+/// The structure a fully ruled table draws for itself. When the ruling lines
+/// inside a table region close into a lattice of cells that tiles the region
+/// and holds its words, those cells are the table exactly as printed — rows,
+/// columns and merged cells — and need no estimate from the model. Tables
+/// ruled only in part (booktabs rules, row lines without column lines) are
+/// left to the model.
+fn ruled_structure(
+    paths: &[pdf_oxide::elements::PathContent],
+    page_top: f32,
+    region: &UserBox,
+    toks: &[Tok],
+) -> Option<crate::vision::table::Structure> {
+    use crate::parsers::pdf_table as pt;
+    // Top-down coordinates, as the lattice code works.
+    let (rx0, rx1) = (region.x0 - 4.0, region.x1 + 4.0);
+    let (rt, rb) = (page_top - region.y1 - 4.0, page_top - region.y0 + 4.0);
+    let edges: Vec<pt::Edge> = super::pdf::ruling_edges(paths, page_top)
+        .into_iter()
+        .filter(|e| e.x0 >= rx0 && e.x1 <= rx1 && e.top >= rt && e.bottom <= rb)
+        .collect();
+    if edges.len() < 6 {
+        return None;
+    }
+    let settings = pt::TableSettings::default();
+    let tol = settings.intersection_tolerance;
+    let snapped = pt::snap_edges(&edges, settings.snap_tolerance, settings.snap_tolerance);
+    let merged = pt::merge_edges(&snapped, &settings);
+    let cells = pt::intersections_to_cells(&pt::find_intersections(&merged, tol, tol), tol);
+    let lattice = pt::cells_to_tables(&cells, tol)
+        .into_iter()
+        .max_by_key(|t| t.len())?;
+    let bx0 = lattice.iter().map(|c| c.x0).fold(f32::MAX, f32::min);
+    let bx1 = lattice.iter().map(|c| c.x1).fold(f32::MIN, f32::max);
+    let bt = lattice.iter().map(|c| c.top).fold(f32::MAX, f32::min);
+    let bb = lattice.iter().map(|c| c.bottom).fold(f32::MIN, f32::max);
+    let area = (bx1 - bx0).max(0.0) * (bb - bt).max(0.0);
+    let region_area = region.area().max(1.0);
+    // The lattice is this table: it covers the region, and its cells tile it.
+    let cell_area: f32 = lattice.iter().map(|c| c.width() * c.height()).sum();
+    if area < 0.7 * region_area || area > 1.4 * region_area || cell_area < 0.9 * area {
+        return None;
+    }
+    // Every word of the region level with the lattice's rows sits in a
+    // cell: a column with no ruling at its outer edge lies outside the
+    // lattice, beside it. (A title or notes above or below are not rows.)
+    let inside: Vec<&Tok> = toks
+        .iter()
+        .filter(|t| {
+            let (cx, cy) = ((t.b.x0 + t.b.x1) / 2.0, page_top - (t.b.y0 + t.b.y1) / 2.0);
+            cx >= bx0 && cx <= bx1 && cy >= bt && cy <= bb
+        })
+        .collect();
+    let level = toks
+        .iter()
+        .filter(|t| {
+            let (cx, cy) = ((t.b.x0 + t.b.x1) / 2.0, page_top - (t.b.y0 + t.b.y1) / 2.0);
+            cx >= rx0 && cx <= rx1 && cy >= bt && cy <= bb
+        })
+        .count();
+    let held = inside
+        .iter()
+        .filter(|t| {
+            let (cx, cy) = ((t.b.x0 + t.b.x1) / 2.0, page_top - (t.b.y0 + t.b.y1) / 2.0);
+            lattice.iter().any(|c| c.contains_point(cx, cy, 0.5))
+        })
+        .count();
+    if inside.len() < 2 || held * 10 < level.max(inside.len()) * 9 {
+        return None;
+    }
+    // Typical text height in the table.
+    let size = {
+        let mut h: Vec<f32> = inside.iter().map(|t| t.b.height()).collect();
+        h.sort_by(f32::total_cmp);
+        h[h.len() / 2].max(1.0)
+    };
+    // Grid lines: every distinct cell edge, merged within the tolerance.
+    let lines = |mut v: Vec<f32>| {
+        v.sort_by(f32::total_cmp);
+        let mut out: Vec<f32> = Vec::new();
+        for x in v {
+            if out.last().is_none_or(|&l| x - l > tol) {
+                out.push(x);
+            }
+        }
+        out
+    };
+    let xs = lines(lattice.iter().flat_map(|c| [c.x0, c.x1]).collect());
+    let ys = lines(lattice.iter().flat_map(|c| [c.top, c.bottom]).collect());
+    if xs.len() < 3 || ys.len() < 3 {
+        return None;
+    }
+    let user = |x0: f32, top: f32, x1: f32, bottom: f32| UserBox {
+        x0,
+        y0: page_top - bottom,
+        x1,
+        y1: page_top - top,
+    };
+    let rows: Vec<UserBox> = ys.windows(2).map(|w| user(bx0, w[0], bx1, w[1])).collect();
+    let cols: Vec<UserBox> = xs.windows(2).map(|w| user(w[0], bt, w[1], bb)).collect();
+    // Tables ruled only between groups of rows hold several rows in one
+    // ruled band. The rulings do not describe that table's rows; the model
+    // reads it instead.
+    let line_centres = |cell: &UserBox| -> Vec<f32> {
+        let mut cy: Vec<f32> = inside
+            .iter()
+            .filter(|t| cell.contains_point((t.b.x0 + t.b.x1) / 2.0, (t.b.y0 + t.b.y1) / 2.0))
+            .map(|t| (t.b.y0 + t.b.y1) / 2.0)
+            .collect();
+        cy.sort_by(f32::total_cmp);
+        let mut lines: Vec<f32> = Vec::new();
+        for y in cy {
+            if lines.last().is_none_or(|&l| y - l > 0.5 * size) {
+                lines.push(y);
+            }
+        }
+        lines
+    };
+    // The rows show in the row labels: a first-column cell, one ruled band
+    // high, with several lines, each level with a line in a cell beside it.
+    // (A merged label over two header rows lines up with sub-headers by
+    // design, and does not count.)
+    let one_band = |c: &pt::CellBbox| !ys.iter().any(|&y| y > c.top + tol && y < c.bottom - tol);
+    let as_user = |c: &pt::CellBbox| user(c.x0, c.top, c.x1, c.bottom);
+    for label in lattice
+        .iter()
+        .filter(|c| (c.x0 - bx0).abs() <= tol && one_band(c))
+    {
+        let lines = line_centres(&as_user(label));
+        let stacked = lines.len() >= 2
+            && lattice.iter().any(|c| {
+                !std::ptr::eq(c, label)
+                    && (c.top - label.top).abs() <= tol
+                    && (c.bottom - label.bottom).abs() <= tol
+                    && {
+                        let other = line_centres(&as_user(c));
+                        other.len() == lines.len()
+                            && other
+                                .iter()
+                                .zip(&lines)
+                                .all(|(p, q)| (p - q).abs() < 0.4 * size)
+                    }
+            });
+        if stacked {
+            if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+                eprintln!("table rulings skipped: rows stacked in one ruled band");
+            }
+            return None;
+        }
+    }
+    // A column whose words leave a clear gutter through every row is two
+    // columns with no ruling drawn between them; the model reads the table.
+    for c in &cols {
+        let mut spans: Vec<(f32, f32)> = inside
+            .iter()
+            .filter(|t| c.contains_point((t.b.x0 + t.b.x1) / 2.0, (t.b.y0 + t.b.y1) / 2.0))
+            .map(|t| (t.b.x0, t.b.x1))
+            .collect();
+        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut reach = f32::MIN;
+        let mut split = false;
+        for &(x0, x1) in &spans {
+            if reach > f32::MIN && x0 - reach >= 1.5 * size {
+                split = true;
+            }
+            reach = reach.max(x1);
+        }
+        if split {
+            if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+                eprintln!("table rulings skipped: a ruled column holds two columns of words");
+            }
+            return None;
+        }
+    }
+    // A cell that covers more than one grid row or column is a merged cell.
+    let spans: Vec<UserBox> = lattice
+        .iter()
+        .filter(|c| {
+            let ncols = xs
+                .iter()
+                .filter(|&&x| x > c.x0 + tol && x < c.x1 - tol)
+                .count();
+            let nrows = ys
+                .iter()
+                .filter(|&&y| y > c.top + tol && y < c.bottom - tol)
+                .count();
+            ncols + nrows > 0
+        })
+        .map(|c| user(c.x0, c.top, c.x1, c.bottom))
+        .collect();
+    if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+        eprintln!(
+            "table read from its rulings: {} rows x {} columns, {} merged cells",
+            rows.len(),
+            cols.len(),
+            spans.len()
+        );
+    }
+    Some(crate::vision::table::Structure {
+        rows,
+        cols,
+        header_rows: Vec::new(),
+        spans,
+    })
+}
+
+/// Centres of the visual lines the tokens `members` form (top to bottom).
+fn line_centres(toks: &[Tok], members: &[usize], size: f32) -> Vec<f32> {
+    let mut cy: Vec<f32> = members
+        .iter()
+        .map(|&i| (toks[i].b.y0 + toks[i].b.y1) / 2.0)
+        .collect();
+    cy.sort_by(|a, b| b.total_cmp(a));
+    let mut lines: Vec<f32> = Vec::new();
+    for y in cy {
+        if lines.last().is_none_or(|&l| l - y > 0.5 * size) {
+            lines.push(y);
+        }
+    }
+    lines
+}
+
+/// Whether a cell's lines read as one text wrapped at the column's right
+/// edge: the first word of each line would not have fitted at the end of
+/// the line before it. Lines of numbers are values, never a wrap.
+fn wraps(toks: &[Tok], cell: &[usize], size: f32, right: f32) -> bool {
+    let lines = visual_lines(toks, cell);
+    let numeric = |l: &Vec<usize>| {
+        l.iter().all(|&i| {
+            toks[i]
+                .text
+                .chars()
+                .all(|c| c.is_ascii_digit() || ",.%()$€£+-–−±*".contains(c))
+        })
+    };
+    lines.len() >= 2
+        && !lines.iter().all(numeric)
+        && lines.windows(2).all(|w| {
+            let end = w[0].iter().map(|&i| toks[i].b.x1).fold(f32::MIN, f32::max);
+            let next = w[1]
+                .iter()
+                .min_by(|&&a, &&b| toks[a].b.x0.total_cmp(&toks[b].b.x0))
+                .map_or(0.0, |&i| toks[i].b.width());
+            end + 0.25 * size + next > right + 0.1 * size
+        })
+}
+
+/// The structure with every merged row split into its stacked rows (see
+/// [`grid_markdown`]); `None` when no row is merged.
+fn split_stacked_rows(
+    st: &crate::vision::table::Structure,
+    toks: &[Tok],
+    cells: &[Vec<Vec<usize>>],
+) -> Option<crate::vision::table::Structure> {
+    let mut heights: Vec<f32> = cells
+        .iter()
+        .flatten()
+        .flatten()
+        .map(|&i| toks[i].b.height())
+        .collect();
+    if heights.is_empty() || st.cols.len() < 2 {
+        return None;
+    }
+    heights.sort_by(f32::total_cmp);
+    let size = heights[heights.len() / 2].max(1.0);
+    // Each column's right edge: the furthest any of its words reaches.
+    let right: Vec<f32> = (0..st.cols.len())
+        .map(|c| {
+            cells
+                .iter()
+                .flat_map(|row| &row[c])
+                .map(|&i| toks[i].b.x1)
+                .fold(f32::MIN, f32::max)
+        })
+        .collect();
+    let mut rows: Vec<UserBox> = Vec::new();
+    let mut split_any = false;
+    for (r, row) in st.rows.iter().enumerate() {
+        let labels = line_centres(toks, &cells[r][0], size);
+        let aligned: Vec<usize> = (1..st.cols.len())
+            .filter(|&c| {
+                let lines = line_centres(toks, &cells[r][c], size);
+                lines.len() == labels.len()
+                    && lines
+                        .iter()
+                        .zip(&labels)
+                        .all(|(p, q)| (p - q).abs() < 0.4 * size)
+            })
+            .collect();
+        // Text wrapped at the column edges lines up the same way; it is one
+        // row when every cell holding several lines wraps.
+        let wrapped = || {
+            (0..st.cols.len())
+                .filter(|&c| line_centres(toks, &cells[r][c], size).len() >= 2)
+                .all(|c| wraps(toks, &cells[r][c], size, right[c]))
+        };
+        let stacked = labels.len() >= 2 && !aligned.is_empty() && !wrapped();
+        if !stacked {
+            rows.push(*row);
+            continue;
+        }
+        split_any = true;
+        // Cut halfway between consecutive lines (y up: top line first).
+        let mut top = row.y1;
+        for pair in labels.windows(2) {
+            let cut = (pair[0] + pair[1]) / 2.0;
+            rows.push(UserBox {
+                y0: cut,
+                y1: top,
+                ..*row
+            });
+            top = cut;
+        }
+        rows.push(UserBox { y1: top, ..*row });
+    }
+    split_any.then(|| crate::vision::table::Structure {
+        rows,
+        cols: st.cols.clone(),
+        header_rows: Vec::new(),
+        spans: st.spans.clone(),
+    })
 }
 
 /// A table region converted by pdf_oxide's own table extractor, when that
@@ -1029,6 +1712,7 @@ mod tests {
             b: UserBox { x0, y0, x1, y1 },
             size: y1 - y0,
             glued: false,
+            math: false,
         }
     }
 
@@ -1060,6 +1744,158 @@ mod tests {
         let header = md.lines().next().unwrap();
         assert_eq!(header.matches("Form").count(), 3, "{md}");
         assert!(!header.contains("Form 1040 2025 Form"), "{md}");
+    }
+
+    #[test]
+    fn rows_the_model_merged_are_split_but_value_and_error_stay() {
+        let ub = |x0, y0, x1, y1| UserBox { x0, y0, x1, y1 };
+        // Header row, then one model row holding two printed rows.
+        let st = crate::vision::table::Structure {
+            rows: vec![ub(0.0, 680.0, 200.0, 700.0), ub(0.0, 640.0, 200.0, 680.0)],
+            cols: vec![ub(0.0, 640.0, 100.0, 700.0), ub(100.0, 640.0, 200.0, 700.0)],
+            ..Default::default()
+        };
+        let toks = vec![
+            tok("Item", 10.0, 685.0, 40.0, 695.0),
+            tok("Value", 110.0, 685.0, 140.0, 695.0),
+            tok("Passband", 10.0, 665.0, 50.0, 675.0),
+            tok("390", 110.0, 665.0, 130.0, 675.0),
+            tok("Fibres", 10.0, 650.0, 40.0, 660.0),
+            tok("1600", 110.0, 650.0, 130.0, 660.0),
+        ];
+        let idx: Vec<usize> = (0..toks.len()).collect();
+        let md = grid_markdown(&st, &toks, &idx).unwrap();
+        assert!(
+            md.contains("| Passband | 390 |") && md.contains("| Fibres | 1600 |"),
+            "{md}"
+        );
+
+        // A coefficient over its standard error: one label line, one row.
+        let toks = vec![
+            tok("Item", 10.0, 685.0, 40.0, 695.0),
+            tok("Value", 110.0, 685.0, 140.0, 695.0),
+            tok("Income", 10.0, 665.0, 50.0, 675.0),
+            tok("0.53", 110.0, 665.0, 130.0, 675.0),
+            tok("(0.12)", 110.0, 650.0, 140.0, 660.0),
+        ];
+        let idx: Vec<usize> = (0..toks.len()).collect();
+        let md = grid_markdown(&st, &toks, &idx).unwrap();
+        assert!(md.contains("| Income | 0.53 (0.12) |"), "{md}");
+    }
+
+    #[test]
+    fn a_hyphen_apart_from_one_word_joins_the_compound() {
+        let toks = vec![
+            tok("ATTENTION", 72.0, 700.0, 153.0, 713.0),
+            tok("-BASED", 155.5, 700.0, 190.0, 713.0),
+            tok("ls", 200.0, 700.0, 210.0, 713.0),
+            tok("-la", 214.0, 700.0, 230.0, 713.0),
+        ];
+        assert_eq!(join_line(&toks, &[0, 1, 2, 3]), "ATTENTION-BASED ls -la");
+    }
+
+    #[test]
+    fn text_wrapped_at_the_column_edge_stays_one_row() {
+        let ub = |x0, y0, x1, y1| UserBox { x0, y0, x1, y1 };
+        let st = crate::vision::table::Structure {
+            rows: vec![ub(0.0, 680.0, 300.0, 700.0), ub(0.0, 640.0, 300.0, 680.0)],
+            cols: vec![
+                ub(0.0, 640.0, 100.0, 700.0),
+                ub(100.0, 640.0, 200.0, 700.0),
+                ub(200.0, 640.0, 300.0, 700.0),
+            ],
+            ..Default::default()
+        };
+        // Words laid out at 5 pt a character, one space between them.
+        let mut toks = Vec::new();
+        let mut line = |text: &str, x: f32, y: f32| {
+            let mut x = x;
+            for w in text.split(' ') {
+                let x1 = x + 5.0 * w.chars().count() as f32;
+                toks.push(tok(w, x, y, x1, y + 10.0));
+                x = x1 + 3.0;
+            }
+        };
+        line("Milestone", 2.0, 685.0);
+        line("Date", 102.0, 685.0);
+        line("Notes", 202.0, 685.0);
+        line("Final design", 2.0, 665.0);
+        line("(approx. 90%)", 2.0, 650.0);
+        line("May 8, 2003", 102.0, 665.0);
+        line("Plans sent to", 202.0, 665.0);
+        line("EPA for review", 202.0, 650.0);
+        let idx: Vec<usize> = (0..toks.len()).collect();
+        let md = grid_markdown(&st, &toks, &idx).unwrap();
+        assert!(
+            md.contains(
+                "| Final design (approx. 90%) | May 8, 2003 | Plans sent to EPA for review |"
+            ),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn inline_formulas_take_in_their_math_words() {
+        let math = |text: &str, x0: f32, x1: f32| Tok {
+            math: true,
+            ..tok(text, x0, 700.0, x1, 710.0)
+        };
+        let words = vec![
+            tok("the", 10.0, 700.0, 30.0, 710.0),
+            math("T", 32.0, 38.0),
+            math("ΔE", 39.0, 52.0),
+            tok("and", 60.0, 700.0, 80.0, 710.0),
+            math("f(x)", 90.0, 110.0),
+            math("=", 112.0, 118.0),
+            math("y", 120.0, 126.0),
+        ];
+        let boxed = Region {
+            label: Label::InlineFormula,
+            score: 0.9,
+            bbox: UserBox {
+                x0: 39.0,
+                y0: 699.0,
+                x1: 52.0,
+                y1: 711.0,
+            },
+            order: 3,
+        };
+        let mut inline = vec![boxed.clone()];
+        complete_inline_formulas(&mut inline, &words, &[boxed]);
+        // The tight box grows over "T"; "f(x) = y" becomes a formula.
+        assert_eq!(inline.len(), 2);
+        assert_eq!(inline[0].bbox.x0, 32.0);
+        assert_eq!((inline[1].bbox.x0, inline[1].bbox.x1), (90.0, 126.0));
+    }
+
+    #[test]
+    fn a_title_row_goes_above_its_table() {
+        let ub = |x0, y0, x1, y1| UserBox { x0, y0, x1, y1 };
+        let st = crate::vision::table::Structure {
+            rows: vec![
+                ub(0.0, 700.0, 200.0, 720.0),
+                ub(0.0, 680.0, 200.0, 700.0),
+                ub(0.0, 660.0, 200.0, 680.0),
+            ],
+            cols: vec![ub(0.0, 660.0, 100.0, 720.0), ub(100.0, 660.0, 200.0, 720.0)],
+            spans: vec![ub(0.0, 700.0, 200.0, 720.0)],
+            ..Default::default()
+        };
+        let toks = vec![
+            tok("Table", 10.0, 705.0, 40.0, 715.0),
+            tok("2:", 42.0, 705.0, 50.0, 715.0),
+            tok("Results", 52.0, 705.0, 90.0, 715.0),
+            tok("Item", 10.0, 685.0, 40.0, 695.0),
+            tok("Value", 110.0, 685.0, 140.0, 695.0),
+            tok("a", 10.0, 665.0, 20.0, 675.0),
+            tok("1", 110.0, 665.0, 120.0, 675.0),
+        ];
+        let idx: Vec<usize> = (0..toks.len()).collect();
+        let md = grid_markdown(&st, &toks, &idx).unwrap();
+        assert!(
+            md.starts_with("Table 2: Results\n\n| Item | Value |"),
+            "{md}"
+        );
     }
 
     #[test]
@@ -1119,6 +1955,25 @@ mod tests {
         assert_eq!(toks.len(), 2);
         let idx: Vec<usize> = (0..toks.len()).collect();
         assert_eq!(lines_to_text(&toks, &idx), "modified");
+    }
+
+    #[test]
+    fn blank_pages_are_told_from_pages_with_ink() {
+        let mut page = image::RgbImage::from_pixel(200, 260, image::Rgb([236, 234, 230]));
+        // Scanner specks on grey paper are still a blank page.
+        for (x, y) in [(10, 10), (150, 40), (90, 200)] {
+            page.put_pixel(x, y, image::Rgb([40, 40, 40]));
+        }
+        assert!(is_blank(&page));
+        // One short line of text is not.
+        for x in 40..120 {
+            for y in 100..103 {
+                if x % 3 != 0 {
+                    page.put_pixel(x, y, image::Rgb([60, 60, 60]));
+                }
+            }
+        }
+        assert!(!is_blank(&page));
     }
 
     #[test]

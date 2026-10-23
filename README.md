@@ -96,13 +96,17 @@ did case by case. Results are in `GAUNTLET_SCORECARD.md`.
 │   │       ├── curation/     (BM25 Search & Auto-Pruning)
 │   │       ├── privacy_shield.rs (PII Redaction Engine)
 │   │       ├── compressor/   (Token Compression Pipeline)
-│   │       ├── parsers/      (File parsing engines; pdf_vision.rs = layout-guided PDF assembly)
+│   │       ├── parsers/      (File parsing engines; pdf_vision.rs = layout-guided PDF assembly,
+│   │       │                  pdf_furniture.rs + pdf_edges.rs = page furniture, pdf_words.rs = glyph-level
+│   │       │                  words, pdf_math.rs = inline-math clean-up)
 │   │       ├── vision/       (Bundled ONNX models on rten: layout, formula, table, OCR; hayro rendering)
 │   │       └── pipeline/     (Pipeline execution stages)
 │   └── cli/          (filegoblin: The Headless Binary)
 │       ├── Cargo.toml
 │       └── src/main.rs       (CLI Entry & Mascot)
 │           └── walk.rs       (--walk interactive picker)
+├── scripts/          (Dev tooling: run_gauntlet.py = graded gauntlet, olmocr_bench.py = olmOCR-bench
+│                      on a fixed dev/test split, model packaging and release helpers)
 ├── npm/              (npx filegoblin Zero-Install Launcher)
 │   ├── package.json
 │   └── bin/filegoblin.js
@@ -121,10 +125,10 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] **Layout-Aware Semantic Chunking (`--chunk-size`, `--chunk-overlap`, `--chunk-strategy layout|tokens`)**: splits along structural headings (H1 > H2 > H3), protects tables and code blocks from mid-block slicing, automatically replicates table headers across chunk splits, and embeds hierarchical outline breadcrumbs
 - [x] Core Parsers (PDF, Word, Excel/CSV/TSV, PowerPoint, OpenDocument, Jupyter, Code, Email, RTF, HTML, EPUB) — always on, including Office's macro-enabled and template variants (`.docm`/`.dotx`/`.dotm`, `.xlsm`/`.xltx`/`.xltm`/`.xlsb`/`.xlam`, `.pptm`/`.potx`/`.ppsx`/`.ppsm`)
 - [x] Legacy text encodings: plain text, markdown, source code, CSV/TSV, subtitles and stdin are decoded from a byte-order mark (UTF-8/UTF-16), as UTF-8, or else as Windows-1252/Latin-1 — binary files are still refused. CSV delimiters (`,` `;` tab `|`) are sniffed, so European `;` exports keep their columns
-- [x] PDF → markdown via `pdf_oxide`: headings, pipe tables, reading order, hyphenation — with per-page scanned-vs-text classification
+- [x] PDF → markdown via `pdf_oxide`: headings, pipe tables, reading order, hyphenation — with per-page scanned-vs-text classification. Word spacing is re-read from glyph positions, so kerned, letter-spaced and ligature-split words ("inﬂ uenced") and accents drawn apart come out whole; text outside the crop box (printer's slugs) is dropped; a password-protected PDF gets a clear error
 - [x] **Scanned PDFs and images OCR automatically on macOS** (Apple Vision, zero setup; parallelized page conversion, 30+ pages/s; every page of a multi-page TIFF, under `## Page N`); Linux/Windows via `--features ocr`
-- [x] **PDF vision pipeline** (`--features vision` + model weights; `--vision smart|all|off`, default `smart`): pages are rendered in pure Rust (`hayro`) and read by bundled, permissively licensed models on `rten` — no Python, system libraries or LLM at runtime. PP-DocLayoutV3 places every text-layer word in its region (title, heading, paragraph, caption, footnote, table, figure, running header/footer) in a learned reading order; display and inline formulas are re-read from the image as LaTeX (pix2text MFR); tables get rows/columns/spanning cells from Table Transformer and their cell values from the text layer; scanned pages, text regions the text layer leaves empty, and scans whose own OCR layer is too damaged to keep are read with PP-OCRv6 (medium). `--vision smart` decides per page from cheap text-layer facts — scans, math fonts/symbols, column-aligned tables and forms, multi-column text, pictures, one- or two-page documents go through the models; plain single-column prose stays on the fast path. On the full olmOCR-bench (1,403 PDFs, official scorer) the models take filegoblin from 33.2% to 72.3% (arXiv math 0% → 84%, tables 26% → 75%, multi-column 46% → 71%, headers/footers 42% → 92%)
-- [x] **Geometric PDF page furniture removal**: running headers/footers, page numbers, and line-number gutters (pleading paper, patents) are identified from position, cross-page recurrence, font size and alignment — before conversion — so prose, numbers and headings are never rewritten by text heuristics. Line-break hyphenation and words run together across visible gaps are repaired from page geometry plus the document's own vocabulary
+- [x] **PDF vision pipeline** (`--features vision` + model weights; `--vision smart|all|off`, default `smart`): pages are rendered in pure Rust (`hayro`) and read by bundled, permissively licensed models on `rten` — no Python, system libraries or LLM at runtime. PP-DocLayoutV3 places every text-layer word in its region (title, heading, paragraph, caption, footnote, table, figure, running header/footer) in a learned reading order; display and inline formulas are re-read from the image as LaTeX (pix2text MFR); tables get rows/columns/spanning cells from Table Transformer and their cell values from the text layer; scanned pages, text regions the text layer leaves empty, and scans whose own OCR layer is too damaged to keep are read with PP-OCRv6 (medium). `--vision smart` decides per page from cheap text-layer facts — scans, math fonts/symbols, column-aligned tables and forms, multi-column text, pictures, one- or two-page documents go through the models; plain single-column prose stays on the fast path. On the full olmOCR-bench (1,403 PDFs, official scorer) the models take filegoblin from 39.0% to 74.7% (arXiv math 0% → 87%, tables 25% → 79%, multi-column 50% → 73%, headers/footers 68% → 92%). Ruled tables take their grid from the page's own rulings, and rotated (`/Rotate`) pages are read as displayed
+- [x] **Geometric PDF page furniture removal**: running headers/footers, page numbers, and line-number gutters (pleading paper, patents) are identified from position, cross-page recurrence, font size and alignment — before conversion — so prose, numbers and headings are never rewritten by text heuristics. One-off furniture that cannot recur (letterheads, print stamps, document IDs, URLs, copyright and "downloaded from" lines) is found on each page from its place, size and wording. Line-break hyphenation and words run together across visible gaps are repaired from page geometry plus the document's own vocabulary
 - [x] **Semantic Chapter Boundaries**: Automated detection and injection of thematic dividers and XML section markers (`<!-- filegoblin:section ... -->`)
 - [x] Word → real markdown: heading levels, nested lists, bold/italic, hyperlinks with URLs, and equations
 - [x] **Word Resilient Fallback**: Streaming OpenXML reader handling `<w:gridSpan>` merged tables and `<mc:AlternateContent>` floating text boxes
@@ -481,6 +485,12 @@ why that is off by default.
 - **Archives and Office files have decompression caps.** Zip, tar, tar.gz, and the
   zip-container formats (`.docx`/`.pptx`/`.odt`/`.epub`) bound what they inflate
   and refuse entries whose paths escape the extraction directory.
+- **A hostile PDF fails on its own.** A PDF nested deeply enough to overflow the
+  parser's stack is refused before parsing (its syntax, and its unfiltered and
+  Flate streams, are scanned first), and a parser panic becomes an error for that
+  file, so one bad PDF does not end a directory run. Two gaps remain: PDF streams
+  have no decompression cap (a Flate bomb inflates fully), and nesting hidden in
+  streams with other filters (LZW, ASCII85) is not pre-scanned.
 
 ---
 

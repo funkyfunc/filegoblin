@@ -64,7 +64,7 @@ open = "5.3.3"
 # and no rusty-tesseract shell-out in its dependency tree. See ADR 2026-07-30.
 pdf_oxide = "0.3.73"
 # Pure-Rust PDF rasterizer (MIT/Apache) for the vision models.
-hayro = { version = "=0.7.1", features = ["embed-fonts"], optional = true }
+hayro = { version = "=0.8.0", features = ["embed-fonts"], optional = true }
 pulldown-cmark = "0.13.1"
 pulldown-cmark-to-cmark = "22.0.0"
 quick-xml = "0.39.2"
@@ -82,6 +82,8 @@ encoding_rs = "0.8"
 serde = { version = "1.0.228", features = ["derive"] }
 # Cache keys (pure Rust)
 sha2 = "0.10"
+# Composes accents a PDF draws as glyphs of their own (`e` + `´`).
+unicode-normalization = "0.1.25"
 whisper-rs = { version = "0.16", optional = true }
 # Defaults already cover flac/ogg/vorbis/wav/pcm/mkv; opt into the rest.
 symphonia = { version = "0.5.5", features = ["mp3", "aac", "isomp4", "caf"], optional = true }

@@ -12,14 +12,16 @@ filegoblin, scored two ways.
     python3 scripts/run_gauntlet.py                    # all cases, default --vision
     python3 scripts/run_gauntlet.py --vision off       # one mode
     python3 scripts/run_gauntlet.py --only FORM_1,TBL_1
+    python3 scripts/run_gauntlet.py --jobs 4           # faster; latencies then overlap
     python3 scripts/run_gauntlet.py --regrade target/gauntlet/smart   # rescore saved outputs
     python3 scripts/run_gauntlet.py --compare target/gauntlet/off target/gauntlet/smart
 
 Outputs and results.json go to target/gauntlet/<mode>/. GAUNTLET_SCORECARD.md
 is rewritten by any run or regrade that covers every case (--no-scorecard to
-skip).
+skip); the hand-written block between its <!-- notes --> markers is kept.
 """
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -88,6 +90,13 @@ def run(args):
         wanted = set(args.only.split(","))
         manifest = [m for m in manifest if m["id"] in wanted]
     mode = args.vision or "default"
+    if args.regrade and not args.vision:
+        # The mode the saved outputs were made with.
+        try:
+            with open(os.path.join(args.regrade, "results.json"), encoding="utf-8") as fh:
+                mode = json.load(fh).get("mode") or mode
+        except (OSError, ValueError):
+            pass
     out_dir = args.regrade or args.out or os.path.join(ROOT, "target", "gauntlet", mode)
     os.makedirs(out_dir, exist_ok=True)
     binary = binary_path()
@@ -97,33 +106,41 @@ def run(args):
     print("=" * 78)
     print(f"{'':6} {'ID':<11} {'quality':>7}  {'time':>8}  {'weakest component / first failure'}")
 
-    results = []
-    for item in manifest:
-        case_id = item["id"]
-        out_path = os.path.join(out_dir, f"{case_id}.md")
+    def convert(item):
+        """Runs one case (or reads its saved output with --regrade):
+        (stdout, stderr, exit code, seconds, format checks)."""
+        out_path = os.path.join(out_dir, f"{item['id']}.md")
         if args.regrade:
             if not os.path.exists(out_path):
-                continue
+                return None
             stdout = open(out_path, encoding="utf-8").read()
             meta_path = out_path + ".meta.json"
             meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
-            exit_code, stderr, elapsed = meta.get("exit", 0), meta.get("stderr", ""), meta.get("elapsed", 0.0)
-        else:
-            cmd = [binary, os.path.join(GAUNTLET_DIR, item["file"]), "-q"]
-            if args.vision:
-                cmd += ["--vision", args.vision]
-            start = time.time()
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            elapsed = time.time() - start
-            stdout, stderr, exit_code = res.stdout, res.stderr, res.returncode
-            with open(out_path, "w", encoding="utf-8") as fh:
-                fh.write(stdout)
-            with open(out_path + ".meta.json", "w") as fh:
-                json.dump({"exit": exit_code, "stderr": stderr[-2000:], "elapsed": elapsed}, fh)
+            return stdout, meta.get("stderr", ""), meta.get("exit", 0), meta.get("elapsed", 0.0), None
+        cmd = [binary, os.path.join(GAUNTLET_DIR, item["file"]), "-q"]
+        if args.vision:
+            cmd += ["--vision", args.vision]
+        start = time.time()
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        elapsed = time.time() - start
+        with open(out_path, "w", encoding="utf-8") as fh:
+            fh.write(res.stdout)
+        with open(out_path + ".meta.json", "w") as fh:
+            json.dump({"exit": res.returncode, "stderr": res.stderr[-2000:], "elapsed": elapsed}, fh)
+        fmt = check_formats(binary, item, res.stdout, args.formats, out_dir) if args.formats else None
+        return res.stdout, res.stderr, res.returncode, elapsed, fmt
 
-        fmt = None
-        if args.formats and not args.regrade:
-            fmt = check_formats(binary, item, stdout, args.formats, out_dir)
+    # Cases run one at a time by default so the latencies mean something;
+    # --jobs N trades that for a faster run.
+    pool = concurrent.futures.ThreadPoolExecutor(max(1, args.jobs))
+    converted = pool.map(convert, manifest)  # in order, as each case finishes
+
+    results = []
+    for item, done in zip(manifest, converted):
+        if done is None:
+            continue
+        case_id = item["id"]
+        stdout, stderr, exit_code, elapsed, fmt = done
         errors = canary_errors(item, stdout, exit_code, stderr)
         grade = grade_case(stdout, os.path.join(GOLD_DIR, case_id))
         quality = None if grade is None else grade["score"]
@@ -146,6 +163,7 @@ def run(args):
             "formats": fmt,
         })
 
+    pool.shutdown()
     passed, quality, n_graded = summarize(results)
     fmts = [r["formats"] for r in results if r.get("formats")]
     print("=" * 78)
@@ -182,14 +200,33 @@ def check_formats(binary, item, markdown, size, out_dir):
     return {"plain": p, "chunks": c, "pass": gauntlet_formats.passes(p, c)}
 
 
+NOTES_START, NOTES_END = "<!-- notes -->", "<!-- /notes -->"
+
+
+def scorecard_notes(path):
+    """The hand-written block between the notes markers of the current
+    scorecard (measurement conditions, history), kept across rewrites."""
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return ""
+    start, end = text.find(NOTES_START), text.find(NOTES_END)
+    if start < 0 or end < start:
+        return ""
+    return text[start:end + len(NOTES_END)]
+
+
 def write_scorecard(results, mode):
     passed, quality, n_graded = summarize(results)
     path = os.path.join(ROOT, "GAUNTLET_SCORECARD.md")
+    notes = scorecard_notes(path)
     with open(path, "w") as f:
         f.write("# Filegoblin Adversarial Gauntlet Scorecard\n\n")
         f.write(f"Mode: `--vision {mode}`\n\n")
         f.write(f"**Canaries:** {passed}/{len(results)} ({100 * passed / len(results):.1f}%) · ")
         f.write(f"**Quality:** {fmt_q(quality).strip()} / 100 (mean over {n_graded} cases with gold excerpts)\n\n")
+        if notes:
+            f.write(notes + "\n\n")
         f.write("Quality is graded against hand-checked gold excerpts in `test_assets/gauntlet/gold/`; "
                 "components are completeness, precision, order, tables, headings and math "
                 "(see `scripts/gauntlet_grade.py`).\n\n")
@@ -235,5 +272,7 @@ if __name__ == "__main__":
     ap.add_argument("--formats", type=int, nargs="?", const=512, metavar="TOKENS",
                     help="also check --format plain and --chunk-size TOKENS --format json (default 512)")
     ap.add_argument("--no-scorecard", action="store_true")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="cases converted at once (default 1, which keeps latencies comparable)")
     a = ap.parse_args()
     sys.exit(compare(*a.compare) if a.compare else run(a))

@@ -18,6 +18,7 @@
 //! every other PDF (see `docs/agent_context/AUDIT_REPORT.md`).
 
 use crate::parsers::gobble::{Gobble, ParseOptions};
+use crate::parsers::pdf_edges;
 use crate::parsers::pdf_furniture::{self, PageGeom};
 use anyhow::{Context, Result};
 use pdf_oxide::PdfDocument;
@@ -328,26 +329,241 @@ fn join_pages_healing_dangling(pages: &[String]) -> String {
 /// no setup at all; elsewhere with `--features ocr`.
 pub struct PdfGobbler;
 
+/// How deep arrays and dictionaries nest where the PDF parser will recurse
+/// into them: in the file's own syntax, skipping strings and comments, and in
+/// the decoded data of its Flate streams, where content streams and object
+/// streams are parsed the same recursive way. Real documents nest a few
+/// dozen levels.
+#[derive(Debug, Default, PartialEq)]
+struct Nesting {
+    syntax: usize,
+    streams: usize,
+}
+
+fn nesting(bytes: &[u8]) -> Nesting {
+    let mut out = Nesting::default();
+    let (mut depth, mut i, mut dict_start) = (0usize, 0usize, 0usize);
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                // A literal string: balanced parentheses, backslash escapes.
+                let mut open = 1usize;
+                i += 1;
+                while i < bytes.len() && open > 0 {
+                    match bytes[i] {
+                        b'\\' => i += 1,
+                        b'(' => open += 1,
+                        b')' => open -= 1,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            b'[' => {
+                depth += 1;
+                out.syntax = out.syntax.max(depth);
+            }
+            b']' => depth = depth.saturating_sub(1),
+            b'<' if bytes.get(i + 1) == Some(&b'<') => {
+                if depth == 0 {
+                    dict_start = i;
+                }
+                depth += 1;
+                out.syntax = out.syntax.max(depth);
+                i += 1;
+            }
+            b'>' if bytes.get(i + 1) == Some(&b'>') => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b's' if bytes[i..].starts_with(b"stream") => {
+                // The keyword: after a dictionary, before an end of line.
+                let before = bytes[..i].trim_ascii_end();
+                let data = match &bytes[i + 6..] {
+                    [b'\r', b'\n', ..] => i + 8,
+                    [b'\n' | b'\r', ..] => i + 7,
+                    _ => usize::MAX,
+                };
+                if before.ends_with(b">>") && data != usize::MAX {
+                    if let Some(k) = bytes[data..].windows(9).position(|w| w == b"endstream") {
+                        let dict = &bytes[dict_start.min(i)..i];
+                        let has = |name: &[u8]| dict.windows(name.len()).any(|w| w == name);
+                        let raw = &bytes[data..data + k];
+                        let found = if binary_stream(dict) {
+                            0
+                        } else if !has(b"/Filter") {
+                            bracket_depth(raw)
+                        } else if has(b"/FlateDecode") {
+                            bracket_depth(flate2::read::ZlibDecoder::new(raw))
+                        } else {
+                            0
+                        };
+                        out.streams = out.streams.max(found);
+                        i = data + k + 9;
+                        continue;
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A stream of binary data the parser never reads as PDF syntax: an image
+/// (a flat area of one grey is a long run of the same byte, which may be
+/// `[` or `<`), a font program, an ICC profile, sampled function or shading
+/// data, a cross-reference stream, metadata or an embedded file.
+fn binary_stream(dict: &[u8]) -> bool {
+    // A key: the name followed by a delimiter, so "/N" is not "/Name".
+    let key = |name: &[u8]| {
+        dict.windows(name.len() + 1).any(|w| {
+            &w[..name.len()] == name
+                && matches!(
+                    w[name.len()],
+                    b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'[' | b'<' | b'('
+                )
+        })
+    };
+    [
+        &b"/Image"[..],
+        b"/Width",
+        b"/BitsPerComponent",
+        b"/BitsPerSample",
+        b"/BitsPerCoordinate",
+        b"/Length1",
+        b"/Length2",
+        b"/Type1C",
+        b"/CIDFontType0C",
+        b"/OpenType",
+        b"/XRef",
+        b"/Metadata",
+        b"/EmbeddedFile",
+        b"/Alternate",
+    ]
+    .iter()
+    .any(|k| key(k))
+        || (key(b"/N") && !key(b"/ObjStm"))
+}
+
+/// Deepest bracket nesting in a stream's data, read in chunks so a
+/// decompression bomb costs time, not memory. Strings are not tracked here
+/// (inline-image data would throw that off); the bound on streams leaves
+/// room for the brackets binary data holds by chance.
+fn bracket_depth(mut data: impl std::io::Read) -> usize {
+    let mut buf = vec![0u8; 64 << 10];
+    let (mut depth, mut deepest, mut prev) = (0usize, 0usize, 0u8);
+    while let Ok(n) = data.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        for &b in &buf[..n] {
+            match (prev, b) {
+                (_, b'[') => depth += 1,
+                (_, b']') => depth = depth.saturating_sub(1),
+                (b'<', b'<') => depth += 1,
+                (b'>', b'>') => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            deepest = deepest.max(depth);
+            // A pair consumes both brackets: "<<<" is one dictionary.
+            prev = if matches!((prev, b), (b'<', b'<') | (b'>', b'>')) {
+                0
+            } else {
+                b
+            };
+        }
+        if deepest > MAX_STREAM_DEPTH {
+            break;
+        }
+    }
+    deepest
+}
+
+/// Nesting beyond these is refused before parsing: a file nested tens of
+/// thousands of levels deep exists to overflow a recursive parser's stack,
+/// which aborts the whole process rather than failing this one file. The
+/// conversion threads' stacks ([`PDF_STACK`]) hold about 90,000 levels.
+const MAX_SYNTAX_DEPTH: usize = 1000;
+const MAX_STREAM_DEPTH: usize = 10_000;
+
+/// Stack size of the threads PDF conversion runs on: generous, so nesting
+/// under the limits above is parsed safely (the parsers recurse once per
+/// level, using about 700 bytes each).
+const PDF_STACK: usize = 64 << 20;
+
+/// The thread pool PDF conversion runs on, with [`PDF_STACK`] stacks.
+static PDF_POOL: std::sync::LazyLock<Option<rayon::ThreadPool>> = std::sync::LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .thread_name(|i| format!("filegoblin-pdf-{i}"))
+        .stack_size(PDF_STACK)
+        .build()
+        .ok()
+});
+
 impl Gobble for PdfGobbler {
     fn gobble(&self, path: &Path, opts: &ParseOptions) -> Result<String> {
         if !path.exists() {
             anyhow::bail!("Mischievous I/O Error: file not found at {:?}", path);
         }
-
-        let doc = PdfDocument::open(path)
-            .context("Mischievous PDF Error: failed to open document (corrupt or encrypted?)")?;
-        let page_count = doc
-            .page_count()
-            .context("Mischievous PDF Error: could not read the page tree")?;
-        if page_count == 0 {
-            anyhow::bail!("Mischievous PDF Error: the document has no pages");
+        let bytes = std::fs::read(path).context("Mischievous I/O Error: could not read the PDF")?;
+        let depth = nesting(&bytes);
+        if depth.syntax > MAX_SYNTAX_DEPTH || depth.streams > MAX_STREAM_DEPTH {
+            anyhow::bail!(
+                "Mischievous PDF Error: objects nested at least {} levels deep (malformed or \
+                 hostile file); refusing to parse it",
+                depth.syntax.max(depth.streams)
+            );
         }
+        // The PDF libraries panic on some malformed files (an object offset
+        // past the end of the data, say). That is one bad file, not a reason
+        // to take down a whole directory run: report it like any other
+        // unreadable PDF.
+        let convert =
+            || std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| convert_pdf(path, opts)));
+        let converted = match &*PDF_POOL {
+            Some(pool) => pool.install(convert),
+            None => convert(),
+        };
+        match converted {
+            Ok(result) => result,
+            Err(_) => anyhow::bail!(
+                "Mischievous PDF Error: the PDF parser crashed on this file (malformed PDF)"
+            ),
+        }
+    }
+}
 
-        // Stage 1: classify pages and collect geometry for those with text.
-        // Classification and geometry run back to back for each page, so the
-        // page's parsed content is still in pdf_oxide's small per-page cache
-        // when the geometry pass reads it.
-        let staged: Vec<(PageKind, Option<PageGeom>, bool, bool)> = (0..page_count)
+fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
+    let doc = PdfDocument::open(path)
+        .context("Mischievous PDF Error: failed to open document (corrupt or encrypted?)")?;
+    // An owner password only restricts printing and editing, and the empty
+    // user password opens the text; a real user password does not.
+    if doc.is_encrypted() && !doc.authenticate(b"").unwrap_or(false) {
+        anyhow::bail!(
+            "Mischievous PDF Error: the PDF is password-protected; remove the password \
+             (or export an unprotected copy) and convert that"
+        );
+    }
+    let page_count = doc
+        .page_count()
+        .context("Mischievous PDF Error: could not read the page tree")?;
+    if page_count == 0 {
+        anyhow::bail!("Mischievous PDF Error: the document has no pages");
+    }
+
+    // Stage 1: classify pages and collect geometry for those with text.
+    // Classification and geometry run back to back for each page, so the
+    // page's parsed content is still in pdf_oxide's small per-page cache
+    // when the geometry pass reads it.
+    let staged: Vec<(PageKind, Option<PageGeom>, bool, bool)> = (0..page_count)
             .into_par_iter()
             .map(|page| {
                 // Cheap preflight: signals only, no rasterization. On any
@@ -412,57 +628,68 @@ impl Gobble for PdfGobbler {
                 (kind, geom, image_backed, page_picture)
             })
             .collect();
-        let mut kinds: Vec<PageKind> = Vec::with_capacity(page_count);
-        let mut geoms: Vec<Option<PageGeom>> = Vec::with_capacity(page_count);
-        let mut image_backed: Vec<bool> = Vec::with_capacity(page_count);
-        let mut page_picture: Vec<bool> = Vec::with_capacity(page_count);
-        for (k, g, b, p) in staged {
-            kinds.push(k);
-            geoms.push(g);
-            image_backed.push(b);
-            page_picture.push(p);
-        }
+    let mut kinds: Vec<PageKind> = Vec::with_capacity(page_count);
+    let mut geoms: Vec<Option<PageGeom>> = Vec::with_capacity(page_count);
+    let mut image_backed: Vec<bool> = Vec::with_capacity(page_count);
+    let mut page_picture: Vec<bool> = Vec::with_capacity(page_count);
+    for (k, g, b, p) in staged {
+        kinds.push(k);
+        geoms.push(g);
+        image_backed.push(b);
+        page_picture.push(p);
+    }
 
-        // Stage 2: furniture, decided across the whole document.
-        let pdf_furniture::Furniture {
-            rects: furniture,
-            gutters,
-        } = pdf_furniture::detect_furniture(&geoms);
+    // Stage 2: furniture, decided across the whole document.
+    let pdf_furniture::Furniture {
+        rects: mut furniture,
+        gutters,
+        gutter_rects,
+    } = pdf_furniture::detect_furniture(&geoms);
+    pdf_edges::add_edge_furniture(&doc, &geoms, &mut furniture);
+    // Text outside the crop box (printer's slugs, crop marks) is not on the
+    // page a reader sees.
+    for (page, rects) in furniture.iter_mut().enumerate() {
+        rects.extend(pdf_furniture::outside_visible(&doc, page));
+    }
 
-        let body = pdf_furniture::body_font_size(&geoms);
+    let body = pdf_furniture::body_font_size(&geoms);
 
-        let base_options = pdf_oxide::converters::ConversionOptions {
-            detect_headings: true,
-            extract_tables: true,
-            include_images: false,
-            // Keep pdf_oxide's own artifact heuristics out of it: for untagged
-            // PDFs they drop any top/bottom-band line whose digit-stripped text
-            // recurs — which deletes real headings like "Section 3: Overview"
-            // on every page after the first. Furniture is decided above,
-            // geometrically, instead.
-            include_artifacts: true,
-            expand_ligatures: true,
-            ..Default::default()
-        };
+    let base_options = pdf_oxide::converters::ConversionOptions {
+        detect_headings: true,
+        extract_tables: true,
+        include_images: false,
+        // Keep pdf_oxide's own artifact heuristics out of it: for untagged
+        // PDFs they drop any top/bottom-band line whose digit-stripped text
+        // recurs — which deletes real headings like "Section 3: Overview"
+        // on every page after the first. Furniture is decided above,
+        // geometrically, instead.
+        include_artifacts: true,
+        expand_ligatures: true,
+        // Pages without a text layer are read (or marked) by this module;
+        // the converter's own "OCR required" note would be a second, wrong
+        // one, and it also fires on a page whose only text is furniture.
+        annotate_skipped_pages: false,
+        ..Default::default()
+    };
 
-        #[cfg(not(feature = "vision"))]
-        let _ = opts.vision;
-        // Layout models, when built in and their weights are present: render
-        // pages and let the model place each text-layer word.
-        #[cfg(feature = "vision")]
-        let mode = opts.vision;
-        #[cfg(feature = "vision")]
-        let renderer = if mode != crate::cli::VisionMode::Off && crate::vision::enabled() {
-            std::fs::read(path)
-                .ok()
-                .and_then(|bytes| crate::vision::render::Renderer::open(std::sync::Arc::new(bytes)))
-        } else {
-            if mode != crate::cli::VisionMode::Off
-                && !opts.quiet
-                && std::env::var_os("FILEGOBLIN_VISION").is_none()
-            {
-                static HINT: std::sync::Once = std::sync::Once::new();
-                HINT.call_once(|| {
+    #[cfg(not(feature = "vision"))]
+    let _ = (opts.vision, &gutter_rects);
+    // Layout models, when built in and their weights are present: render
+    // pages and let the model place each text-layer word.
+    #[cfg(feature = "vision")]
+    let mode = opts.vision;
+    #[cfg(feature = "vision")]
+    let renderer = if mode != crate::cli::VisionMode::Off && crate::vision::enabled() {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| crate::vision::render::Renderer::open(std::sync::Arc::new(bytes)))
+    } else {
+        if mode != crate::cli::VisionMode::Off
+            && !opts.quiet
+            && std::env::var_os("FILEGOBLIN_VISION").is_none()
+        {
+            static HINT: std::sync::Once = std::sync::Once::new();
+            HINT.call_once(|| {
                     eprintln!(
                         "filegoblin: PDF vision models not found — using the fast converter. \
                          For math, tables, columns and scans run `filegoblin --install-models` \
@@ -470,16 +697,23 @@ impl Gobble for PdfGobbler {
                          or `npm i @filegoblin/models`). `--vision off` silences this."
                     );
                 });
-            }
-            None
-        };
+        }
+        None
+    };
 
-        #[cfg(feature = "vision")]
-        let vision_pages = std::sync::atomic::AtomicUsize::new(0);
+    #[cfg(feature = "vision")]
+    let vision_pages = std::sync::atomic::AtomicUsize::new(0);
 
-        // Stage 3: convert each page with its furniture excluded.
-        // (markdown, unreadable, came_from_ocr)
-        let page_results: Vec<(String, bool, bool)> = (0..page_count)
+    // Some OCR engine can read a scanned page in this build.
+    #[cfg(feature = "vision")]
+    let ocr_ready = crate::parsers::ocr::ocr_available()
+        || (renderer.is_some() && crate::vision::ocr::available());
+    #[cfg(not(feature = "vision"))]
+    let ocr_ready = crate::parsers::ocr::ocr_available();
+
+    // Stage 3: convert each page with its furniture excluded.
+    // (markdown, unreadable, came_from_ocr)
+    let page_results: Vec<(String, bool, bool)> = (0..page_count)
             .into_par_iter()
             .map(|page| {
                 let excluded = &furniture[page];
@@ -494,7 +728,10 @@ impl Gobble for PdfGobbler {
                     #[cfg(feature = "vision")]
                     if let Some(md) = renderer
                         .as_ref()
-                        .and_then(|r| super::pdf_vision::convert_scanned_page(r, page))
+                        .and_then(|r| {
+                            let frame = super::pdf_vision::display_frame(doc, page);
+                            super::pdf_vision::convert_scanned_page(r, page, frame)
+                        })
                         .filter(|md| !md.trim().is_empty())
                     {
                         vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -511,7 +748,10 @@ impl Gobble for PdfGobbler {
                         #[cfg(feature = "vision")]
                         if let Some(md) = renderer
                             .as_ref()
-                            .and_then(|r| super::pdf_vision::convert_scanned_page(r, page))
+                            .and_then(|r| {
+                                let frame = super::pdf_vision::display_frame(&doc, page);
+                                super::pdf_vision::convert_scanned_page(r, page, frame)
+                            })
                             .filter(|md| !md.trim().is_empty())
                         {
                             vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -530,6 +770,9 @@ impl Gobble for PdfGobbler {
                                     Ok(text) if !text.trim().is_empty() => {
                                         (text.trim().to_string(), false)
                                     }
+                                    // OCR read the page and found nothing:
+                                    // a blank page, not an unreadable one.
+                                    _ if ocr_ready => (String::new(), false),
                                     _ => (scanned_page_marker(page + 1), true),
                                 };
                             if !unreadable && !md.is_empty() {
@@ -551,7 +794,7 @@ impl Gobble for PdfGobbler {
                                 Ok(text) => (
                                     rejoin_letter_spacing(
                                         &pdf_furniture::remove_gutter_numbers(
-                                            text.trim(),
+                                            &respace_from_glyphs(&doc, page, geom, text.trim()),
                                             &gutters[page],
                                         ),
                                         geom,
@@ -586,7 +829,10 @@ impl Gobble for PdfGobbler {
                         if poor_layer
                             && let Some(md) = renderer
                                 .as_ref()
-                                .and_then(|r| super::pdf_vision::convert_scanned_page(r, page))
+                                .and_then(|r| {
+                                    let frame = super::pdf_vision::display_frame(&doc, page);
+                                    super::pdf_vision::convert_scanned_page(r, page, frame)
+                                })
                                 .filter(|md| !md.trim().is_empty())
                         {
                             vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -623,20 +869,25 @@ impl Gobble for PdfGobbler {
                         #[cfg(feature = "vision")]
                         if wanted
                             && let (Some(r), Some(g)) = (renderer.as_ref(), geom)
-                            && let Some(md) = super::pdf_vision::convert_page(
+                            && let Some((md, table_numbers)) = super::pdf_vision::convert_page(
                                 r,
                                 &doc,
                                 page,
                                 g,
                                 excluded,
+                                &gutter_rects[page],
                                 &base_options,
                             )
                         {
                             vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let md = rejoin_letter_spacing(
-                                &pdf_furniture::remove_gutter_numbers(md.trim(), &gutters[page]),
-                                geom,
-                            );
+                            // Numbers the layout model places in a table
+                            // are the table's, not line numbers.
+                            let md = if table_numbers {
+                                md.trim().to_string()
+                            } else {
+                                pdf_furniture::remove_gutter_numbers(md.trim(), &gutters[page])
+                            };
+                            let md = rejoin_letter_spacing(&md, geom);
                             return (md, false, false);
                         }
                         if !unreadable && !md.is_empty() {
@@ -665,67 +916,108 @@ impl Gobble for PdfGobbler {
             })
             .collect();
 
-        #[cfg(feature = "vision")]
-        if renderer.is_some() && !opts.quiet && page_count > 1 {
-            eprintln!(
-                "filegoblin: {} of {page_count} pages read with the vision models (--vision {})",
-                vision_pages.load(std::sync::atomic::Ordering::Relaxed),
-                match mode {
-                    crate::cli::VisionMode::Smart => "smart",
-                    crate::cli::VisionMode::All => "all",
-                    crate::cli::VisionMode::Off => "off",
-                }
+    #[cfg(feature = "vision")]
+    if renderer.is_some() && !opts.quiet && page_count > 1 {
+        eprintln!(
+            "filegoblin: {} of {page_count} pages read with the vision models (--vision {})",
+            vision_pages.load(std::sync::atomic::Ordering::Relaxed),
+            match mode {
+                crate::cli::VisionMode::Smart => "smart",
+                crate::cli::VisionMode::All => "all",
+                crate::cli::VisionMode::Off => "off",
+            }
+        );
+    }
+
+    let mut pages_md: Vec<String> = Vec::with_capacity(page_results.len());
+    let mut ocr_flags: Vec<bool> = Vec::with_capacity(page_results.len());
+    let mut unreadable_pages = 0usize;
+    for (page_md, unreadable, from_ocr) in page_results {
+        if unreadable {
+            unreadable_pages += 1;
+        }
+        if !page_md.trim().is_empty() {
+            pages_md.push(page_md);
+            ocr_flags.push(from_ocr);
+        }
+    }
+
+    // OCR'd pages carry no geometry here, so their furniture is found from
+    // the text alone (outermost lines, recurrence, page-number sequence).
+    pdf_furniture::strip_text_furniture(&mut pages_md, &ocr_flags);
+
+    pages_md.retain(|p| !p.trim().is_empty());
+
+    let hyphen_breaks: HashSet<(String, String)> = geoms
+        .iter()
+        .zip(furniture.iter())
+        .filter_map(|(g, f)| g.as_ref().map(|g| pdf_furniture::hyphen_breaks(g, f)))
+        .flatten()
+        .collect();
+    let glued: HashMap<String, String> = geoms
+        .iter()
+        .flatten()
+        .flat_map(|g| g.glued.iter().cloned())
+        .collect();
+    // A page that leaves a code fence open would turn every page after
+    // it into one code block once the pages are joined.
+    for p in pages_md.iter_mut() {
+        close_open_fence(p);
+    }
+    let joined = split_glued_tokens(&join_pages_healing_dangling(&pages_md), &glued);
+    let mut tidy = tidy_markdown(&joined, &hyphen_breaks);
+    if tidy.is_empty() {
+        // Every line on every page was taken for page furniture: a page
+        // that carries only its running head and number, a "Notes" page
+        // whose title reads as a header. Furniture is left out because
+        // it repeats what the reader already has, but a document whose
+        // only text it is has nothing else to give, so it is kept.
+        let with_furniture: Vec<String> = (0..page_count)
+            .filter(|&p| geoms[p].as_ref().is_some_and(|g| !g.words.is_empty()))
+            .filter_map(|p| doc.to_markdown(p, &base_options).ok())
+            .map(|md| md.trim().to_string())
+            .filter(|md| !md.is_empty())
+            .collect();
+        tidy = tidy_markdown(
+            &join_pages_healing_dangling(&with_furniture),
+            &hyphen_breaks,
+        );
+    }
+    if tidy.is_empty() {
+        if unreadable_pages > 0 {
+            anyhow::bail!(
+                "All {} page(s) are scanned images and OCR is unavailable in this build \
+                     (macOS has Vision built in; elsewhere recompile with --features ocr)",
+                page_count
             );
         }
+        anyhow::bail!(
+            "No text could be extracted from this PDF: its pages are blank, or it is \
+             corrupt or encrypted"
+        );
+    }
+    Ok(tidy)
+}
 
-        let mut pages_md: Vec<String> = Vec::with_capacity(page_results.len());
-        let mut ocr_flags: Vec<bool> = Vec::with_capacity(page_results.len());
-        let mut unreadable_pages = 0usize;
-        for (page_md, unreadable, from_ocr) in page_results {
-            if unreadable {
-                unreadable_pages += 1;
-            }
-            if !page_md.trim().is_empty() {
-                pages_md.push(page_md);
-                ocr_flags.push(from_ocr);
-            }
-        }
-
-        // OCR'd pages carry no geometry here, so their furniture is found from
-        // the text alone (outermost lines, recurrence, page-number sequence).
-        pdf_furniture::strip_text_furniture(&mut pages_md, &ocr_flags);
-
-        pages_md.retain(|p| !p.trim().is_empty());
-
-        let hyphen_breaks: HashSet<(String, String)> = geoms
-            .iter()
-            .zip(furniture.iter())
-            .filter_map(|(g, f)| g.as_ref().map(|g| pdf_furniture::hyphen_breaks(g, f)))
-            .flatten()
-            .collect();
-        let glued: HashMap<String, String> = geoms
-            .iter()
-            .flatten()
-            .flat_map(|g| g.glued.iter().cloned())
-            .collect();
-        // A page that leaves a code fence open would turn every page after
-        // it into one code block once the pages are joined.
-        for p in pages_md.iter_mut() {
-            close_open_fence(p);
-        }
-        let joined = split_glued_tokens(&join_pages_healing_dangling(&pages_md), &glued);
-        let tidy = tidy_markdown(&joined, &hyphen_breaks);
-        if tidy.is_empty() {
-            if unreadable_pages > 0 {
-                anyhow::bail!(
-                    "All {} page(s) are scanned images and OCR is unavailable in this build \
-                     (macOS has Vision built in; elsewhere recompile with --features ocr)",
-                    page_count
-                );
-            }
-            anyhow::bail!("No text could be extracted from this PDF (corrupt or encrypted?)");
-        }
-        Ok(tidy)
+/// The converter's markdown with its word spaces where the page's glyphs put
+/// them: the converter loses spaces a PDF sets as pen moves rather than
+/// space characters, and puts one where it cuts a span inside a word (see
+/// [`super::pdf_words`]).
+fn respace_from_glyphs(
+    doc: &PdfDocument,
+    page: usize,
+    geom: Option<&PageGeom>,
+    md: &str,
+) -> String {
+    let words = geom.and_then(|g| {
+        let chars = super::pdf_words::on_page(doc.extract_chars(page).ok()?, g.bx);
+        let words = super::pdf_words::glyph_words(&chars)?;
+        let theirs: Vec<&str> = g.words.iter().map(|w| w.text.as_str()).collect();
+        super::pdf_words::agrees(&words, &theirs).then_some(words)
+    });
+    match words {
+        Some(w) => super::pdf_words::respace_lines(md, &w),
+        None => md.to_string(),
     }
 }
 
@@ -1889,27 +2181,15 @@ fn floor_boundary(s: &str, mut i: usize) -> usize {
 /// Recovers GFM tables from vector ruling lines and spatial word clusters
 /// (the ported pdfplumber algorithm) and splices them into the page markdown
 /// in place of the converter's rendering of the same table.
-fn recover_page_vector_tables(
-    doc: &PdfDocument,
-    page: usize,
-    mut page_md: String,
-    geom: Option<&PageGeom>,
-    excluded: &[Rect],
-) -> String {
-    let Ok(paths) = doc.extract_paths(page) else {
-        return page_md;
-    };
-    let Some(geom) = geom else {
-        return page_md;
-    };
-    if paths.is_empty() || geom.words.is_empty() {
-        return page_md;
-    }
-
-    // pdfplumber works top-down from the page's top edge.
-    let page_top = geom.bx.3;
+/// Ruling lines of a page as table edges, top-down from `page_top` (the
+/// pdfplumber convention): thin strokes and fills become lines, and a
+/// drawn rectangle contributes its four sides.
+pub(crate) fn ruling_edges(
+    paths: &[pdf_oxide::elements::PathContent],
+    page_top: f32,
+) -> Vec<crate::parsers::pdf_table::Edge> {
     let mut edges = Vec::new();
-    for p in &paths {
+    for p in paths {
         let top = page_top - (p.bbox.y + p.bbox.height);
         let bottom = page_top - p.bbox.y;
         if p.is_horizontal_line(3.0) || (p.bbox.height <= 2.5 && p.bbox.width >= 10.0) {
@@ -1943,6 +2223,29 @@ fn recover_page_vector_tables(
             ));
         }
     }
+    edges
+}
+
+fn recover_page_vector_tables(
+    doc: &PdfDocument,
+    page: usize,
+    mut page_md: String,
+    geom: Option<&PageGeom>,
+    excluded: &[Rect],
+) -> String {
+    let Ok(paths) = doc.extract_paths(page) else {
+        return page_md;
+    };
+    let Some(geom) = geom else {
+        return page_md;
+    };
+    if paths.is_empty() || geom.words.is_empty() {
+        return page_md;
+    }
+
+    // pdfplumber works top-down from the page's top edge.
+    let page_top = geom.bx.3;
+    let edges = ruling_edges(&paths, page_top);
 
     if edges.is_empty() {
         return page_md;
@@ -2678,6 +2981,54 @@ mod tests {
         let out = join_pages_healing_dangling(&pages);
         assert!(out.contains("consistent with the earlier study."));
         assert!(out.contains("Figure 2: Results\n\n**3 Method**"));
+    }
+
+    #[test]
+    fn nesting_ignores_strings_and_comments_and_reads_flate_streams() {
+        let doc = b"1 0 obj << /A [1 [2 [3]]] /S (a [[[ string) >> endobj % [[[[\n\
+                    2 0 obj << /Length 9 >> stream\n[[[[[[[[[\nendstream endobj";
+        assert_eq!(
+            nesting(doc),
+            Nesting {
+                syntax: 4,
+                streams: 9
+            }
+        );
+        let hostile = format!("<< /X {}{} >>", "[".repeat(5000), "]".repeat(5000));
+        assert!(nesting(hostile.as_bytes()).syntax > MAX_SYNTAX_DEPTH);
+        // A "/stream" key is not the stream keyword.
+        let keyed = format!(
+            "<< /stream 1 /X {}{} >>",
+            "[".repeat(5000),
+            "]".repeat(5000)
+        );
+        assert!(nesting(keyed.as_bytes()).syntax > MAX_SYNTAX_DEPTH);
+        // Nesting inside a compressed stream (content or object stream).
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(format!("{}{} TJ", "[".repeat(20_000), "]".repeat(20_000)).as_bytes())
+            .unwrap();
+        let mut doc = b"3 0 obj << /Length 1 /Filter /FlateDecode >> stream\r\n".to_vec();
+        doc.extend(z.finish().unwrap());
+        doc.extend(b"\r\nendstream endobj");
+        assert!(nesting(&doc).streams > MAX_STREAM_DEPTH);
+        let plain = format!(
+            "<< /Length 1 >> stream\n{}\nendstream",
+            "<< /A ".repeat(20_000)
+        );
+        assert!(nesting(plain.as_bytes()).streams > MAX_STREAM_DEPTH);
+        // An image's flat grey area is a run of one byte, which may be "[".
+        let image = format!(
+            "<< /Subtype /Image /Width 200 /Length 1 >> stream\n{}\nendstream",
+            "[".repeat(40_000)
+        );
+        assert_eq!(nesting(image.as_bytes()).streams, 0);
+        // An object stream counts despite its /N.
+        let objstm = format!(
+            "<< /Type /ObjStm /N 1 /First 4 /Length 1 >> stream\n7 0 {}\nendstream",
+            "[".repeat(20_000)
+        );
+        assert!(nesting(objstm.as_bytes()).streams > MAX_STREAM_DEPTH);
     }
 
     #[test]

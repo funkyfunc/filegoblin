@@ -127,7 +127,18 @@ fn heading_for(t: &str) -> Option<String> {
         return Some(format!("{} {}", "#".repeat(level), inner));
     }
     // A table or figure caption on its own line acts as the table's title.
-    if RE_CAPTION.is_match(t) && title_like(t, 12) && !t.contains(['*', '|']) {
+    // Table titles run longer than figure captions ("Table 4: Selected*
+    // Adverse Reactions Occurring in ≥10% of Patients Receiving …"); a lone
+    // footnote mark is part of the title, paired asterisks are emphasis.
+    let table_title = ["Table", "TABLE", "Exhibit", "EXHIBIT"]
+        .iter()
+        .any(|k| t.starts_with(k));
+    let lone_marks = t.matches('*').count() == 1 && !t.starts_with('*');
+    if RE_CAPTION.is_match(t)
+        && title_like(t, if table_title { 20 } else { 12 })
+        && !t.contains('|')
+        && (lone_marks || !t.contains('*'))
+    {
         return Some(format!("### {t}"));
     }
     // A numbered title, not bold.
@@ -289,6 +300,24 @@ mod tests {
         assert_eq!(
             p("Table 4-1. Memory and Peripheral Mapping"),
             "### Table 4-1. Memory and Peripheral Mapping"
+        );
+        assert_eq!(
+            p(
+                "Table 4: Selected* Adverse Reactions Occurring in ≥10% of Patients Receiving KEYTRUDA in KEYNOTE-006"
+            ),
+            "### Table 4: Selected* Adverse Reactions Occurring in ≥10% of Patients Receiving KEYTRUDA in KEYNOTE-006"
+        );
+        // Emphasis inside a caption is not a footnote mark.
+        assert_eq!(
+            p("Figure 23: *mortality* = .030"),
+            "Figure 23: *mortality* = .030"
+        );
+        // A long figure caption is a description, not a title.
+        assert_eq!(
+            p(
+                "Figure 2: Validation loss of every model across the training steps for each of the four learning rate schedules"
+            ),
+            "Figure 2: Validation loss of every model across the training steps for each of the four learning rate schedules"
         );
         assert_eq!(
             p("1.01 SECTION INCLUDES:\n\nA."),

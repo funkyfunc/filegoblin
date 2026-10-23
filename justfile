@@ -48,3 +48,11 @@ gauntlet mode="smart":
 # just gauntlet-compare target/gauntlet/off target/gauntlet/smart
 gauntlet-compare a b:
 	python3 scripts/run_gauntlet.py --compare {{a}} {{b}}
+
+# olmOCR-bench, the external PDF benchmark (1,403 PDFs; setup notes in
+# scripts/olmocr_bench.py). Tune on the dev split, report the test split.
+# Example: just olmocr-bench mychange dev
+olmocr-bench name split="dev":
+	cargo build --release -p filegoblin --features vision
+	python3 scripts/olmocr_bench.py run {{name}} --split {{split}}
+	${OLMOCR_PYTHON:-python3} scripts/olmocr_bench.py score {{name}} --split {{split}}

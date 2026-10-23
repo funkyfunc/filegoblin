@@ -112,7 +112,9 @@ pub fn recognize(page: &PageImage, bbox: &UserBox) -> Option<Structure> {
             1 => cols.push((ub, p)),
             2 => rows.push((ub, p)),
             3 => headers.push((ub, p)),
-            5 => spans.push((ub, p)),
+            // A projected row header ("Skin and Subcutaneous Tissue" over a
+            // group of rows) is a cell that spans the whole row.
+            4 | 5 => spans.push((ub, p)),
             _ => {}
         }
     }

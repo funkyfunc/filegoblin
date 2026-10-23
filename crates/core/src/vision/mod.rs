@@ -103,9 +103,11 @@ impl PageGate {
             return f();
         }
         std::thread::scope(|s| {
+            // As deep as the PDF conversion threads' stacks: the page's
+            // content is parsed (recursively) again on this thread.
             std::thread::Builder::new()
                 .name("filegoblin-vision".into())
-                .stack_size(8 << 20)
+                .stack_size(64 << 20)
                 .spawn_scoped(s, || {
                     let _permit = self.enter();
                     f()

@@ -357,7 +357,45 @@ fn katex_safe(s: &str) -> String {
     });
     static CIRC_LETTER: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"\\circ([A-Z])").expect("valid regex"));
+    // `\prescript{a}{b}{X}` (mathtools) is `{}^{a}_{b}X` to KaTeX.
+    static PRESCRIPT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\\prescript\s*\{([^{}]*)\}\s*\{([^{}]*)\}\s*\{([^{}]*)\}")
+            .expect("valid regex")
+    });
+    // A math alphabet run into its letter (`\mathcalB`) is one unknown
+    // command; `\mathcal B` is the letter in that alphabet.
+    static GLUED_ALPHABET: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(^|[^\\])\\(mathcal|mathbb|mathrm|mathbf|mathsf|mathit|mathfrak|mathtt|mathscr)([A-Za-z])",
+        )
+        .expect("valid regex")
+    });
+    // Text mode cannot hold a sub- or superscript (`\textit{rpy_{1}q}`);
+    // the same alphabet in math mode can.
+    static TEXT_WITH_SCRIPT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\\text(it|rm|bf|sf|tt|normal|up)?\s*\{((?:[^{}]|\{[^{}]*\})*)\}")
+            .expect("valid regex")
+    });
     let mut out = s.to_string();
+    out = PRESCRIPT.replace_all(&out, "{}^{$1}_{$2}{$3}").into_owned();
+    out = out.replace("\\mathbbm", "\\mathbb");
+    out = GLUED_ALPHABET.replace_all(&out, "$1\\$2 $3").into_owned();
+    out = TEXT_WITH_SCRIPT
+        .replace_all(&out, |c: &regex::Captures| {
+            if !c[2].contains(['_', '^']) {
+                return c[0].to_string();
+            }
+            let alphabet = match c.get(1).map_or("", |m| m.as_str()) {
+                "it" => "mathit",
+                "bf" => "mathbf",
+                "sf" => "mathsf",
+                "tt" => "mathtt",
+                _ => "mathrm",
+            };
+            format!("\\{alphabet}{{{}}}", &c[2])
+        })
+        .into_owned();
+    out = merge_double_scripts(&out);
     // Twice: a match consumes the character after it, which can be the
     // backslash of the next droppable command (`\boldmath\protect`).
     for _ in 0..2 {
@@ -453,6 +491,98 @@ fn katex_safe(s: &str) -> String {
     balance_braces(out.trim())
 }
 
+/// Joins a doubled sub- or superscript (`E^{K}^{C}`, which TeX refuses) into
+/// one (`E^{KC}`): the recognizer read two raised groups, and both are raised.
+fn merge_double_scripts(s: &str) -> String {
+    // The script argument starting at byte `i`: a braced group, a control
+    // word, or one character. Returns (inner text, end).
+    fn arg(s: &str, i: usize) -> Option<(&str, usize)> {
+        let rest = &s[i..];
+        let c = rest.chars().next()?;
+        match c {
+            '{' => {
+                let mut depth = 0usize;
+                let mut escaped = false;
+                for (k, ch) in rest.char_indices() {
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    match ch {
+                        '\\' => escaped = true,
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some((&rest[1..k], i + k + 1));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+            '\\' => {
+                let n = rest[1..]
+                    .find(|ch: char| !ch.is_ascii_alphabetic())
+                    .map_or(rest.len(), |k| k + 1);
+                let n = if n == 1 {
+                    1 + rest[1..].chars().next()?.len_utf8()
+                } else {
+                    n
+                };
+                Some((&rest[..n], i + n))
+            }
+            _ => Some((&rest[..c.len_utf8()], i + c.len_utf8())),
+        }
+    }
+    let mut out = s.to_string();
+    // Repeat: three stacked groups need two passes.
+    for _ in 0..3 {
+        let mut changed = false;
+        let mut next = String::with_capacity(out.len());
+        let mut i = 0;
+        let bytes = out.as_bytes();
+        while i < out.len() {
+            let c = bytes[i];
+            let escaped = i > 0 && bytes[i - 1] == b'\\';
+            if (c == b'^' || c == b'_')
+                && !escaped
+                && let Some((a, end)) = arg(&out, i + 1)
+                && out[end..].trim_start().as_bytes().first() == Some(&c)
+            {
+                let j = end + (out[end..].len() - out[end..].trim_start().len()) + 1;
+                if let Some((b, end2)) = arg(&out, j) {
+                    let sep = if a.ends_with(|ch: char| ch.is_ascii_alphabetic())
+                        && b.starts_with(|ch: char| ch.is_ascii_alphabetic())
+                    {
+                        " "
+                    } else {
+                        ""
+                    };
+                    next.push(c as char);
+                    next.push('{');
+                    next.push_str(a);
+                    next.push_str(sep);
+                    next.push_str(b);
+                    next.push('}');
+                    i = end2;
+                    changed = true;
+                    continue;
+                }
+            }
+            let ch = out[i..].chars().next().expect("in bounds");
+            next.push(ch);
+            i += ch.len_utf8();
+        }
+        out = next;
+        if !changed {
+            break;
+        }
+    }
+    out
+}
+
 /// `Regex::replace_all` for LaTeX: when a replacement that starts with a
 /// letter lands right after a control word (`\\vdots` + `v`), a space goes
 /// between them so the two do not fuse into an unknown command.
@@ -515,7 +645,7 @@ fn balance_braces(s: &str) -> String {
 /// put it: a display formula carries its sentence's comma or period.
 fn canonical_latex(s: &str) -> String {
     static EMPHASIS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"\\(?:boldsymbol|textbf|textit|pmb|bm)\s*\{([^{}]*)\}")
+        regex::Regex::new(r"\\(?:boldsymbol|textbf|textit|pmb|bm)\s*\{((?:[^{}]|\{[^{}]*\})*)\}")
             .expect("valid regex")
     });
     static OPERATOR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -568,6 +698,7 @@ mod tests {
             "\\int\\frac{dx}{x}=\\log x."
         );
         assert_eq!(tidy_latex("\\textbf { \\textit { a x } }"), "ax");
+        assert_eq!(tidy_latex("\\textbf { \\grave { 0 } }"), "\\grave{0}");
         assert_eq!(tidy_latex("F _ { 1 } - s c o r e"), "F_{1}-score");
         assert_eq!(
             tidy_latex("g ( t ) = \\textstyle \\sum _ { k } b _ { k } \\leqslant 1"),
@@ -597,6 +728,25 @@ mod tests {
         assert_eq!(katex_safe(r"\ttA+\itl"), r"A+l");
         assert_eq!(katex_safe(r"\iota+\rho"), r"\iota+\rho");
         assert_eq!(katex_safe(r"x\\i"), r"x\\i");
+        assert_eq!(
+            katex_safe(r"\prescript{}{p}{A}\otimes F"),
+            r"{}^{}_{p}{A}\otimes F"
+        );
+        assert_eq!(katex_safe(r"\mathbbm{1}_{A}"), r"\mathbb{1}_{A}");
+        assert_eq!(
+            katex_safe(r"\lambda(\mathcalB-\mathcalC)"),
+            r"\lambda(\mathcal B-\mathcal C)"
+        );
+        assert_eq!(
+            katex_safe(r"\mathcal{B}\mathrm{d}x"),
+            r"\mathcal{B}\mathrm{d}x"
+        );
+        assert_eq!(katex_safe(r"\beta\textit{y_{1}q}"), r"\beta\mathit{y_{1}q}");
+        assert_eq!(katex_safe(r"\text{if }x"), r"\text{if }x");
+        assert_eq!(katex_safe(r"E_{2}^{\tt K}^{\tt C}"), r"E_{2}^{\tt K\tt C}");
+        assert_eq!(katex_safe(r"f^\prime^\prime(x)"), r"f^{\prime\prime}(x)");
+        assert_eq!(katex_safe(r"x^{a}_{b}"), r"x^{a}_{b}");
+        assert_eq!(katex_safe(r"a\_b\_c"), r"a\_b\_c");
     }
 
     #[test]

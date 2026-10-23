@@ -29,6 +29,9 @@ struct Ocr {
     rec: Model,
     /// CTC class → text; index 0 is the blank.
     chars: Vec<String>,
+    /// CTC class is a CJK symbol (Han, kana, Hangul, CJK punctuation,
+    /// full-width forms): the classes a Latin page must not read.
+    cjk: Vec<bool>,
     /// DB post-processing as each detector was trained: pixel threshold,
     /// mean box score, unclip ratio.
     det_thresh: f32,
@@ -70,6 +73,10 @@ fn ocr() -> Option<&'static Ocr> {
         let mut chars = vec![String::new()];
         chars.extend(dict.lines().map(|l| l.trim_end_matches('\r').to_string()));
         chars.push(" ".to_string());
+        let cjk = chars
+            .iter()
+            .map(|s| s.chars().next().is_some_and(is_cjk))
+            .collect();
         if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
             eprintln!("ocr: detector {dn}, recognizer {rn}");
         }
@@ -77,6 +84,7 @@ fn ocr() -> Option<&'static Ocr> {
             det,
             rec,
             chars,
+            cjk,
             det_thresh,
             box_thresh,
             unclip,
@@ -175,10 +183,11 @@ pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
     let t = std::time::Instant::now();
     let boxes = detect(o, img)?;
     let t_det = t.elapsed();
-    let mut best: Vec<(String, f32)> = vec![(String::new(), 0.0); boxes.len()];
+    let mut best: Vec<Reading> = vec![Reading::default(); boxes.len()];
     read_crops(o, &boxes, &mut best, |b| b.warp(img, REC_HEIGHT))?;
+    keep_one_script(&mut best);
     let mut lines: Vec<Line> = Vec::with_capacity(boxes.len());
-    for (b, (text, score)) in boxes.iter().zip(best) {
+    for (b, Reading { text, score, .. }) in boxes.iter().zip(best) {
         let t = text.trim().to_string();
         if t.is_empty() || score < 0.5 {
             continue;
@@ -203,12 +212,62 @@ pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
     Some(lines)
 }
 
+/// One line's reading, and — when it holds CJK symbols — the reading with
+/// every CJK class ruled out at each time step.
+#[derive(Debug, Clone, Default)]
+struct Reading {
+    text: String,
+    score: f32,
+    without_cjk: Option<(String, f32)>,
+}
+
+/// Is `c` written in a CJK script (or is it CJK punctuation or a full-width
+/// form)?
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x2E80..=0x9FFF      // radicals, CJK punctuation, kana, Han
+        | 0xAC00..=0xD7AF    // Hangul syllables
+        | 0xF900..=0xFAFF    // compatibility ideographs
+        | 0xFF00..=0xFFEF    // half- and full-width forms
+        | 0x20000..=0x3FFFF) // Han extensions
+}
+
+/// Keeps a page in one script family. The multilingual recognizer reads a
+/// few marks on Latin pages as look-alike CJK characters (a dash as `一`, a
+/// plus as `十`, a check box as `口`), which no reader of that page would
+/// write. When CJK symbols are a stray few on a page of Latin, Greek or
+/// Cyrillic text (at most one letter in twenty, against at least twenty
+/// letters of that text), every line that has them takes its reading with
+/// the CJK classes ruled out. Pages that are really written in Chinese,
+/// Japanese or Korean have far more than that and keep their reading.
+fn keep_one_script(readings: &mut [Reading]) {
+    let (mut cjk, mut spaced) = (0usize, 0usize);
+    for r in readings.iter() {
+        for c in r.text.chars() {
+            if is_cjk(c) {
+                cjk += 1;
+            } else if c.is_alphabetic() && (c as u32) < 0x0590 {
+                spaced += 1;
+            }
+        }
+    }
+    if cjk == 0 || spaced < 20 || cjk * 20 > cjk + spaced {
+        return;
+    }
+    for r in readings.iter_mut() {
+        if let Some((text, score)) = r.without_cjk.take() {
+            r.text = text;
+            r.score = score;
+        }
+    }
+}
+
 /// Recognizes `boxes` (batched by aspect ratio so padding stays small) and
 /// stores each reading in `out`.
 fn read_crops(
     o: &Ocr,
     boxes: &[RotBox],
-    out: &mut [(String, f32)],
+    out: &mut [Reading],
     crop: impl Fn(&RotBox) -> RgbImage,
 ) -> Option<()> {
     let mut order: Vec<usize> = (0..boxes.len()).collect();
@@ -409,8 +468,32 @@ fn principal_box(pts: &[(f32, f32)]) -> Option<RotBox> {
     })
 }
 
-/// Reads a batch of line crops; returns (text, mean character confidence).
-fn recognize(o: &Ocr, crops: &[RgbImage]) -> Option<Vec<(String, f32)>> {
+/// Greedy CTC decoding of one class sequence: (text, mean confidence of the
+/// emitted symbols).
+fn ctc_collapse(o: &Ocr, steps: &[(usize, f32)]) -> (String, f32) {
+    let (mut prev, mut conf, mut nconf) = (0usize, 0f32, 0usize);
+    // Every emitted symbol with the time step it was read at.
+    let mut emitted: Vec<(&str, usize)> = Vec::new();
+    for (t, &(best, bp)) in steps.iter().enumerate() {
+        if best != 0 && best != prev {
+            if let Some(s) = o.chars.get(best) {
+                emitted.push((s.as_str(), t));
+            }
+            conf += bp;
+            nconf += 1;
+        }
+        prev = best;
+    }
+    let text = join_with_missing_spaces(&emitted);
+    if std::env::var_os("FILEGOBLIN_DEBUG_CTC").is_some() {
+        let v: Vec<String> = emitted.iter().map(|(c, t)| format!("{c}{t}")).collect();
+        eprintln!("ctc used={} | {} | {text}", steps.len(), v.join(" "));
+    }
+    (text, if nconf == 0 { 0.0 } else { conf / nconf as f32 })
+}
+
+/// Reads a batch of line crops.
+fn recognize(o: &Ocr, crops: &[RgbImage]) -> Option<Vec<Reading>> {
     let widths: Vec<u32> = crops
         .iter()
         .map(|c| {
@@ -449,33 +532,33 @@ fn recognize(o: &Ocr, crops: &[RgbImage]) -> Option<Vec<(String, f32)>> {
     for k in 0..crops.len() {
         // Only the steps covering this crop's real (unpadded) width.
         let used = ((widths[k] as usize * steps).div_ceil(maxw)).min(steps);
-        let (mut prev, mut conf, mut nconf) = (0usize, 0f32, 0usize);
-        // Every emitted symbol with the time step it was read at.
-        let mut emitted: Vec<(&str, usize)> = Vec::new();
+        // Per time step: the best class, and the best class that is not CJK.
+        let mut any: Vec<(usize, f32)> = Vec::with_capacity(used);
+        let mut no_cjk: Vec<(usize, f32)> = Vec::with_capacity(used);
         for t in 0..used {
             let (mut best, mut bp) = (0usize, f32::MIN);
+            let (mut best_n, mut bp_n) = (0usize, f32::MIN);
             for c in 0..classes {
                 let v = probs[[k, t, c]];
                 if v > bp {
                     bp = v;
                     best = c;
                 }
-            }
-            if best != 0 && best != prev {
-                if let Some(s) = o.chars.get(best) {
-                    emitted.push((s.as_str(), t));
+                if v > bp_n && !o.cjk.get(c).copied().unwrap_or(false) {
+                    bp_n = v;
+                    best_n = c;
                 }
-                conf += bp;
-                nconf += 1;
             }
-            prev = best;
+            any.push((best, bp));
+            no_cjk.push((best_n, bp_n));
         }
-        let text = join_with_missing_spaces(&emitted);
-        if std::env::var_os("FILEGOBLIN_DEBUG_CTC").is_some() {
-            let v: Vec<String> = emitted.iter().map(|(c, t)| format!("{c}{t}")).collect();
-            eprintln!("ctc used={used} | {} | {text}", v.join(" "));
-        }
-        res.push((text, if nconf == 0 { 0.0 } else { conf / nconf as f32 }));
+        let (text, score) = ctc_collapse(o, &any);
+        let without_cjk = text.chars().any(is_cjk).then(|| ctc_collapse(o, &no_cjk));
+        res.push(Reading {
+            text,
+            score,
+            without_cjk,
+        });
     }
     Some(res)
 }
@@ -508,6 +591,37 @@ mod tests {
         // Scripts without spaces stay unspaced.
         let e = [("中", 2), ("文", 5), ("字", 11), ("符", 14)];
         assert_eq!(syms(&e), "中文字符");
+    }
+
+    #[test]
+    fn stray_cjk_on_a_latin_page_is_read_again_without_it() {
+        let reading = |text: &str, alt: Option<&str>| Reading {
+            text: text.into(),
+            score: 0.9,
+            without_cjk: alt.map(|a| (a.to_string(), 0.8)),
+        };
+        let mut page = vec![
+            reading("The quick brown fox jumps over the lazy dog", None),
+            reading("x 十 1 = y", Some("x + 1 = y")),
+            reading("一 Das Kennfeld", Some("- Das Kennfeld")),
+        ];
+        keep_one_script(&mut page);
+        assert_eq!(page[1].text, "x + 1 = y");
+        assert_eq!(page[2].text, "- Das Kennfeld");
+
+        // A page written in Japanese keeps every reading.
+        let mut page = vec![
+            reading("被験物質の投与容量で投与した", Some("x")),
+            reading("流体力学教育における一つの試み", Some("y")),
+            reading("Table 1", None),
+        ];
+        keep_one_script(&mut page);
+        assert_eq!(page[0].text, "被験物質の投与容量で投与した");
+
+        // Too little Latin text to judge: leave it.
+        let mut page = vec![reading("十", Some("+")), reading("ab", None)];
+        keep_one_script(&mut page);
+        assert_eq!(page[0].text, "十");
     }
 
     #[test]
