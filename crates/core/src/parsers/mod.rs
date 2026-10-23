@@ -221,6 +221,7 @@ pub mod rtf;
 pub mod sheet;
 pub mod smartart;
 pub mod subtitle;
+pub mod text;
 pub mod trafilatura;
 pub mod transcribe;
 pub mod transcript;

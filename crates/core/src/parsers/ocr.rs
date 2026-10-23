@@ -9,6 +9,13 @@ pub struct OcrGobbler;
 impl Gobble for OcrGobbler {
     fn gobble(&self, path: &Path, _opts: &ParseOptions) -> Result<String> {
         let bytes = std::fs::read(path).context("Failed to open image file for OCR")?;
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let bytes = match Tiff::parse(&bytes) {
+            Some(tiff) if tiff.pages.len() > 1 => return ocr_tiff_pages(&name, &bytes, &tiff),
+            // One page, possibly behind a thumbnail directory: put it first.
+            Some(tiff) if tiff.pages.len() == 1 => tiff.single_page(&bytes, tiff.pages[0]),
+            _ => bytes,
+        };
         let text = ocr_image_bytes(&bytes)?;
         // An error, not a sentence that looks like document content: a caller
         // reading `--json` (or a model reading an MCP result) cannot tell the
@@ -18,11 +25,184 @@ impl Gobble for OcrGobbler {
                 "No text could be extracted from this image (no readable text, or too low-resolution)"
             );
         }
-        Ok(format!(
-            "## Image Text: {}\n\n{}",
-            path.file_name().unwrap_or_default().to_string_lossy(),
-            text.trim()
-        ))
+        Ok(format!("## Image Text: {}\n\n{}", name, text.trim()))
+    }
+}
+
+/// OCRs every page of a multi-page TIFF (scanner and fax output), each under
+/// `## Page N`.
+///
+/// Every OCR backend (Apple Vision, Windows.Media.Ocr, `ocrs` via `image`)
+/// reads only a TIFF's first page, so pages 2..N used to vanish without a
+/// word. Pages are OCR'd in parallel, like scanned PDF pages; a page with no
+/// readable text gets an in-band marker so the numbering stays honest, and a
+/// TIFF with no text on any page is an error, as for a single image.
+fn ocr_tiff_pages(name: &str, bytes: &[u8], tiff: &Tiff) -> Result<String> {
+    use rayon::prelude::*;
+    let total = tiff.pages.len();
+    let ocr_page = |(i, &ifd): (usize, &u64)| {
+        ocr_image_bytes(&tiff.single_page(bytes, ifd))
+            .with_context(|| format!("Failed to OCR page {} of {}", i + 1, total))
+    };
+    // Each page is read from its own copy of the file, so a huge scan goes
+    // one page at a time rather than holding a copy per thread.
+    let texts: Vec<String> = if bytes.len() <= PARALLEL_TIFF_MAX_BYTES {
+        tiff.pages
+            .par_iter()
+            .enumerate()
+            .map(&ocr_page)
+            .collect::<Result<_>>()?
+    } else {
+        tiff.pages
+            .iter()
+            .enumerate()
+            .map(&ocr_page)
+            .collect::<Result<_>>()?
+    };
+
+    if texts.iter().all(|t| t.trim().is_empty()) {
+        anyhow::bail!(
+            "No text could be extracted from any of the {} pages of this TIFF (no readable \
+             text, or too low-resolution)",
+            total
+        );
+    }
+    let mut out = format!("## Image Text: {}\n\n", name);
+    for (i, text) in texts.iter().enumerate() {
+        let n = i + 1;
+        match text.trim() {
+            "" => out.push_str(&format!(
+                "## Page {}\n\n> [Page {}: no readable text]\n\n",
+                n, n
+            )),
+            text => out.push_str(&format!("## Page {}\n\n{}\n\n", n, text)),
+        }
+    }
+    Ok(out.trim_end().to_string())
+}
+
+/// The page directory (IFD) chain of a TIFF or BigTIFF file — just enough
+/// structure to hand each page to an OCR backend on its own, without decoding
+/// (or re-encoding) a single pixel.
+#[derive(Debug)]
+struct Tiff {
+    little_endian: bool,
+    /// BigTIFF: 8-byte offsets and counts, 20-byte directory entries.
+    big: bool,
+    /// Offsets of the full-resolution page directories, in file order.
+    pages: Vec<u64>,
+}
+
+/// `NewSubfileType`: bit 0 marks a reduced-resolution copy (a thumbnail or
+/// preview) of another page rather than a page of its own.
+const TIFF_NEW_SUBFILE_TYPE: u64 = 254;
+
+/// Largest multi-page TIFF whose pages are OCR'd in parallel (see
+/// [`ocr_tiff_pages`]).
+const PARALLEL_TIFF_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+impl Tiff {
+    /// Walks the IFD chain. `None` when the bytes are not a TIFF; a chain that
+    /// breaks off (truncated file, loop) keeps the pages found before it.
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        let (little_endian, big) = match bytes.get(..4)? {
+            [b'I', b'I', 42, 0] => (true, false),
+            [b'M', b'M', 0, 42] => (false, false),
+            [b'I', b'I', 43, 0] => (true, true),
+            [b'M', b'M', 0, 43] => (false, true),
+            _ => return None,
+        };
+        let mut tiff = Tiff {
+            little_endian,
+            big,
+            pages: Vec::new(),
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut next = tiff.read(bytes, tiff.first_ifd_slot(), tiff.offset_width());
+        while let Some(ifd) = next.filter(|&offset| offset != 0) {
+            if !seen.insert(ifd) {
+                break; // a directory pointing back into the chain
+            }
+            let Some(count) = tiff.read(bytes, ifd, tiff.count_width()) else {
+                break;
+            };
+            let entries = ifd + tiff.count_width() as u64;
+            let end = count
+                .checked_mul(tiff.entry_size())
+                .and_then(|len| len.checked_add(entries));
+            if end.is_none_or(|end| end > bytes.len() as u64) {
+                break;
+            }
+            let reduced = (0..count).any(|i| {
+                let entry = entries + i * tiff.entry_size();
+                tiff.read(bytes, entry, 2) == Some(TIFF_NEW_SUBFILE_TYPE)
+                    && tiff.entry_value(bytes, entry).is_some_and(|v| v & 1 == 1)
+            });
+            if !reduced {
+                tiff.pages.push(ifd);
+            }
+            next = tiff.read(
+                bytes,
+                entries + count * tiff.entry_size(),
+                tiff.offset_width(),
+            );
+        }
+        Some(tiff)
+    }
+
+    /// A copy of the file whose header points at page `ifd` first, which is
+    /// the page every reader decodes. Strip offsets are absolute, so nothing
+    /// else needs to move.
+    fn single_page(&self, bytes: &[u8], ifd: u64) -> Vec<u8> {
+        let mut page = bytes.to_vec();
+        let width = self.offset_width();
+        let slot = self.first_ifd_slot() as usize;
+        let encoded = if self.little_endian {
+            ifd.to_le_bytes()[..width].to_vec()
+        } else {
+            ifd.to_be_bytes()[8 - width..].to_vec()
+        };
+        page[slot..slot + width].copy_from_slice(&encoded);
+        page
+    }
+
+    fn offset_width(&self) -> usize {
+        if self.big { 8 } else { 4 }
+    }
+
+    /// Where the header keeps the first directory's offset.
+    fn first_ifd_slot(&self) -> u64 {
+        if self.big { 8 } else { 4 }
+    }
+
+    fn count_width(&self) -> usize {
+        if self.big { 8 } else { 2 }
+    }
+
+    fn entry_size(&self) -> u64 {
+        if self.big { 20 } else { 12 }
+    }
+
+    /// The inline SHORT or LONG value of the directory entry at `entry`.
+    fn entry_value(&self, bytes: &[u8], entry: u64) -> Option<u64> {
+        let value_at = entry + 4 + self.offset_width() as u64;
+        match self.read(bytes, entry + 2, 2)? {
+            3 => self.read(bytes, value_at, 2), // SHORT
+            4 => self.read(bytes, value_at, 4), // LONG
+            _ => None,
+        }
+    }
+
+    /// An unsigned integer of `width` bytes at `at`, in the file's byte order.
+    fn read(&self, bytes: &[u8], at: u64, width: usize) -> Option<u64> {
+        let at = usize::try_from(at).ok()?;
+        let raw = bytes.get(at..at.checked_add(width)?)?;
+        let fold = |acc: u64, b: &u8| (acc << 8) | u64::from(*b);
+        Some(if self.little_endian {
+            raw.iter().rev().fold(0, fold)
+        } else {
+            raw.iter().fold(0, fold)
+        })
     }
 }
 
@@ -600,6 +780,159 @@ fn ocr_model_dir() -> Option<std::path::PathBuf> {
     candidates.into_iter().find(|d| {
         d.join("text-detection.rten").exists() && d.join("text-recognition.rten").exists()
     })
+}
+
+#[cfg(test)]
+mod tiff_tests {
+    use super::*;
+
+    /// One page of a hand-built TIFF: width, height, and whether it is a
+    /// reduced-resolution copy (`NewSubfileType` bit 0).
+    struct Page {
+        width: u32,
+        height: u32,
+        thumbnail: bool,
+    }
+
+    /// Builds an uncompressed 8-bit grayscale multi-page TIFF. `image` only
+    /// writes single pages, so the directory chain is laid out by hand.
+    fn build_tiff(pages: &[Page], little_endian: bool) -> Vec<u8> {
+        let u16b = |v: u16| {
+            if little_endian {
+                v.to_le_bytes()
+            } else {
+                v.to_be_bytes()
+            }
+        };
+        let u32b = |v: u32| {
+            if little_endian {
+                v.to_le_bytes()
+            } else {
+                v.to_be_bytes()
+            }
+        };
+        let mut out: Vec<u8> = if little_endian {
+            b"II".to_vec()
+        } else {
+            b"MM".to_vec()
+        };
+        out.extend_from_slice(&u16b(42));
+        out.extend_from_slice(&u32b(0)); // first IFD, patched below
+        let mut next_slot = 4usize;
+        for (i, page) in pages.iter().enumerate() {
+            let strip_at = out.len() as u32;
+            let pixels = (page.width * page.height) as usize;
+            out.extend(std::iter::repeat_n(40 * (i as u8 + 1), pixels));
+            if out.len() % 2 == 1 {
+                out.push(0); // IFDs start on a word boundary
+            }
+            let ifd_at = out.len() as u32;
+            out[next_slot..next_slot + 4].copy_from_slice(&u32b(ifd_at));
+
+            // (tag, type, value) — SHORT = 3, LONG = 4; ascending tag order.
+            let mut entries: Vec<(u16, u16, u32)> = Vec::new();
+            if page.thumbnail {
+                entries.push((254, 4, 1));
+            }
+            entries.extend([
+                (256, 4, page.width),
+                (257, 4, page.height),
+                (258, 3, 8),
+                (259, 3, 1),
+                (262, 3, 1),
+                (273, 4, strip_at),
+                (277, 3, 1),
+                (278, 4, page.height),
+                (279, 4, pixels as u32),
+            ]);
+            out.extend_from_slice(&u16b(entries.len() as u16));
+            for (tag, kind, value) in entries {
+                out.extend_from_slice(&u16b(tag));
+                out.extend_from_slice(&u16b(kind));
+                out.extend_from_slice(&u32b(1));
+                if kind == 3 {
+                    out.extend_from_slice(&u16b(value as u16));
+                    out.extend_from_slice(&[0, 0]);
+                } else {
+                    out.extend_from_slice(&u32b(value));
+                }
+            }
+            next_slot = out.len();
+            out.extend_from_slice(&u32b(0)); // next IFD
+        }
+        out
+    }
+
+    fn page(width: u32, height: u32) -> Page {
+        Page {
+            width,
+            height,
+            thumbnail: false,
+        }
+    }
+
+    #[test]
+    fn every_page_directory_is_found() {
+        for little_endian in [true, false] {
+            let bytes = build_tiff(&[page(4, 2), page(5, 2), page(6, 3)], little_endian);
+            let tiff = Tiff::parse(&bytes).unwrap();
+            assert_eq!(tiff.pages.len(), 3, "little_endian={little_endian}");
+        }
+    }
+
+    /// The per-page copy is what reaches the OCR backend, and every backend
+    /// reads the first directory — so each copy must decode as its own page.
+    #[test]
+    fn single_page_copies_decode_as_that_page() {
+        for little_endian in [true, false] {
+            let sizes = [(4, 2), (5, 2), (6, 3)];
+            let bytes = build_tiff(&sizes.map(|(w, h)| page(w, h)), little_endian);
+            let tiff = Tiff::parse(&bytes).unwrap();
+            for (i, &ifd) in tiff.pages.iter().enumerate() {
+                let one = tiff.single_page(&bytes, ifd);
+                let img = image::load_from_memory_with_format(&one, image::ImageFormat::Tiff)
+                    .unwrap_or_else(|e| panic!("page {i}: {e}"));
+                assert_eq!((img.width(), img.height()), sizes[i], "page {i}");
+                assert_eq!(img.to_luma8().as_raw()[0], 40 * (i as u8 + 1), "page {i}");
+            }
+        }
+    }
+
+    /// A reduced-resolution preview is a copy of a page, not another page.
+    #[test]
+    fn thumbnails_are_not_pages() {
+        let bytes = build_tiff(
+            &[
+                page(8, 4),
+                Page {
+                    width: 2,
+                    height: 1,
+                    thumbnail: true,
+                },
+                page(8, 4),
+            ],
+            true,
+        );
+        assert_eq!(Tiff::parse(&bytes).unwrap().pages.len(), 2);
+    }
+
+    #[test]
+    fn non_tiffs_and_broken_chains_are_handled() {
+        assert!(Tiff::parse(b"\x89PNG\r\n\x1a\n").is_none());
+        assert!(Tiff::parse(b"II").is_none());
+
+        // Truncated inside the second directory: the first page survives.
+        let bytes = build_tiff(&[page(4, 2), page(4, 2)], true);
+        let tiff = Tiff::parse(&bytes[..bytes.len() - 20]).unwrap();
+        assert_eq!(tiff.pages.len(), 1);
+
+        // A directory whose "next" points back at itself must not loop.
+        let mut looped = build_tiff(&[page(4, 2)], true);
+        let first_ifd = looped[4..8].to_vec();
+        let len = looped.len();
+        looped[len - 4..].copy_from_slice(&first_ifd);
+        assert_eq!(Tiff::parse(&looped).unwrap().pages.len(), 1);
+    }
 }
 
 #[cfg(test)]

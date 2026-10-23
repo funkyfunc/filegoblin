@@ -58,6 +58,139 @@ fn golden_html_article() {
     insta::assert_snapshot!(gobble(&["test_assets/saved_article.html", "-q"]));
 }
 
+/// A Latin-1, semicolon-delimited export (Excel in most of Europe). It used to
+/// print only the header and "(N malformed row(s) skipped)", exiting 0.
+#[test]
+fn golden_csv_latin1_semicolon() {
+    insta::assert_snapshot!(gobble(&["test_assets/latin1_semicolon.csv", "-q"]));
+}
+
+// --- Encodings, containers, and page variants --------------------------------
+
+/// Body of a conversion without its `FILE_START` breadcrumb, so the same
+/// document under different names can be compared.
+fn body(output: &str) -> String {
+    output.lines().skip(1).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn legacy_encoded_text_is_decoded() {
+    let dir = tempfile::tempdir().unwrap();
+    let latin1 = dir.path().join("latin1.txt");
+    std::fs::write(&latin1, b"caf\xe9 notes\n").unwrap();
+    assert!(gobble(&[latin1.to_str().unwrap(), "-q"]).contains("café notes"));
+
+    let utf16 = dir.path().join("utf16.txt");
+    let mut bytes = vec![0xFF, 0xFE];
+    for unit in "hello utf16 wörld\n".encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    std::fs::write(&utf16, bytes).unwrap();
+    assert!(gobble(&[utf16.to_str().unwrap(), "-q"]).contains("hello utf16 wörld"));
+}
+
+/// The legacy-encoding fallback must not turn binary into "text".
+#[test]
+fn unknown_binary_still_exits_4() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob.xyz");
+    std::fs::write(&blob, b"\x7fELF\x02\x01\x01\x00\x00\x00\xe9\xff\x10\x00").unwrap();
+    cmd()
+        .args([blob.to_str().unwrap()])
+        .assert()
+        .code(4)
+        .stderr(contains("binary"));
+}
+
+#[test]
+fn empty_csv_exits_4() {
+    let file = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
+    cmd()
+        .args([file.path().to_str().unwrap(), "-q"])
+        .assert()
+        .code(4);
+}
+
+/// `.docm`/`.dotx` and a renamed `.docx` used to hit the zip magic and come
+/// out as an archive of raw XML parts.
+#[test]
+fn word_variants_and_renamed_documents_convert_like_docx() {
+    let expected = body(&gobble(&["test_assets/quarterly_report.docx", "-q"]));
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["report.docm", "report.dotx", "report.bin", "report"] {
+        let path = dir.path().join(name);
+        std::fs::copy(repo_root().join("test_assets/quarterly_report.docx"), &path).unwrap();
+        let out = gobble(&[path.to_str().unwrap(), "-q"]);
+        assert_eq!(body(&out), expected, "{name}");
+    }
+}
+
+#[test]
+fn macro_enabled_presentation_converts_like_pptx() {
+    let expected = body(&gobble(&["test_assets/dummy.pptx", "-q"]));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("deck.pptm");
+    std::fs::copy(repo_root().join("test_assets/dummy.pptx"), &path).unwrap();
+    assert_eq!(body(&gobble(&[path.to_str().unwrap(), "-q"])), expected);
+}
+
+/// A minimal ustar archive: one 512-byte header per file, data padded to a
+/// block, then two zero blocks.
+fn ustar(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (name, data) in entries {
+        let mut header = [0u8; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..108].copy_from_slice(b"0000644\0");
+        header[108..116].copy_from_slice(b"0000000\0");
+        header[116..124].copy_from_slice(b"0000000\0");
+        header[124..136].copy_from_slice(format!("{:011o}\0", data.len()).as_bytes());
+        header[136..148].copy_from_slice(b"00000000000\0");
+        header[156] = b'0';
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[263..265].copy_from_slice(b"00");
+        // The checksum is computed with its own field read as spaces.
+        header[148..156].copy_from_slice(b"        ");
+        let sum: u32 = header.iter().map(|&b| u32::from(b)).sum();
+        header[148..156].copy_from_slice(format!("{:06o}\0 ", sum).as_bytes());
+        out.extend_from_slice(&header);
+        out.extend_from_slice(data);
+        out.resize(out.len().div_ceil(512) * 512, 0);
+    }
+    out.resize(out.len() + 1024, 0);
+    out
+}
+
+/// The README listed tar support, but a plain `.tar` failed as "plaintext".
+#[test]
+fn plain_tar_is_extracted() {
+    let dir = tempfile::tempdir().unwrap();
+    let tar = ustar(&[("hoard/notes.md", b"# Notes\n\nCount the coins.\n")]);
+    for name in ["hoard.tar", "hoard_no_ext"] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, &tar).unwrap();
+        let out = gobble(&[path.to_str().unwrap(), "-q"]);
+        assert!(out.contains("FILE_START: hoard/notes.md"), "{name}: {out}");
+        assert!(out.contains("Count the coins."), "{name}: {out}");
+    }
+}
+
+/// Every page of a multi-page TIFF is OCR'd, not just the first. OCR is built
+/// in on macOS only (elsewhere it needs `--features ocr` and model weights).
+#[cfg(target_os = "macos")]
+#[test]
+fn multipage_tiff_ocrs_every_page() {
+    let out = gobble(&["test_assets/multipage_scan.tiff", "-q", "--no-cache"]);
+    let page1 = out.find("## Page 1").expect(&out);
+    let page2 = out.find("## Page 2").expect(&out);
+    let ledger = out.find("LEDGER").expect(&out);
+    let treasure = out.find("TREASURE").expect(&out);
+    assert!(
+        page1 < ledger && ledger < page2 && page2 < treasure,
+        "{out}"
+    );
+}
+
 // --- Horde mode over a controlled directory ----------------------------------
 
 #[test]

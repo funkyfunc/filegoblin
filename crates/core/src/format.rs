@@ -71,9 +71,15 @@ impl Format {
 fn from_extension(ext: &str) -> Option<Format> {
     Some(match ext {
         "pdf" => Format::Pdf,
-        "docx" => Format::Docx,
-        "xlsx" | "xls" | "ods" | "csv" => Format::Spreadsheet,
-        "pptx" => Format::Pptx,
+        // The macro-enabled (`m`) and template (`t`) variants of each OOXML
+        // format are the same package with a different content type; without
+        // them a `.docm` hit the zip magic and came out as an archive of raw
+        // XML parts.
+        "docx" | "docm" | "dotx" | "dotm" => Format::Docx,
+        "xlsx" | "xlsm" | "xltx" | "xltm" | "xlsb" | "xlam" | "xls" | "ods" | "csv" | "tsv" => {
+            Format::Spreadsheet
+        }
+        "pptx" | "pptm" | "potx" | "potm" | "ppsx" | "ppsm" => Format::Pptx,
         "odt" | "odp" => Format::OpenDocument,
         "doc" | "ppt" => Format::LegacyOffice,
         "epub" => Format::Epub,
@@ -96,7 +102,7 @@ fn from_extension(ext: &str) -> Option<Format> {
         }
         "mp3" | "m4a" | "wav" | "flac" | "ogg" | "oga" | "aac" | "opus" | "caf" => Format::Audio,
         "mp4" | "m4v" | "mov" | "webm" | "mkv" => Format::Video,
-        "zip" | "gz" | "tgz" => Format::Archive,
+        "zip" | "gz" | "tgz" | "tar" => Format::Archive,
         "md" | "markdown" => Format::Markdown,
         _ => return None,
     })
@@ -119,6 +125,11 @@ fn from_magic(header: &[u8]) -> Option<Format> {
     }
     if header.starts_with(&[0x1f, 0x8b]) {
         return Some(Format::Archive); // gzip
+    }
+    // POSIX/GNU tar: no magic at offset 0, but every ustar header carries
+    // `ustar` at offset 257.
+    if header.get(257..262) == Some(b"ustar".as_slice()) {
+        return Some(Format::Archive);
     }
     // OLE compound file (legacy .doc/.ppt/.xls/.msg). Better an actionable
     // error than the plaintext reader dumping binary garbage.
@@ -195,7 +206,48 @@ pub fn detect(path: &Path, header: &[u8]) -> Format {
     {
         return fmt;
     }
-    from_magic(header).unwrap_or(Format::Text)
+    match from_magic(header) {
+        // A zip might be a renamed Office document: look inside before
+        // treating it as an archive to extract.
+        Some(Format::Archive) if header.starts_with(b"PK") => {
+            ooxml_package_kind(path).unwrap_or(Format::Archive)
+        }
+        Some(fmt) => fmt,
+        None => Format::Text,
+    }
+}
+
+/// Classifies a zip as a Word, Excel or PowerPoint package from its central
+/// directory, or `None` when it is not one (or cannot be read).
+///
+/// Both halves of the test matter: every OOXML package has a
+/// `[Content_Types].xml` part, but so do NuGet and XPS packages; and a plain
+/// zip can contain a folder that happens to be called `ppt/`. Only the
+/// combination is an Office document.
+fn ooxml_package_kind(path: &Path) -> Option<Format> {
+    let file = std::fs::File::open(path).ok()?;
+    let archive = zip::ZipArchive::new(std::io::BufReader::new(file)).ok()?;
+    let mut has_content_types = false;
+    let mut kind = None;
+    for name in archive.file_names() {
+        if name == "[Content_Types].xml" {
+            has_content_types = true;
+        } else if kind.is_none() {
+            kind = if name.starts_with("word/") {
+                Some(Format::Docx)
+            } else if name.starts_with("xl/") {
+                Some(Format::Spreadsheet)
+            } else if name.starts_with("ppt/") {
+                Some(Format::Pptx)
+            } else {
+                None
+            };
+        }
+        if has_content_types && kind.is_some() {
+            return kind;
+        }
+    }
+    None
 }
 
 /// How many leading bytes callers should read for [`detect`].
@@ -335,6 +387,86 @@ mod tests {
         // Extension still wins over the brand.
         assert_eq!(detect(Path::new("a.heic"), b""), Format::Image);
         assert_eq!(detect(Path::new("a.heif"), b""), Format::Image);
+    }
+
+    /// Regression: `.docm`/`.xlsm`/`.pptm` and the template variants hit the
+    /// zip magic and were dumped as an archive of raw XML parts.
+    #[test]
+    fn ooxml_variants_route_to_their_office_parser() {
+        for ext in ["docx", "docm", "dotx", "dotm", "DOCM"] {
+            assert_eq!(detect(Path::new(&format!("a.{ext}")), b""), Format::Docx);
+        }
+        for ext in ["xlsx", "xlsm", "xltx", "xltm", "xlsb", "xlam", "tsv"] {
+            assert_eq!(
+                detect(Path::new(&format!("a.{ext}")), b""),
+                Format::Spreadsheet,
+                "{ext}"
+            );
+        }
+        for ext in ["pptx", "pptm", "potx", "potm", "ppsx", "ppsm"] {
+            assert_eq!(detect(Path::new(&format!("a.{ext}")), b""), Format::Pptx);
+        }
+    }
+
+    /// Regression: a plain `.tar` was read as "plaintext" and failed.
+    #[test]
+    fn tar_by_extension_and_ustar_magic() {
+        assert_eq!(detect(Path::new("a.tar"), b""), Format::Archive);
+        let mut header = vec![0u8; 512];
+        header[..5].copy_from_slice(b"d/x.t");
+        header[257..263].copy_from_slice(b"ustar\0");
+        assert_eq!(detect(Path::new("backup"), &header), Format::Archive);
+        // GNU tar writes `ustar  \0` — same five leading bytes.
+        header[257..265].copy_from_slice(b"ustar  \0");
+        assert_eq!(detect(Path::new("backup.bin"), &header), Format::Archive);
+    }
+
+    fn write_zip(suffix: &str, names: &[&str]) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut file = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
+        {
+            let mut zip = zip::ZipWriter::new(file.as_file_mut());
+            for name in names {
+                zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(b"<x/>").unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        file
+    }
+
+    fn detect_file(file: &tempfile::NamedTempFile) -> Format {
+        let header = read_header(file.path(), SNIFF_BYTES);
+        detect(file.path(), &header)
+    }
+
+    /// A renamed (or extension-less) Office document is a zip; look inside it
+    /// instead of extracting it as an archive.
+    #[test]
+    fn renamed_ooxml_is_recognised_from_its_zip_entries() {
+        let docx = write_zip(".bin", &["[Content_Types].xml", "word/document.xml"]);
+        assert_eq!(detect_file(&docx), Format::Docx);
+        let xlsx = write_zip("", &["[Content_Types].xml", "xl/workbook.xml"]);
+        assert_eq!(detect_file(&xlsx), Format::Spreadsheet);
+        let pptx = write_zip(".dat", &["ppt/presentation.xml", "[Content_Types].xml"]);
+        assert_eq!(detect_file(&pptx), Format::Pptx);
+    }
+
+    #[test]
+    fn plain_zips_stay_archives() {
+        let plain = write_zip(".bin", &["notes/readme.md", "src/main.rs"]);
+        assert_eq!(detect_file(&plain), Format::Archive);
+        // A folder that happens to be called `ppt/`, without the OPC content
+        // types part, is not a presentation.
+        let folder = write_zip(".bin", &["ppt/slides.md"]);
+        assert_eq!(detect_file(&folder), Format::Archive);
+        // NuGet/XPS packages carry `[Content_Types].xml` but no Office parts.
+        let nupkg = write_zip(".bin", &["[Content_Types].xml", "lib/net8.0/a.dll"]);
+        assert_eq!(detect_file(&nupkg), Format::Archive);
+        // An explicit `.zip` is extracted even when it holds a document.
+        let zipped_doc = write_zip(".zip", &["[Content_Types].xml", "word/document.xml"]);
+        assert_eq!(detect_file(&zipped_doc), Format::Archive);
     }
 
     #[test]

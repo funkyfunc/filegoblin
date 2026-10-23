@@ -1,0 +1,12 @@
+---
+source: crates/cli/tests/golden.rs
+expression: "gobble(&[\"test_assets/latin1_semicolon.csv\", \"-q\"])"
+---
+// --- FILE_START: test_assets/latin1_semicolon.csv ---
+## Dataset: latin1_semicolon.csv
+
+| name | city | amount |
+|---|---|---|
+| José | München | 1,50 |
+| Anna | Köln | 2,75 |
+| Zoë | Malmö | 12,00 |

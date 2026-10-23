@@ -19,7 +19,7 @@ pub mod walk;
 
 use crate::parsers::gobble::Gobble;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
 use std::path::Path;
 #[cfg(feature = "web")]
@@ -499,7 +499,9 @@ pub(crate) fn route_and_gobble(
             {
                 return (format, Ok(markdown));
             }
-            std::fs::read_to_string(path).context("Failed to read file as plaintext")
+            // Latin-1 and UTF-16 text is still text: decode it rather than
+            // failing the UTF-8-only read. Binary bytes are refused.
+            parsers::text::read_text_file(path)
         }
     };
 
@@ -641,6 +643,7 @@ const CACHE_FORMAT_MAGIC: &[u8] = b"filegoblin-cache-v1";
 
 #[cfg(feature = "web")]
 pub(crate) fn fetch_url(url: &Url, quiet: bool) -> Result<FetchedBody> {
+    use anyhow::Context;
     use std::io::Read;
 
     // Before anything else, including the cache: a blocked target must not be

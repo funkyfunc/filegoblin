@@ -15,11 +15,13 @@ impl Gobble for OfficeGobbler {
             anyhow::bail!("Mischievous I/O Error: file not found at {:?}", path);
         }
 
-        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let buf = std::fs::read(path).context("Failed to read docx buffer")?;
 
-        if ext == "docx" {
-            let buf = std::fs::read(path).context("Failed to read docx buffer")?;
-
+        // Every Word package is a zip: `.docx`, its macro/template variants
+        // (`.docm`/`.dotx`/`.dotm`), and renamed documents that routing found
+        // by their `word/` entries. This used to demand an extension of exactly
+        // `docx`, so all of those were refused.
+        if buf.starts_with(b"PK") {
             // Scan zip archive for document.xml, rels, charts, and smartart diagrams
             let mut doc_xml = String::new();
             let mut rels_xml = String::new();
@@ -227,10 +229,7 @@ impl Gobble for OfficeGobbler {
             }
             Ok(extracted.trim().to_string())
         } else {
-            // Spreadsheets are routed to SheetGobbler; OfficeGobbler only handles Word.
-            anyhow::bail!(
-                "OfficeGobbler only handles .docx; spreadsheets are routed to the sheet parser"
-            )
+            anyhow::bail!("Not a Word document: the file is not an OOXML (zip) package")
         }
     }
 }
@@ -1177,6 +1176,51 @@ mod tests {
         let p = Path::new("does_not_exist.docx");
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         assert!(gobbler.gobble(p, &(&args).into()).is_err());
+    }
+
+    fn write_word_package(suffix: &str, text: &str) -> tempfile::NamedTempFile {
+        let file = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
+        docx_rs::Docx::new()
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text(text)))
+            .build()
+            .pack(file.reopen().unwrap())
+            .unwrap();
+        file
+    }
+
+    /// Regression: only an extension of exactly `docx` was parsed, so `.docm`,
+    /// `.dotx`, `.dotm`, `.DOCX` and renamed documents were all refused.
+    #[test]
+    fn word_package_variants_are_parsed() {
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        for suffix in [".docx", ".docm", ".dotx", ".dotm", ".DOCX", ".bin"] {
+            let file = write_word_package(suffix, "Goblin minutes");
+            let md = OfficeGobbler
+                .gobble(file.path(), &(&args).into())
+                .unwrap_or_else(|e| panic!("{suffix}: {e:#}"));
+            assert!(md.contains("Goblin minutes"), "{suffix}: {md}");
+        }
+    }
+
+    /// A renamed Word document routes here by its zip entries, not its name.
+    #[test]
+    fn renamed_word_document_routes_by_content() {
+        let file = write_word_package(".bin", "Renamed hoard");
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        let (format, md) = crate::route_and_gobble(&file.path().to_string_lossy(), &args);
+        assert_eq!(format, crate::format::Format::Docx);
+        assert!(md.unwrap().contains("Renamed hoard"));
+    }
+
+    #[test]
+    fn non_zip_word_file_is_an_error() {
+        let mut file = tempfile::Builder::new().suffix(".docx").tempfile().unwrap();
+        std::io::Write::write_all(&mut file, b"plain text pretending").unwrap();
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        let err = OfficeGobbler
+            .gobble(file.path(), &(&args).into())
+            .unwrap_err();
+        assert!(err.to_string().contains("Not a Word document"), "{err}");
     }
 
     #[test]

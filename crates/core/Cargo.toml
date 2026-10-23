@@ -12,7 +12,7 @@ categories = ["text-processing", "parser-implementations"]
 
 [features]
 default = []
-web = ["dep:reqwest", "dep:governor", "dep:robotxt", "dep:tokio", "dep:encoding_rs"]
+web = ["dep:reqwest", "dep:governor", "dep:robotxt", "dep:tokio"]
 # macOS needs no feature: Apple Vision OCR is built in. This gates only the
 # pure-Rust fallback engine for Linux (ocrs/rten) and the Windows OCR API path.
 ocr = ["dep:rten", "dep:rten-tensor", "dep:ocrs", "dep:tokio"]
@@ -76,7 +76,9 @@ rten-tensor = { version = "0.24.0", optional = true }
 # Always-on: the DOM-based HTML→markdown extractor (parsers/html.rs) is a core
 # parser, not a web-only one (local .html files and EPUB chapters use it too).
 scraper = "0.25.0"
-encoding_rs = { version = "0.8", optional = true }
+# Non-optional: undeclared text (Latin-1/UTF-16 .txt, CSV exports) is decoded
+# through it, and calamine already compiles it into every build anyway.
+encoding_rs = "0.8"
 serde = { version = "1.0.228", features = ["derive"] }
 # Cache keys (pure Rust)
 sha2 = "0.10"

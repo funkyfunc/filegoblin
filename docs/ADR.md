@@ -1075,3 +1075,18 @@ The CI workflows pass actionlint (one new runner label is not in its list yet), 
 **Open.** The model packages are versioned with filegoblin, so every release re-uploads the same weights to both registries, and npm keeps every version. Versioning the model packages separately, and publishing them only when a model changes, would avoid that.
 
 **Status:** Accepted.
+
+## 2026-10-22: Undeclared text encodings, CSV dialects, OOXML variants, tar, multi-page TIFF
+
+**Context.** A probe of everyday inputs found five silent or loud failures outside the PDF path. A Latin-1, `;`-delimited CSV (Excel's default export in most of Europe) printed only its header plus "(2 malformed row(s) skipped)" and exited 0; a UTF-8 `;` CSV came out as one column. Latin-1 and UTF-16 `.txt` files failed the UTF-8-only read. `.docm`/`.xlsm`/`.pptm` and the template variants hit the zip magic and were dumped as an archive of raw XML, as was any renamed Office file. A plain `.tar` was read as "plaintext". A multi-page TIFF had only page 1 OCR'd, with nothing saying so.
+
+**Decision.**
+- **Text decoding** (`parsers/text.rs`) for plain text, markdown, code, CSV/TSV, subtitles and stdin: a BOM decides (UTF-8, UTF-16LE/BE); otherwise UTF-8 if valid; otherwise Windows-1252. `encoding_rs` became a non-optional dependency: calamine already compiles it into every build, so it costs nothing (no `chardetng`; statistical guessing between legacy code pages wasn't needed for the failures seen). Anything decoded by a fallback is refused if it contains NULs or more than 1% control characters, so an unknown binary still fails loudly instead of becoming mojibake.
+- **CSV**: the delimiter is sniffed among `,` `;` tab `|` from the first 20 records (quote-aware): the candidate on whose field count (> 1) the most records agree wins, then the higher count, then that order. `.tsv` is always tab. A CSV with no rows, or whose every data row is malformed, is an error.
+- **OOXML variants** route by extension to the Word, sheet and PowerPoint parsers; the Word parser no longer insists on the extension `docx`. A zip without a known extension is opened (central directory only) and is an Office document only if it has both `[Content_Types].xml` and `word/`, `xl/` or `ppt/` entries — NuGet and XPS packages also carry the content-types part, and a plain zip can have a `ppt/` folder. An explicit `.zip` is always extracted.
+- **tar**: `.tar` and the `ustar` magic at offset 257 go through the archive path with the existing entry and size caps (shared with `.tar.gz`).
+- **Multi-page TIFF**: every OCR backend reads only the first image directory, so each page is handed over as a copy of the file whose header points at that page's directory. No pixels are decoded or re-encoded, and nothing is backend-specific (checked with Apple Vision and with the `image` decoder that `ocrs` uses; Windows OCR was not run). Reduced-resolution directories (`NewSubfileType` bit 0, thumbnails) are not pages. More than one page renders as `## Page N` sections, OCR'd in parallel; a page without text gets a `> [Page N: no readable text]` marker.
+
+**Known gap.** Archive members are reported by their path inside the archive (`d/x.txt`), not as `{archive}/{path}`: the remapping in `ArchiveGobbler::extract_archive` never matches because the walk already yields relative paths. This predates these changes and was left alone.
+
+**Status:** Accepted.

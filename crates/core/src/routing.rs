@@ -50,10 +50,24 @@ pub fn route_targets(
 }
 
 fn route_stdin(tx: &std::sync::mpsc::SyncSender<crate::pipeline::GobbleDocument>) {
-    let mut buffer = String::new();
-    if let Err(e) = std::io::stdin().read_to_string(&mut buffer) {
+    let mut bytes = Vec::new();
+    if let Err(e) = std::io::stdin().read_to_end(&mut bytes) {
         eprintln!("{} Error reading stdin: {}", "⚠️".yellow(), e);
     }
+    // Piped text gets the same decoding as a text file (`iconv`-free Latin-1
+    // and UTF-16), and piped binary is refused in-band rather than dumped.
+    let buffer = match crate::parsers::text::decode_text(bytes) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("{} Could not read stdin as text: {}", "⚠️".yellow(), e);
+            let _ = tx.send(crate::pipeline::GobbleDocument::failed(
+                "stdin".to_string(),
+                "text",
+                format!("{:#}", e),
+            ));
+            return;
+        }
+    };
     if !buffer.is_empty() {
         let _ = tx.send(crate::pipeline::GobbleDocument::extracted(
             "stdin".to_string(),

@@ -8,7 +8,7 @@ const MAX_TOTAL_UNCOMPRESSED: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 /// Maximum number of entries we will extract from a single archive.
 const MAX_ENTRIES: usize = 100_000;
 
-/// Parses and extracts archives (.zip, .gz, .tgz) by unpacking them into
+/// Parses and extracts archives (.zip, .tar, .gz, .tgz) by unpacking them into
 /// a temporary directory and recursively processing the contents.
 pub struct ArchiveGobbler;
 
@@ -37,12 +37,14 @@ impl ArchiveGobbler {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
-        if !matches!(ext.as_str(), "zip" | "gz" | "tgz") {
-            let header = crate::format::read_header(path, 4);
+        if !matches!(ext.as_str(), "zip" | "gz" | "tgz" | "tar") {
+            let header = crate::format::read_header(path, 512);
             ext = if header.starts_with(b"PK") {
                 "zip".to_string()
             } else if header.starts_with(&[0x1f, 0x8b]) {
                 "gz".to_string()
+            } else if header.get(257..262) == Some(b"ustar".as_slice()) {
+                "tar".to_string()
             } else {
                 ext
             };
@@ -62,6 +64,7 @@ impl ArchiveGobbler {
         match ext.as_str() {
             "zip" => extract_zip(path, temp_dir.path())?,
             "gz" | "tgz" => extract_gzip(path, temp_dir.path())?,
+            "tar" => extract_tar(path, temp_dir.path())?,
             other => anyhow::bail!("Unsupported archive format: {}", other),
         }
 
@@ -198,12 +201,23 @@ fn extract_single_gz(path: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Extracts a gzipped tar with a total-size cap. `tar`'s `unpack` handles `..`
-/// and absolute-path traversal internally; we bound the decompressed volume.
+/// Extracts a gzipped tar through the same capped unpacker as a plain tar.
 fn extract_tar_gz(path: &Path, dest: &Path) -> Result<()> {
     let file = std::fs::File::open(path).context("Failed to open tar.gz archive")?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decoder);
+    unpack_tar(flate2::read::GzDecoder::new(file), dest)
+}
+
+/// Extracts an uncompressed tar. The README always listed tar, but a plain
+/// `.tar` was never routed here and failed as "plaintext".
+fn extract_tar(path: &Path, dest: &Path) -> Result<()> {
+    let file = std::fs::File::open(path).context("Failed to open tar archive")?;
+    unpack_tar(file, dest)
+}
+
+/// Unpacks a tar stream with entry-count and total-size caps. `tar`'s `unpack`
+/// handles `..` and absolute-path traversal internally; we bound the volume.
+fn unpack_tar<R: std::io::Read>(reader: R, dest: &Path) -> Result<()> {
+    let mut archive = tar::Archive::new(reader);
 
     let mut total: u64 = 0;
     let mut count: usize = 0;
@@ -274,6 +288,53 @@ mod tests {
 
         let err = extract_zip_capped(zip.path(), dest.path(), 1024).unwrap_err();
         assert!(err.to_string().contains("bomb guard"), "got: {err}");
+    }
+
+    fn make_tar(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, data) in entries {
+            let mut header = tar::Header::new_ustar();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, *data).unwrap();
+        }
+        builder.into_inner().unwrap()
+    }
+
+    /// Regression: a plain `.tar` failed with "Failed to read file as plaintext".
+    #[test]
+    fn plain_tar_extracts() {
+        let tar_bytes = make_tar(&[("d/x.txt", b"hello tar\n"), ("d/y.md", b"# y\n")]);
+        let archive = tempfile::Builder::new().suffix(".tar").tempfile().unwrap();
+        std::fs::write(archive.path(), &tar_bytes).unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        extract_tar(archive.path(), dest.path()).unwrap();
+        let x = std::fs::read_to_string(dest.path().join("d/x.txt")).unwrap();
+        assert_eq!(x, "hello tar\n");
+        assert!(dest.path().join("d/y.md").exists());
+    }
+
+    /// The whole route: a `.tar` (or an extension-less one, by its ustar
+    /// magic) is extracted and its entries converted, like a zip.
+    #[test]
+    fn tar_routes_through_the_archive_path() {
+        use clap::Parser;
+        let tar_bytes = make_tar(&[("d/x.txt", b"hello tar\n")]);
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["t.tar", "t_no_ext"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, &tar_bytes).unwrap();
+            let args = crate::cli::Cli::parse_from(["filegoblin", "-q", "dummy"]);
+            let docs = crate::gobble_local(&path.to_string_lossy(), &args).unwrap();
+            let doc = docs
+                .iter()
+                .find(|d| d.path.ends_with("d/x.txt"))
+                .unwrap_or_else(|| panic!("{name}: no d/x.txt document in {docs:?}"));
+            assert!(doc.error.is_none(), "{name}: {:?}", doc.error);
+            assert!(doc.content.contains("hello tar"), "{name}");
+        }
     }
 
     #[test]

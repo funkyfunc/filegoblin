@@ -14,8 +14,9 @@ pub struct SubtitleGobbler;
 
 impl Gobble for SubtitleGobbler {
     fn gobble(&self, path: &Path, opts: &ParseOptions) -> Result<String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read subtitle file: {e}"))?;
+        // .srt files in the wild are as often Windows-1252 or UTF-16 as UTF-8.
+        let content = crate::parsers::text::read_text_file(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read subtitle file: {e:#}"))?;
         let title = path.file_name().unwrap_or_default().to_string_lossy();
         self.render_with_title(&content, &title, opts)
     }

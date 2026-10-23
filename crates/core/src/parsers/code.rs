@@ -11,7 +11,7 @@ impl Gobble for CodeGobbler {
     /// with the wrong grammar.
     fn gobble(&self, path: &Path, opts: &ParseOptions) -> Result<String> {
         let source_code =
-            std::fs::read_to_string(path).context("Failed to read source file as UTF-8")?;
+            crate::parsers::text::read_text_file(path).context("Failed to read source file")?;
 
         if opts.extract == Some(crate::cli::ExtractMode::Symbols) {
             let is_rust = path

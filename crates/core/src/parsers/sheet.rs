@@ -17,53 +17,38 @@ impl Gobble for SheetGobbler {
             .to_lowercase();
 
         match extension.as_str() {
-            "csv" => self.parse_csv(path),
-            "xlsx" | "xls" | "ods" => self.parse_workbook(path),
-            _ => anyhow::bail!("Unsupported sheet extension: {}", extension),
+            "csv" => self.parse_csv(path, None),
+            // Tab-separated by definition: no sniffing.
+            "tsv" => self.parse_csv(path, Some(b'\t')),
+            // Every workbook flavour (xlsx/xlsm/xltx/xltm/xlam, xlsb, xls, ods),
+            // plus renamed workbooks routed here by magic: calamine picks the
+            // reader from the extension, or tries each one when it can't.
+            _ => self.parse_workbook(path),
         }
     }
 }
 
+/// Delimiters a CSV is sniffed for, in tie-break order.
+const CSV_DELIMITERS: [u8; 4] = [b',', b';', b'\t', b'|'];
+/// How many leading records the delimiter sniff looks at.
+const CSV_SNIFF_RECORDS: usize = 20;
+
 impl SheetGobbler {
-    fn parse_csv(&self, path: &Path) -> Result<String> {
-        let mut rdr = csv::ReaderBuilder::new()
+    /// `delimiter: None` sniffs it. Bytes are decoded first (BOM, UTF-8,
+    /// Windows-1252): the csv reader only yields UTF-8 records, so a Latin-1
+    /// export used to lose every row with an accented letter.
+    fn parse_csv(&self, path: &Path, delimiter: Option<u8>) -> Result<String> {
+        let bytes = std::fs::read(path).context("Failed to open CSV file")?;
+        let text = crate::parsers::text::decode_text(bytes).context("Failed to read CSV file")?;
+        let delimiter = delimiter.unwrap_or_else(|| sniff_delimiter(&text));
+        let records = csv::ReaderBuilder::new()
             .has_headers(false)
             .flexible(true)
-            .from_path(path)
-            .context("Failed to open CSV file")?;
-
-        let mut output = String::new();
-        output.push_str(&format!(
-            "## Dataset: {}\n\n",
-            path.file_name().unwrap_or_default().to_string_lossy()
-        ));
-
-        let mut headers: Option<Vec<String>> = None;
-        let mut skipped = 0usize;
-        for result in rdr.records() {
-            // One malformed row must not abort the whole dataset.
-            let Ok(record) = result else {
-                skipped += 1;
-                continue;
-            };
-            let fields: Vec<String> = record.iter().map(|f| f.trim().to_string()).collect();
-
-            let Some(headers) = &headers else {
-                let names = header_names(&fields);
-                output.push_str(&table_header(&names));
-                headers = Some(names);
-                continue;
-            };
-
-            if let Some(line) = table_row(headers.len(), &fields) {
-                output.push_str(&line);
-            }
-        }
-        if skipped > 0 {
-            output.push_str(&format!("\n({} malformed row(s) skipped)\n", skipped));
-        }
-
-        Ok(output)
+            .delimiter(delimiter)
+            .from_reader(text.as_bytes())
+            .into_records();
+        let title = path.file_name().unwrap_or_default().to_string_lossy();
+        render_csv_records(&title, records)
     }
 
     fn parse_workbook(&self, path: &Path) -> Result<String> {
@@ -123,6 +108,106 @@ impl SheetGobbler {
 
         Ok(output)
     }
+}
+
+/// Picks the CSV delimiter from the first [`CSV_SNIFF_RECORDS`] records.
+///
+/// Excel in most of Europe writes `;` (the comma is the decimal separator), so
+/// assuming `,` turned `name;city;amount` into a one-column table. Each
+/// candidate is scored by how many sampled records share its most common field
+/// count, then by that count; a candidate that never splits a row (count 1)
+/// cannot win. Parsing is quote-aware, so a delimiter inside a quoted field
+/// does not count. With no winner the file is single-column, read with `,`.
+fn sniff_delimiter(text: &str) -> u8 {
+    let mut best: Option<(u8, (usize, usize))> = None;
+    for delimiter in CSV_DELIMITERS {
+        let counts: Vec<usize> = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .delimiter(delimiter)
+            .from_reader(text.as_bytes())
+            .into_records()
+            .filter_map(Result::ok)
+            .take(CSV_SNIFF_RECORDS)
+            .map(|record| record.len())
+            .collect();
+        let Some(fields) = modal_value(&counts) else {
+            continue;
+        };
+        if fields < 2 {
+            continue;
+        }
+        let agreeing = counts.iter().filter(|&&c| c == fields).count();
+        // Agreement as a fraction, kept in integers: per-mille is plenty.
+        let score = (agreeing * 1000 / counts.len(), fields);
+        if best.is_none_or(|(_, top)| score > top) {
+            best = Some((delimiter, score));
+        }
+    }
+    best.map_or(b',', |(delimiter, _)| delimiter)
+}
+
+/// The most common value (the smallest one on a tie), or `None` when empty.
+fn modal_value(values: &[usize]) -> Option<usize> {
+    let mut freq: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for v in values {
+        *freq.entry(*v).or_default() += 1;
+    }
+    freq.into_iter()
+        .max_by(|(va, fa), (vb, fb)| fa.cmp(fb).then(vb.cmp(va)))
+        .map(|(v, _)| v)
+}
+
+/// Renders CSV records as a pipe table titled `## Dataset: <title>`; row 1 is
+/// the header.
+///
+/// A malformed row is skipped (one bad line must not abort the dataset) and
+/// counted in-band, but a CSV with no rows, or whose every data row was
+/// malformed, is an error: printing just the header and exiting 0 was silent
+/// data loss.
+fn render_csv_records(
+    title: &str,
+    records: impl Iterator<Item = csv::Result<csv::StringRecord>>,
+) -> Result<String> {
+    let mut output = format!("## Dataset: {}\n\n", title);
+    let mut headers: Option<Vec<String>> = None;
+    let mut skipped = 0usize;
+    let mut data_rows = 0usize;
+    for result in records {
+        let Ok(record) = result else {
+            skipped += 1;
+            continue;
+        };
+        let fields: Vec<String> = record.iter().map(|f| f.trim().to_string()).collect();
+
+        let Some(headers) = &headers else {
+            let names = header_names(&fields);
+            output.push_str(&table_header(&names));
+            headers = Some(names);
+            continue;
+        };
+
+        if let Some(line) = table_row(headers.len(), &fields) {
+            output.push_str(&line);
+            data_rows += 1;
+        }
+    }
+
+    match (headers.is_some(), data_rows, skipped) {
+        (false, _, 0) => anyhow::bail!("This CSV has no rows"),
+        (false, _, skipped) => {
+            anyhow::bail!("Every row of this CSV was malformed ({skipped} skipped)")
+        }
+        (true, 0, skipped) if skipped > 0 => anyhow::bail!(
+            "All {skipped} data row(s) of this CSV were malformed; only the header row \
+             could be read"
+        ),
+        _ => {}
+    }
+    if skipped > 0 {
+        output.push_str(&format!("\n({} malformed row(s) skipped)\n", skipped));
+    }
+    Ok(output)
 }
 
 fn cell_to_string(cell: &Data) -> String {
@@ -288,6 +373,11 @@ mod xlsx_tests {
     /// every sheet test used CSV, which does not touch calamine at all. A
     /// calamine upgrade that broke workbook reading would have been invisible.
     fn write_xlsx(rows: &[&[&str]]) -> tempfile::NamedTempFile {
+        write_workbook(".xlsx", rows)
+    }
+
+    /// [`write_xlsx`] under any file suffix (`.xlsm`, `.xltx`, none, …).
+    fn write_workbook(suffix: &str, rows: &[&[&str]]) -> tempfile::NamedTempFile {
         let mut sheet = String::from(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
@@ -323,7 +413,7 @@ mod xlsx_tests {
             ("xl/worksheets/sheet1.xml", sheet),
         ];
 
-        let mut file = tempfile::Builder::new().suffix(".xlsx").tempfile().unwrap();
+        let mut file = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
         {
             let mut zip = zip::ZipWriter::new(file.as_file_mut());
             let opts = zip::write::SimpleFileOptions::default()
@@ -373,6 +463,32 @@ mod xlsx_tests {
         let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
         assert!(SheetGobbler.gobble(file.path(), &(&args).into()).is_err());
     }
+
+    /// Regression: macro-enabled and template workbooks were extracted as an
+    /// archive of raw XML; a renamed workbook was "Unsupported sheet extension".
+    #[test]
+    fn workbook_variants_and_renamed_workbooks_render() {
+        let rows: &[&[&str]] = &[&["Item", "Qty"], &["Sword", "2"]];
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        for suffix in [".xlsm", ".xltx", ".xltm", ".xlam", ".XLSX", ".bin", ""] {
+            let file = write_workbook(suffix, rows);
+            let out = SheetGobbler
+                .gobble(file.path(), &(&args).into())
+                .unwrap_or_else(|e| panic!("{suffix:?}: {e:#}"));
+            assert!(out.contains("| Sword | 2 |"), "{suffix:?}: {out}");
+        }
+    }
+
+    /// End to end through format detection: a renamed workbook routes to the
+    /// sheet parser by its zip entries.
+    #[test]
+    fn renamed_workbook_routes_by_content() {
+        let file = write_workbook(".bin", &[&["Item", "Qty"], &["Sword", "2"]]);
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        let (format, out) = crate::route_and_gobble(&file.path().to_string_lossy(), &args);
+        assert_eq!(format, crate::format::Format::Spreadsheet);
+        assert!(out.unwrap().contains("| Sword | 2 |"));
+    }
 }
 
 #[cfg(test)]
@@ -417,6 +533,114 @@ mod tests {
         assert_eq!(column_index_to_letter(0), "A");
         assert_eq!(column_index_to_letter(25), "Z");
         assert_eq!(column_index_to_letter(26), "AA");
+    }
+
+    fn write_bytes(suffix: &str, bytes: &[u8]) -> tempfile::NamedTempFile {
+        let mut file = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
+        file.write_all(bytes).unwrap();
+        file.flush().unwrap();
+        file
+    }
+
+    fn gobble_file(file: &tempfile::NamedTempFile) -> Result<String> {
+        let args = crate::cli::Cli::parse_from(["filegoblin", "dummy"]);
+        SheetGobbler.gobble(file.path(), &(&args).into())
+    }
+
+    /// Regression: a Latin-1, semicolon-delimited export (Excel in most of
+    /// Europe) printed only its header, "(2 malformed row(s) skipped)", and
+    /// exited 0.
+    #[test]
+    fn latin1_semicolon_csv_keeps_every_row() {
+        let file = write_bytes(
+            ".csv",
+            b"name;city;amount\nJos\xe9;M\xfcnchen;1,50\nAnna;K\xf6ln;2,75\n",
+        );
+        let out = gobble_file(&file).unwrap();
+        assert!(out.contains("| name | city | amount |"), "{out}");
+        assert!(out.contains("|---|---|---|"), "{out}");
+        assert!(out.contains("| José | München | 1,50 |"), "{out}");
+        assert!(out.contains("| Anna | Köln | 2,75 |"), "{out}");
+        assert!(!out.contains("malformed"), "{out}");
+    }
+
+    /// Regression: a UTF-8 semicolon CSV came out as a single column.
+    #[test]
+    fn utf8_semicolon_csv_is_split_into_columns() {
+        let file = write_bytes(".csv", "name;city\nJosé;Berlin\n".as_bytes());
+        let out = gobble_file(&file).unwrap();
+        assert!(out.contains("| name | city |"), "{out}");
+        assert!(out.contains("| José | Berlin |"), "{out}");
+    }
+
+    #[test]
+    fn tsv_is_tab_delimited() {
+        let file = write_bytes(".tsv", b"a\tb, with comma\n1\t2;3\n");
+        let out = gobble_file(&file).unwrap();
+        assert!(out.contains("| a | b, with comma |"), "{out}");
+        assert!(out.contains("| 1 | 2;3 |"), "{out}");
+    }
+
+    #[test]
+    fn delimiter_sniffing() {
+        assert_eq!(sniff_delimiter("a,b,c\n1,2,3\n"), b',');
+        assert_eq!(sniff_delimiter("a;b\n1,5;2,5\n3,0;4,0\n"), b';');
+        assert_eq!(sniff_delimiter("a\tb\tc\n1\t2\t3\n"), b'\t');
+        assert_eq!(sniff_delimiter("a|b\n1|2\n"), b'|');
+        // A delimiter inside a quoted field doesn't count.
+        assert_eq!(
+            sniff_delimiter("name,note\nA,\"x;y;z\"\nB,\"p;q;r\"\n"),
+            b','
+        );
+        // Single-column data has no winner and reads with the default.
+        assert_eq!(sniff_delimiter("word\nother\n"), b',');
+        assert_eq!(sniff_delimiter(""), b',');
+    }
+
+    /// A UTF-8 BOM (Excel's "CSV UTF-8") must not end up in the first header.
+    #[test]
+    fn utf8_bom_is_not_part_of_the_header() {
+        let file = write_bytes(".csv", b"\xef\xbb\xbfid,name\n1,x\n");
+        let out = gobble_file(&file).unwrap();
+        assert!(out.contains("| id | name |"), "{out}");
+    }
+
+    /// Printing the header alone and exiting 0 was silent data loss.
+    #[test]
+    fn all_data_rows_malformed_is_an_error() {
+        // Raw, undecoded invalid UTF-8 makes the csv reader reject each row.
+        let records = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(&b"name,city\n\xff,\xfe\n\xfd,\xfc\n"[..])
+            .into_records();
+        let err = render_csv_records("t.csv", records)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("All 2 data row(s)"), "{err}");
+
+        // Some rows surviving is a partial success, reported in-band.
+        let records = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(&b"name,city\n\xff,\xfe\nok,fine\n"[..])
+            .into_records();
+        let out = render_csv_records("t.csv", records).unwrap();
+        assert!(out.contains("| ok | fine |"), "{out}");
+        assert!(out.contains("(1 malformed row(s) skipped)"), "{out}");
+    }
+
+    #[test]
+    fn empty_csv_is_an_error() {
+        let file = write_bytes(".csv", b"");
+        assert!(gobble_file(&file).is_err());
+    }
+
+    /// Binary data with a .csv name is refused rather than decoded as text.
+    #[test]
+    fn binary_csv_is_refused() {
+        let file = write_bytes(".csv", b"\x00\x9f\x92\x00PK\x03\x04\xff\x00");
+        assert!(gobble_file(&file).is_err());
     }
 }
 
