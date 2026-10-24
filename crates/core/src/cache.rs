@@ -30,7 +30,7 @@ pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 

@@ -107,6 +107,9 @@ rtf-parser = "0.4"
 
 [build-dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
+# `src/cli.rs` is included here too, and two of its enums derive serde (they
+# travel to PDF workers inside `ParseOptions`).
+serde = { version = "1.0.228", features = ["derive"] }
 clap_complete = "4.5.66"
 clap_mangen = "0.2.31"
 
@@ -115,6 +118,10 @@ objc2 = "0.6.3"
 objc2-foundation = "0.3.2"
 objc2-vision = "0.3.2"
 
+# PDF workers measure their own memory (`parsers/pdf_worker.rs`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62.2", features = ["Media_Ocr", "Storage", "Graphics_Imaging", "Foundation", "Storage_Streams"] }
+windows = { version = "0.62.2", features = ["Media_Ocr", "Storage", "Graphics_Imaging", "Foundation", "Storage_Streams", "Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 

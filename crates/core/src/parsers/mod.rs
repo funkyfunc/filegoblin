@@ -220,6 +220,7 @@ pub(crate) mod pdf_textq;
 #[cfg(feature = "vision")]
 pub mod pdf_vision;
 pub(crate) mod pdf_words;
+pub mod pdf_worker;
 pub mod powerpoint;
 pub mod rtf;
 pub mod sheet;

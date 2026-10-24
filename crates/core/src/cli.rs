@@ -23,14 +23,16 @@ pub enum RedactStyle {
 }
 
 /// What `--extract` can pull out of a source file instead of its full content.
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExtractMode {
     /// Only structural symbols: function signatures, struct/enum/trait definitions.
     Symbols,
 }
 
 /// How PDFs use the bundled vision models (`--vision`).
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(
+    ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum VisionMode {
     /// Never: the fast geometric converter only.
     Off,

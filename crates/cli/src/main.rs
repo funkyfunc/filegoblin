@@ -68,7 +68,23 @@ fn is_broken_pipe(err: &anyhow::Error) -> bool {
 }
 
 fn main() -> Result<()> {
+    use filegoblin_core::parsers::pdf_worker;
+
+    // This binary re-run to convert PDFs for its parent, one process away
+    // from anything a hostile PDF can crash.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == pdf_worker::WORKER_FLAG)
+    {
+        return pdf_worker::serve();
+    }
+
     let mut args = Cli::parse();
+
+    if let Err(e) = pdf_worker::enable() {
+        eprintln!("{} {e:#}", "❌".red());
+        std::process::exit(2);
+    }
 
     filegoblin_core::cache::set_enabled(!args.no_cache);
 

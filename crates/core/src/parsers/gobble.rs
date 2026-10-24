@@ -4,7 +4,7 @@ use std::path::Path;
 /// The subset of CLI options a parser may need. Parsers take this instead of the
 /// whole `Cli` struct so they stay decoupled from the command-line surface and
 /// remain reusable as a library / from other front-ends.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ParseOptions {
     /// Extract the full document instead of any heuristic minification (`--full`).
     pub full: bool,

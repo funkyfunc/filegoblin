@@ -32,6 +32,8 @@ transcribe-metal = ["filegoblin-core/transcribe-metal"]
 
 [dev-dependencies]
 assert_cmd = "2.0"
+# Builds the Flate bomb in tests/pdf_isolation.rs.
+flate2 = "1.1.9"
 insta = "1.43"
 predicates = "3.1"
 serde_json = "1.0"

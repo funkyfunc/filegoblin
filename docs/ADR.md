@@ -1141,3 +1141,60 @@ The CI workflows pass actionlint (one new runner label is not in its list yet), 
 - Pipe tables cannot express merged cells; olmOCR's scorer also reads HTML tables, but that would break the one-dialect rule — a decision for later.
 
 **Status:** Accepted.
+
+## 2026-10-23: PDFs convert in worker processes
+
+**Context.** The hardening in the entry above left what cannot be fixed in-process. pdf_oxide recurses without a depth limit, so nesting the pre-scan cannot see — inside LZW, ASCII85 or filter-chain streams — overflows the stack, and a stack overflow aborts the process: a 226 KB PDF with 100,000 levels inside an LZW content stream aborts the process (SIGABRT) in a tenth of a second, and with it any directory or `--horde` run it is part of. Memory has no bound either: a 15 KB PDF whose 64 pages all point at one 2 GiB Flate bomb took 14.5 GB in 18 s, and passed 16.5 GB in smart mode. Probing for a page that never finishes: pdf_oxide caps form-XObject recursion and catches cycles (a self-drawing form, a `/Length` or `/Prev` pointing at itself all fail fast), but one `TJ` array of N kerned glyphs is quadratic in its span extraction — 25k glyphs 1.4 s, 50k 6.2 s, 100k 22.5 s — so a million glyphs (1.7 MB compressed) would run for about 40 minutes at a flat 590 MB.
+
+**Decision.**
+- **Workers.** The CLI re-runs its own binary as `filegoblin --pdf-worker` (checked before argument parsing) and converts every PDF there (`parsers/pdf_worker.rs`). `PdfGobbler::gobble` is the only switch, so single files, directories, `--horde`, URLs, archives and the MCP server all go through it; the worker runs the in-process path unchanged (the pre-scan, `catch_unwind`, 64 MB stacks), so a panic still costs only an error and nesting the pre-scan sees is still refused before parsing.
+- **Long-lived, at most two.** A worker converts one PDF at a time and serves the whole run, so the vision models load once per worker, not once per file. Workers start on demand, at most two at once (`FILEGOBLIN_PDF_WORKERS` changes it); a worker that died while idle is replaced without blaming the next file.
+- **Wire.** Requests (the path in its raw OS encoding, `ParseOptions`, the `--no-cache` switch) go to the worker's stdin and replies come back on its stdout, as frames of a tag byte, a u64 length and the bytes. An error crosses as its chain of messages and is rebuilt, so messages, `--json` error records and exit codes read exactly as in-process. The worker's stderr is passed through (nothing under `-q`), except Rust's own crash report, which becomes the file's error message instead; the "vision models not found" hint is printed once per run, not once per worker.
+- **What stops a worker** — each fails only its file, with the ordinary per-file error (in-band in `--json`, exit 4 if nothing else converted), and the next PDF gets a fresh worker:
+  - *A crash.* A stack overflow is recognized from the runtime's report (or Windows' `STATUS_STACK_OVERFLOW`) and reported as nesting too deep; any other death names its signal or status.
+  - *Memory.* The worker measures itself every 25 ms — macOS `phys_footprint` (`proc_pid_rusage`, so compressed and swapped pages count), Linux resident minus file-backed pages (`/proc/self/statm`), Windows private commit (`GetProcessMemoryInfo`) — and exits with a dedicated status past the limit: half the machine's RAM by default (`FILEGOBLIN_PDF_MEMORY_MB`). Not `setrlimit`: macOS refuses any `RLIMIT_AS`/`RLIMIT_DATA` below a process's existing virtual size (setting 4 GiB or 64 GiB fails; 1 TiB is accepted and limits nothing), and Linux's `RLIMIT_AS` would count reserved address space — 64 MB stacks per core, the mapped binary with its bundled models — rather than memory used. One self-measurement works on all three platforms.
+  - *No progress.* The worker reports every finished page (both per-page stages count), and the parent kills a worker that finishes none for 120 s (`FILEGOBLIN_PDF_TIMEOUT`). Progress, not a total time budget, because a long scan legitimately takes many minutes.
+- A worker exits as soon as its stdin closes, even mid-conversion, so a parent killed from outside leaves no orphan converting. If no worker can be started (the binary deleted mid-run, say), PDFs convert in-process with a one-time warning.
+- `FILEGOBLIN_PDF_WORKER=0` converts in-process, for debugging. Library users of `filegoblin-core` convert in-process unless they opt in: call `pdf_worker::enable()` and hand `--pdf-worker` invocations of their own binary to `pdf_worker::serve()`. Malformed limit values are a usage error (exit 2).
+
+**Result.** M4 Pro (14 cores, 24 GB), release build with `vision`, models present.
+- Hostile files (`crates/cli/tests/pdf_isolation.rs` builds them; the tests run them in a debug build in about 5 s):
+
+  | file | before (in-process) | after (workers, default limits) |
+  |---|---|---|
+  | 100,000 levels of nesting inside an LZW stream (226 KB) | the process aborts (SIGABRT) in 0.07 s, ending the run | exit 4, "overflowed its stack", 23 ms |
+  | 2 GiB of spaces behind two Flate layers (5 KB) | exit 4 (no text); 1.3 GB, or 5.6 GB in smart mode | the same (1.2 / 5.8 GB) |
+  | 64 pages sharing that stream (15 KB) | 14.5 GB in 18 s; in smart mode past 16.5 GB, where the harness killed it | stopped at the limit (12,288 MB on this machine), usually within 4 s; exit 4 |
+  | one `TJ` of a million kerned glyphs (6.9 MB) | still converting at 300 s, when it was killed (≈ 40 min expected) | stopped after 120 s without a finished page, at 0.76 GB |
+  | the three in one run, then a good PDF | ends at the first file | each fails with its own message, the good PDF converts, exit 0 |
+
+  Correction to the entry above: pdf_oxide 0.3.77 does cap each Flate stream, at 256 MB (`PDF_OXIDE_MAX_DECOMPRESS_MB`), so one bomb costs 1.2–1.4 GB on the fast path whatever its size (2 and 8 GiB measured; more in smart mode, where the page is also rendered). The exhaustion comes from sharing: pages decode in parallel, and any number of them can point at the same bomb. Peaks were sampled every 50 ms over the parent and its workers.
+- Latency, one process per file, serial, interleaved before/after (median of 11 runs `--vision off`, 5 runs `--vision smart`):
+  - `--vision off`, seven files from 11 ms to 1.6 s: +5–7 ms each (starting the worker), 3.44 → 3.48 s in all (+1.1%).
+  - `--vision smart`, six files from 0.1 to 12.8 s: no measurable change, 20.1 → 19.5 s (noise): the models load in the worker instead of the parent.
+  - 45 one-page olmOCR-bench dev PDFs, one process each: `--vision off` 1.4 → 1.6 s (about +4 ms per file), `--vision smart` 141.1 → 140.7 s.
+- A directory of 45 olmOCR-bench dev PDFs (every fourth dev file; all seven categories) with `--horde`, wall time and peak memory summed over the parent and its workers:
+
+  | | `--vision off` | | `--vision smart` | |
+  |---|---|---|---|---|
+  | | time | peak | time | peak |
+  | in-process (before) | 0.29 s | 0.13 GB | hung; killed at 693 s | — |
+  | 1 worker | 0.63 s | 0.09 GB | 140 s | 5.4 GB |
+  | **2 workers (default)** | 0.35 s | 0.13 GB | 110 s | 8.5 GB |
+  | 4 workers | 0.21 s | 0.20 GB | 102 s | 9.6 GB |
+  | 14 workers | 0.16 s | 0.51 GB | | |
+
+  In-process, that smart run hangs: `sample` shows 15 threads waiting in `OnceLock::initialize` inside `vision::enabled()`, several PDFs racing to load the models (the deadlock that function's own comment describes, reached through `--horde`'s parallel files rather than parallel pages). A worker converts one PDF at a time, so it never races; the working baseline is one process per file, 141 s. On the fast path more workers beat in-process because each process classifies pages under its own lock instead of one shared by every file. Two workers is the default: in smart mode four gain 7% for another two copies of the models.
+
+- Real PDFs with the vision models, one process each over the 44 distinct PDFs in `test_assets`: median peak 1.7 GB, ten above 4 GB, at most 6.4 GB (a 300-page book) and 6.1 GB (a 150-page annual report). Half the RAM leaves room for those on machines from 16 GB up; on an 8 GB machine those two would now be stopped instead of swapping, and `FILEGOBLIN_PDF_MEMORY_MB` lets them through. A 400-page math book ran past the sweep's 15-minute cap; in a worker it converted for 5 minutes, peaking at 5.4 GB, without either limit firing.
+
+**Rejected.** A fresh worker per PDF: the vision models would load for every file. A worker per core: in smart mode each worker holds its own copy of the models and peaks at 3–6 GB, so the run's memory would multiply with the core count. `setrlimit`, for the reasons above. Pre-scanning more filters (LZW, ASCII85, chains): it would close one way to crash the parser, not the class.
+
+**Open.**
+- In-process directory runs in smart mode hang (above). Workers avoid it; `FILEGOBLIN_PDF_WORKER=0` and library users converting several PDFs at once still meet it. Loading the models once before any parallel conversion would fix it there too.
+- The quadratic `TJ` is in pdf_oxide: a profile of the 100k-glyph file spends every sample of the busy thread in `TextExtractor::extract_text_spans`. An upstream fix (or a guard on glyphs per text-showing operator) would turn a 120 s stop into a conversion.
+- Smart mode is memory-hungry for real files — 3.4 GB for a 15-page paper, 6.1 GB for a 150-page annual report — and that, more than anything, limits how many workers can run.
+- The worker measures its memory every 25 ms, so it can overshoot the limit by what it allocates in that time.
+- The Linux and Windows parts (memory measurement, installed memory, raw path encoding, Windows' stack-overflow status) were type-checked and linted for x86_64 Linux and Windows (`clippy -D warnings`) but not run here; CI's horde-check runs the tests on both.
+
+**Status:** Accepted.

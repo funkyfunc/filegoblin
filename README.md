@@ -98,7 +98,8 @@ did case by case. Results are in `GAUNTLET_SCORECARD.md`.
 │   │       ├── compressor/   (Token Compression Pipeline)
 │   │       ├── parsers/      (File parsing engines; pdf_vision.rs = layout-guided PDF assembly,
 │   │       │                  pdf_furniture.rs + pdf_edges.rs = page furniture, pdf_words.rs = glyph-level
-│   │       │                  words, pdf_math.rs = inline-math clean-up)
+│   │       │                  words, pdf_math.rs = inline-math clean-up, pdf_worker.rs = PDFs converted
+│   │       │                  in child processes)
 │   │       ├── vision/       (Bundled ONNX models on rten: layout, formula, table, OCR; hayro rendering)
 │   │       └── pipeline/     (Pipeline execution stages)
 │   └── cli/          (filegoblin: The Headless Binary)
@@ -485,12 +486,22 @@ why that is off by default.
 - **Archives and Office files have decompression caps.** Zip, tar, tar.gz, and the
   zip-container formats (`.docx`/`.pptx`/`.odt`/`.epub`) bound what they inflate
   and refuse entries whose paths escape the extraction directory.
-- **A hostile PDF fails on its own.** A PDF nested deeply enough to overflow the
-  parser's stack is refused before parsing (its syntax, and its unfiltered and
-  Flate streams, are scanned first), and a parser panic becomes an error for that
-  file, so one bad PDF does not end a directory run. Two gaps remain: PDF streams
-  have no decompression cap (a Flate bomb inflates fully), and nesting hidden in
-  streams with other filters (LZW, ASCII85) is not pre-scanned.
+- **A hostile PDF fails on its own.** The CLI converts every PDF in a worker
+  process (its own binary, re-run), so nothing a PDF does to the parser can end
+  or exhaust the run. A worker that crashes (a stack overflow from nesting too
+  deep), uses more than half the machine's memory (a decompression bomb) or
+  finishes no page for 120 seconds (pathological, effectively endless work) is
+  stopped; that file fails with an error saying which (exit 4 if nothing else
+  converted), and the next PDF gets a fresh worker. Workers are reused across
+  files (at most two at once, `FILEGOBLIN_PDF_WORKERS`), so the vision models
+  load once per worker. `FILEGOBLIN_PDF_MEMORY_MB` and `FILEGOBLIN_PDF_TIMEOUT`
+  (seconds) set the limits;
+  `FILEGOBLIN_PDF_WORKER=0` converts in-process, for debugging only, since a
+  hostile PDF can then take the whole process down again. Nesting the pre-scan
+  can see (the file's syntax, its unfiltered and Flate streams) is still refused
+  before parsing, and a parser panic is still an ordinary error. Library users of
+  `filegoblin-core` convert in-process unless they opt in
+  (`parsers::pdf_worker`).
 
 ---
 

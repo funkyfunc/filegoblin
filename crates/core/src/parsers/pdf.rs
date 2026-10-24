@@ -513,33 +513,53 @@ impl Gobble for PdfGobbler {
         if !path.exists() {
             anyhow::bail!("Mischievous I/O Error: file not found at {:?}", path);
         }
-        let bytes = std::fs::read(path).context("Mischievous I/O Error: could not read the PDF")?;
-        let depth = nesting(&bytes);
-        if depth.syntax > MAX_SYNTAX_DEPTH || depth.streams > MAX_STREAM_DEPTH {
-            anyhow::bail!(
-                "Mischievous PDF Error: objects nested at least {} levels deep (malformed or \
-                 hostile file); refusing to parse it",
-                depth.syntax.max(depth.streams)
-            );
-        }
-        // The PDF libraries panic on some malformed files (an object offset
-        // past the end of the data, say). That is one bad file, not a reason
-        // to take down a whole directory run: report it like any other
-        // unreadable PDF.
-        let convert =
-            || std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| convert_pdf(path, opts)));
-        let converted = match &*PDF_POOL {
-            Some(pool) => pool.install(convert),
-            None => convert(),
-        };
-        match converted {
-            Ok(result) => result,
-            Err(_) => anyhow::bail!(
-                "Mischievous PDF Error: the PDF parser crashed on this file (malformed PDF)"
-            ),
+        // The CLI converts in worker processes, where a file that overflows
+        // the parser's stack, eats all memory or never finishes fails alone.
+        match super::pdf_worker::pool() {
+            Some(workers) => workers.convert(path, opts),
+            None => gobble_in_process(path, opts),
         }
     }
 }
+
+/// [`PdfGobbler::gobble`] in this process: refuse deep nesting, then convert
+/// on deep stacks under `catch_unwind`.
+pub(crate) fn gobble_in_process(path: &Path, opts: &ParseOptions) -> Result<String> {
+    let bytes = std::fs::read(path).context("Mischievous I/O Error: could not read the PDF")?;
+    let depth = nesting(&bytes);
+    if depth.syntax > MAX_SYNTAX_DEPTH || depth.streams > MAX_STREAM_DEPTH {
+        anyhow::bail!(
+            "Mischievous PDF Error: objects nested at least {} levels deep (malformed or \
+             hostile file); refusing to parse it",
+            depth.syntax.max(depth.streams)
+        );
+    }
+    // The PDF libraries panic on some malformed files (an object offset
+    // past the end of the data, say). That is one bad file, not a reason
+    // to take down a whole directory run: report it like any other
+    // unreadable PDF.
+    let convert =
+        || std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| convert_pdf(path, opts)));
+    let converted = match &*PDF_POOL {
+        Some(pool) => pool.install(convert),
+        None => convert(),
+    };
+    match converted {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "Mischievous PDF Error: the PDF parser crashed on this file (malformed PDF)"
+        ),
+    }
+}
+
+/// Lines printed once per run (a worker prints them once per worker).
+pub(crate) const ONCE_PER_RUN: &[&str] = &[MODELS_MISSING];
+
+/// The hint for a run that wants vision models it cannot find.
+const MODELS_MISSING: &str = "filegoblin: PDF vision models not found — using the fast converter. \
+     For math, tables, columns and scans run `filegoblin --install-models` (or use the \
+     filegoblin-full download, `pip install \"filegoblin[models]\"`, or `npm i \
+     @filegoblin/models`). `--vision off` silences this.";
 
 fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
     let doc = PdfDocument::open(path)
@@ -627,6 +647,7 @@ fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
                 };
                 (kind, geom, image_backed, page_picture)
             })
+            .inspect(|_| super::pdf_worker::page_done())
             .collect();
     let mut kinds: Vec<PageKind> = Vec::with_capacity(page_count);
     let mut geoms: Vec<Option<PageGeom>> = Vec::with_capacity(page_count);
@@ -689,14 +710,7 @@ fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
             && std::env::var_os("FILEGOBLIN_VISION").is_none()
         {
             static HINT: std::sync::Once = std::sync::Once::new();
-            HINT.call_once(|| {
-                    eprintln!(
-                        "filegoblin: PDF vision models not found — using the fast converter. \
-                         For math, tables, columns and scans run `filegoblin --install-models` \
-                         (or use the filegoblin-full download, `pip install \"filegoblin[models]\"`, \
-                         or `npm i @filegoblin/models`). `--vision off` silences this."
-                    );
-                });
+            HINT.call_once(|| eprintln!("{MODELS_MISSING}"));
         }
         None
     };
@@ -914,6 +928,7 @@ fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
                     }
                 }
             })
+            .inspect(|_| super::pdf_worker::page_done())
             .collect();
 
     #[cfg(feature = "vision")]
