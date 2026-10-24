@@ -1,0 +1,35 @@
+---
+source: crates/cli/tests/golden.rs
+expression: out
+---
+// --- FILE_START: test_assets/apache_poi/54111.ppt ---
+## Slide 1
+
+- Table sample
+- Dummy text
+- TH Cell 1
+- TH Cell 2
+- TH Cell 3
+- TH Cell 4
+- Row 1, Cell 1
+- Row 1, Cell 2
+- Row 1, Cell 3
+- Row 1, Cell 4
+- Row 2, Cell 1
+- Row 2, Cell 2
+- Row 2, Cell 3
+- Row 2, Cell 4
+- Row 3, Cell 1
+- Row 3, Cell 2
+- Row 3, Cell 3
+- Row 3, Cell 4
+- Row 4, Cell 1
+- Row 4, Cell 2
+- Row 4, Cell 3
+- Row 4, Cell 4
+- Row 5, Cell 1
+- Row 5, Cell 2
+- Row 5, Cell 3
+- Row 5, Cell 4
+
+---

@@ -1,0 +1,10 @@
+---
+source: crates/cli/tests/golden.rs
+expression: out
+---
+// --- FILE_START: test_assets/apache_poi/footnote.doc ---
+# Test text
+
+**Footnote:** TestFootnote
+
+**Endnote:** TestEndnote

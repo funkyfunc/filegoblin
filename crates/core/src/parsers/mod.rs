@@ -203,6 +203,7 @@ pub(crate) mod headings;
 pub mod html;
 pub(crate) mod html_prep;
 pub mod jupyter;
+pub mod legacy_office;
 pub mod ocr;
 pub mod office;
 pub mod omml;

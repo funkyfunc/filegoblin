@@ -65,6 +65,42 @@ fn golden_csv_latin1_semicolon() {
     insta::assert_snapshot!(gobble(&["test_assets/latin1_semicolon.csv", "-q"]));
 }
 
+/// Pre-2007 binaries. The `.doc` is written by macOS's Word 97 exporter, the
+/// `.ppt` and `.xls` by `test_assets/generate_legacy_office.py`.
+#[test]
+fn golden_doc() {
+    insta::assert_snapshot!(gobble(&["test_assets/legacy_report.doc", "-q"]));
+}
+
+#[test]
+fn golden_ppt() {
+    insta::assert_snapshot!(gobble(&["test_assets/legacy_deck.ppt", "-q"]));
+}
+
+#[test]
+fn golden_xls() {
+    insta::assert_snapshot!(gobble(&["test_assets/legacy_ledger.xls", "-q"]));
+}
+
+/// Files Word and PowerPoint saved themselves, from Apache POI's test data
+/// (Apache-2.0; `test_assets/apache_poi/PROVENANCE.txt` says what each holds).
+#[test]
+fn golden_apache_poi_samples() {
+    for name in [
+        "Lists.doc",
+        "footnote.doc",
+        "hyperlink.doc",
+        "simple-table.doc",
+        "basic_test_ppt_file.ppt",
+        "42474-1.ppt",
+        "54111.ppt",
+    ] {
+        let out = gobble(&[&format!("test_assets/apache_poi/{name}"), "-q"]);
+        let snapshot = format!("apache_poi_{}", name.replace(['.', '-'], "_"));
+        insta::assert_snapshot!(snapshot, out);
+    }
+}
+
 // --- Encodings, containers, and page variants --------------------------------
 
 /// Body of a conversion without its `FILE_START` breadcrumb, so the same
@@ -132,6 +168,59 @@ fn macro_enabled_presentation_converts_like_pptx() {
     let path = dir.path().join("deck.pptm");
     std::fs::copy(repo_root().join("test_assets/dummy.pptx"), &path).unwrap();
     assert_eq!(body(&gobble(&[path.to_str().unwrap(), "-q"])), expected);
+}
+
+/// An OLE2 file is read by what its streams hold, so a renamed or
+/// extension-less legacy file converts exactly like the original.
+#[test]
+fn legacy_office_files_convert_whatever_their_name() {
+    let dir = tempfile::tempdir().unwrap();
+    for fixture in ["legacy_report.doc", "legacy_deck.ppt", "legacy_ledger.xls"] {
+        let source = format!("test_assets/{fixture}");
+        let expected = body(&gobble(&[&source, "-q"]));
+        for name in [
+            "no_extension",
+            "renamed.bin",
+            "swapped.doc",
+            "swapped.ppt",
+            "swapped.xls",
+        ] {
+            let path = dir.path().join(name);
+            std::fs::copy(repo_root().join(&source), &path).unwrap();
+            let out = gobble(&[path.to_str().unwrap(), "-q"]);
+            assert_eq!(body(&out), expected, "{fixture} as {name}");
+        }
+    }
+}
+
+/// A damaged legacy file fails on its own: exit 4 with a reason when it is
+/// the only target, and no harm to the other files in the same run.
+#[test]
+fn damaged_legacy_office_files_fail_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = std::fs::read(repo_root().join("test_assets/legacy_report.doc")).unwrap();
+    let truncated = dir.path().join("truncated.doc");
+    std::fs::write(&truncated, &doc[..600]).unwrap();
+    cmd()
+        .args([truncated.to_str().unwrap()])
+        .assert()
+        .code(4)
+        .stderr(contains("truncated or damaged"));
+
+    let fake = dir.path().join("fake.ppt");
+    std::fs::write(&fake, b"definitely not a presentation").unwrap();
+    cmd()
+        .args([fake.to_str().unwrap()])
+        .assert()
+        .code(4)
+        .stderr(contains("not a Word or PowerPoint binary"));
+
+    let out = gobble(&[
+        truncated.to_str().unwrap(),
+        "test_assets/legacy_deck.ppt",
+        "-q",
+    ]);
+    assert!(out.contains("Do not mention the crowns."), "{out}");
 }
 
 /// A minimal ustar archive: one 512-byte header per file, data padded to a

@@ -1,0 +1,19 @@
+---
+source: crates/cli/tests/golden.rs
+expression: "gobble(&[\"test_assets/legacy_ledger.xls\", \"-q\"])"
+---
+// --- FILE_START: test_assets/legacy_ledger.xls ---
+## Sheet: Hoard
+
+| Item | Count | Value |
+|---|---|---|
+| Spoons | 412 | 3.5 |
+| Socks | 3018 | 0.25 |
+| Crowns | 7 | 1200 |
+
+## Sheet: Notes
+
+| Note |
+|---|
+| Recount on Tuesday |
+| Socks are not currency |

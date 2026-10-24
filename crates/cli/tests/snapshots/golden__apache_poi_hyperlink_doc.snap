@@ -1,0 +1,6 @@
+---
+source: crates/cli/tests/golden.rs
+expression: out
+---
+// --- FILE_START: test_assets/apache_poi/hyperlink.doc ---
+# Before text; [Hyperlink text](http://testuri.org/); after text

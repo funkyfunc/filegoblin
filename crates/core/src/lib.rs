@@ -461,10 +461,7 @@ pub(crate) fn route_and_gobble(
         Format::Spreadsheet => parsers::sheet::SheetGobbler.gobble(path, &opts),
         Format::Pptx => parsers::powerpoint::PptxGobbler.gobble(path, &opts),
         Format::OpenDocument => parsers::opendocument::OpenDocGobbler.gobble(path, &opts),
-        Format::LegacyOffice => Err(anyhow::anyhow!(
-            "This is a pre-2007 OLE Office file (.doc/.ppt/.msg). No pure-Rust parser \
-             exists for it — re-save it as .docx/.pptx (or .eml) and gobble that instead."
-        )),
+        Format::LegacyOffice => parsers::legacy_office::LegacyOfficeGobbler.gobble(path, &opts),
         Format::Jupyter => parsers::jupyter::JupyterGobbler.gobble(path, &opts),
         Format::Email => parsers::email::EmailGobbler.gobble(path, &opts),
         Format::Rtf => parsers::rtf::RtfGobbler.gobble(path, &opts),

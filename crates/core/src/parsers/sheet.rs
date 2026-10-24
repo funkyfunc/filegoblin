@@ -9,7 +9,7 @@ use std::path::Path;
 pub struct SheetGobbler;
 
 impl Gobble for SheetGobbler {
-    fn gobble(&self, path: &std::path::Path, _opts: &ParseOptions) -> Result<String> {
+    fn gobble(&self, path: &std::path::Path, opts: &ParseOptions) -> Result<String> {
         let extension = path
             .extension()
             .and_then(|e| e.to_str())
@@ -20,9 +20,16 @@ impl Gobble for SheetGobbler {
             "csv" => self.parse_csv(path, None),
             // Tab-separated by definition: no sniffing.
             "tsv" => self.parse_csv(path, Some(b'\t')),
-            // Every workbook flavour (xlsx/xlsm/xltx/xltm/xlam, xlsb, xls, ods),
-            // plus renamed workbooks routed here by magic: calamine picks the
-            // reader from the extension, or tries each one when it can't.
+            // An Excel 97–2003 workbook (or a password-protected .xlsx) is a
+            // compound file. calamine's reader for those panics on damaged
+            // files, and a few kilobytes can make it allocate gigabytes
+            // (ADR 2026-10-23); the legacy Office reader does neither.
+            _ if crate::parsers::legacy_office::is_compound_file(path) => {
+                crate::parsers::legacy_office::LegacyOfficeGobbler.gobble(path, opts)
+            }
+            // Every other workbook flavour (xlsx/xlsm/xltx/xltm/xlam, xlsb,
+            // ods), plus renamed workbooks routed here by magic: calamine picks
+            // the reader from the extension, or tries each one when it can't.
             _ => self.parse_workbook(path),
         }
     }
@@ -60,54 +67,65 @@ impl SheetGobbler {
         let mut failed_sheets: Vec<String> = Vec::new();
         for sheet_name in sheet_names {
             match workbook.worksheet_range(&sheet_name) {
-                Ok(range) => {
-                    output.push_str(&format!("## Sheet: {}\n\n", sheet_name));
-
-                    let mut headers: Option<Vec<String>> = None;
-                    for row in range.rows() {
-                        let fields: Vec<String> = row.iter().map(cell_to_string).collect();
-
-                        let Some(headers) = &headers else {
-                            if fields.iter().all(|f| f.is_empty()) {
-                                continue; // leading blank rows before the header
-                            }
-                            let names = header_names(&fields);
-                            output.push_str(&table_header(&names));
-                            headers = Some(names);
-                            continue;
-                        };
-
-                        if let Some(line) = table_row(headers.len(), &fields) {
-                            output.push_str(&line);
-                        }
-                    }
-                    output.push('\n');
-                }
+                Ok(range) => output.push_str(&render_sheet(
+                    &sheet_name,
+                    range
+                        .rows()
+                        .map(|row| row.iter().map(cell_to_string).collect()),
+                )),
                 // A sheet that fails to open used to disappear entirely, so a
                 // five-sheet workbook could silently arrive with four.
                 Err(e) => failed_sheets.push(format!("{}: {}", sheet_name, e)),
             }
         }
-
-        if output.trim().is_empty() {
-            if !failed_sheets.is_empty() {
-                anyhow::bail!(
-                    "No sheet in this workbook could be read:\n{}",
-                    failed_sheets.join("\n")
-                );
-            }
-            anyhow::bail!("No data could be extracted from this workbook");
-        }
-        if !failed_sheets.is_empty() {
-            output.push_str(&format!(
-                "\n> [{} sheet(s) could not be read: {}]\n",
-                failed_sheets.len(),
-                failed_sheets.join("; ")
-            ));
-        }
-
-        Ok(output)
+        finish_workbook(output, &failed_sheets)
     }
+}
+
+/// One sheet as `## Sheet: <name>` and a pipe table. Leading blank rows are
+/// skipped; the first row with content is the header.
+pub(crate) fn render_sheet(name: &str, rows: impl IntoIterator<Item = Vec<String>>) -> String {
+    let mut output = format!("## Sheet: {}\n\n", name);
+    let mut headers: Option<Vec<String>> = None;
+    for fields in rows {
+        let Some(headers) = &headers else {
+            if fields.iter().all(|f| f.is_empty()) {
+                continue; // leading blank rows before the header
+            }
+            let names = header_names(&fields);
+            output.push_str(&table_header(&names));
+            headers = Some(names);
+            continue;
+        };
+
+        if let Some(line) = table_row(headers.len(), &fields) {
+            output.push_str(&line);
+        }
+    }
+    output.push('\n');
+    output
+}
+
+/// The rendered sheets of a workbook, with any sheet that could not be read
+/// named in-band. A workbook that yields nothing is an error.
+pub(crate) fn finish_workbook(mut output: String, failed_sheets: &[String]) -> Result<String> {
+    if output.trim().is_empty() {
+        if !failed_sheets.is_empty() {
+            anyhow::bail!(
+                "No sheet in this workbook could be read:\n{}",
+                failed_sheets.join("\n")
+            );
+        }
+        anyhow::bail!("No data could be extracted from this workbook");
+    }
+    if !failed_sheets.is_empty() {
+        output.push_str(&format!(
+            "\n> [{} sheet(s) could not be read: {}]\n",
+            failed_sheets.len(),
+            failed_sheets.join("; ")
+        ));
+    }
+    Ok(output)
 }
 
 /// Picks the CSV delimiter from the first [`CSV_SNIFF_RECORDS`] records.

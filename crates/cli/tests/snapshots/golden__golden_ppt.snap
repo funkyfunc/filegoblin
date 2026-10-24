@@ -1,0 +1,37 @@
+---
+source: crates/cli/tests/golden.rs
+expression: "gobble(&[\"test_assets/legacy_deck.ppt\", \"-q\"])"
+---
+// --- FILE_START: test_assets/legacy_deck.ppt ---
+## Slide 1
+
+- Goblin Council Briefing
+- Agenda for the new moon
+- Attendance is mandatory
+
+**Speaker notes:**
+- Welcome everyone.
+- Keep it short; the troll is waiting.
+
+---
+
+## Slide 2
+
+- Hoard Status
+- Spoons: 412
+- Socks: 3,018 (unpaired)
+- Crowns: 7
+
+**Speaker notes:**
+- Do not mention the crowns.
+
+---
+
+## Slide 3
+
+- Next Steps
+- Raid the laundry
+- Avoid the dog
+- Draft — for goblin eyes only
+
+---

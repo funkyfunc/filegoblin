@@ -1,0 +1,13 @@
+These files come unchanged from Apache POI's test data:
+https://github.com/apache/poi at commit c75182422060b1af46378eaa5d993f1495064e58
+Apache POI is licensed under the Apache License 2.0; see LICENSE and NOTICE
+here (copied from POI's legal/ directory at the same commit).
+
+  document/Lists.doc              a Heading 1 style; bullet and numbered lists,
+                                  nested five levels deep
+  document/footnote.doc           a footnote and an endnote
+  document/hyperlink.doc          a HYPERLINK field
+  document/simple-table.doc       a table between two paragraphs (Word 97)
+  slideshow/basic_test_ppt_file.ppt  titles, body text and speaker notes
+  slideshow/42474-1.ppt           slides with speaker notes and no text
+  slideshow/54111.ppt             a table (drawn as shapes)

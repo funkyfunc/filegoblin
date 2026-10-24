@@ -1,0 +1,18 @@
+---
+source: crates/cli/tests/golden.rs
+expression: out
+---
+// --- FILE_START: test_assets/apache_poi/42474-1.ppt ---
+## Slide 1
+
+**Speaker notes:**
+- Notes-1
+
+---
+
+## Slide 2
+
+**Speaker notes:**
+- Notes-2
+
+---

@@ -16,8 +16,11 @@ pub enum Format {
     /// OpenDocument text/presentation (`.odt`/`.odp`). `.ods` routes to
     /// `Spreadsheet` (calamine reads it natively).
     OpenDocument,
-    /// Pre-2007 OLE compound files (`.doc`/`.ppt`). No pure-Rust parser exists;
-    /// detected so the user gets an actionable error instead of binary garbage.
+    /// Pre-2007 Word and PowerPoint (`.doc`/`.ppt` and their template and
+    /// show variants), and any OLE2 compound file without a known extension.
+    /// The parser tells Word, PowerPoint and Excel apart by the container's
+    /// streams. `.xls` stays `Spreadsheet`; the sheet parser hands compound
+    /// files back to the same reader.
     LegacyOffice,
     Epub,
     /// RSS 2.0 / Atom / RDF syndication feeds.
@@ -81,7 +84,7 @@ fn from_extension(ext: &str) -> Option<Format> {
         }
         "pptx" | "pptm" | "potx" | "potm" | "ppsx" | "ppsm" => Format::Pptx,
         "odt" | "odp" => Format::OpenDocument,
-        "doc" | "ppt" => Format::LegacyOffice,
+        "doc" | "dot" | "ppt" | "pps" | "pot" => Format::LegacyOffice,
         "epub" => Format::Epub,
         "rss" | "atom" => Format::Feed,
         "srt" | "vtt" => Format::Subtitle,
@@ -131,8 +134,8 @@ fn from_magic(header: &[u8]) -> Option<Format> {
     if header.get(257..262) == Some(b"ustar".as_slice()) {
         return Some(Format::Archive);
     }
-    // OLE compound file (legacy .doc/.ppt/.xls/.msg). Better an actionable
-    // error than the plaintext reader dumping binary garbage.
+    // OLE compound file (legacy .doc/.ppt/.xls, or a .msg). The legacy parser
+    // looks inside to see which it is.
     if header.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
         return Some(Format::LegacyOffice);
     }
@@ -359,11 +362,12 @@ mod tests {
 
     #[test]
     fn legacy_office_by_extension_and_magic() {
-        assert_eq!(detect(Path::new("a.doc"), b""), Format::LegacyOffice);
-        assert_eq!(detect(Path::new("a.ppt"), b""), Format::LegacyOffice);
+        for name in ["a.doc", "a.dot", "a.ppt", "a.pps", "a.pot", "A.DOC"] {
+            assert_eq!(detect(Path::new(name), b""), Format::LegacyOffice, "{name}");
+        }
         let ole = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0x00];
         assert_eq!(detect(Path::new("mystery"), &ole), Format::LegacyOffice);
-        // Legacy .xls stays with calamine, which reads it natively.
+        // A legacy .xls is still labelled a spreadsheet.
         assert_eq!(detect(Path::new("a.xls"), &ole), Format::Spreadsheet);
     }
 

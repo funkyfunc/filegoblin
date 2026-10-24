@@ -1,0 +1,25 @@
+---
+source: crates/cli/tests/golden.rs
+expression: "gobble(&[\"test_assets/legacy_report.doc\", \"-q\"])"
+---
+// --- FILE_START: test_assets/legacy_report.doc ---
+# Goblin Hoard Inventory
+
+The hoard grew by **212 items** this season, an *alarming* rate. See the full ledger for details.
+
+**Holdings by Cave**
+
+| Cave | Items | Shiny? |
+|---|---|---|
+| North Cave | 1,204 | Yes |
+| Bog Hollow |  | No |
+
+Unsorted finds:
+
+•	Socks (unpaired)
+
+•	Spoons
+
+1	Count the spoons
+
+2	Hide the spoons
