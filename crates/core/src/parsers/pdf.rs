@@ -718,13 +718,6 @@ fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
     #[cfg(feature = "vision")]
     let vision_pages = std::sync::atomic::AtomicUsize::new(0);
 
-    // Some OCR engine can read a scanned page in this build.
-    #[cfg(feature = "vision")]
-    let ocr_ready = crate::parsers::ocr::ocr_available()
-        || (renderer.is_some() && crate::vision::ocr::available());
-    #[cfg(not(feature = "vision"))]
-    let ocr_ready = crate::parsers::ocr::ocr_available();
-
     // Stage 3: convert each page with its furniture excluded.
     // (markdown, unreadable, came_from_ocr)
     let page_results: Vec<(String, bool, bool)> = (0..page_count)
@@ -738,20 +731,20 @@ fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
                 let kind = kinds[page];
                 // Scans: the bundled layout + OCR models when available, else
                 // the platform OCR engine on the page's embedded images.
-                let scanned_page_text = |doc: &PdfDocument, page: usize| -> Option<String> {
+                // (the text, and whether an OCR engine read the page at all)
+                let scanned_page_text = |doc: &PdfDocument, page: usize| -> (Option<String>, bool) {
                     #[cfg(feature = "vision")]
-                    if let Some(md) = renderer
-                        .as_ref()
-                        .and_then(|r| {
-                            let frame = super::pdf_vision::display_frame(doc, page);
-                            super::pdf_vision::convert_scanned_page(r, page, frame)
-                        })
-                        .filter(|md| !md.trim().is_empty())
-                    {
-                        vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return Some(md);
+                    if let Some(md) = renderer.as_ref().and_then(|r| {
+                        let frame = super::pdf_vision::display_frame(doc, page);
+                        super::pdf_vision::convert_scanned_page(r, page, frame)
+                    }) {
+                        if !md.trim().is_empty() {
+                            vision_pages.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return (Some(md), true);
+                        }
+                        return (None, true);
                     }
-                    ocr_scanned_page(doc, page)
+                    ocr_page_images(doc, page)
                 };
 
                 match kind {
@@ -774,10 +767,10 @@ fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
                         (String::new(), false, false)
                     }
                     PageKind::Scanned => match scanned_page_text(&doc, page) {
-                        Some(text) if !text.trim().is_empty() => {
+                        (Some(text), _) if !text.trim().is_empty() => {
                             (text.trim().to_string(), false, true)
                         }
-                        _ => {
+                        (_, ocr_read) => {
                             let (mut md, unreadable) =
                                 match convert_page_text(&doc, page, &options, geom, excluded, body)
                                 {
@@ -786,7 +779,9 @@ fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
                                     }
                                     // OCR read the page and found nothing:
                                     // a blank page, not an unreadable one.
-                                    _ if ocr_ready => (String::new(), false),
+                                    // (An engine built in but unable to run,
+                                    // without its weights, read nothing.)
+                                    _ if ocr_read => (String::new(), false),
                                     _ => (scanned_page_marker(page + 1), true),
                                 };
                             if !unreadable && !md.is_empty() {
@@ -1198,8 +1193,14 @@ fn is_false_heading(body: &str) -> bool {
 /// body, would otherwise lose everything except the biggest piece — silently,
 /// since the page still produced text.
 fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
+    ocr_page_images(doc, page).0
+}
+
+/// [`ocr_scanned_page`], plus whether the OCR engine read at least one of
+/// the page's images (it may find no text on them).
+fn ocr_page_images(doc: &PdfDocument, page: usize) -> (Option<String>, bool) {
     if !crate::parsers::ocr::ocr_available() {
-        return None;
+        return (None, false);
     }
     // pdf_oxide's image extraction is not safe to run for several pages at
     // once: under parallel calls a page could come back with the *next*
@@ -1209,10 +1210,13 @@ fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
     static EXTRACT_IMAGES: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let mut images = {
         let _guard = EXTRACT_IMAGES.lock().unwrap_or_else(|e| e.into_inner());
-        doc.extract_images(page).ok()?
+        match doc.extract_images(page) {
+            Ok(images) => images,
+            Err(_) => return (None, false),
+        }
     };
     if images.is_empty() {
-        return None;
+        return (None, false);
     }
     // Largest first, so the main scan leads and the reading order stays sane.
     images.sort_by_key(|img| std::cmp::Reverse(u64::from(img.width()) * u64::from(img.height())));
@@ -1224,6 +1228,7 @@ fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
     let floor = biggest / 8;
 
     let mut parts: Vec<String> = Vec::new();
+    let mut read = false;
     for img in images.iter().take(MAX_OCR_IMAGES_PER_PAGE) {
         if u64::from(img.width()) * u64::from(img.height()) < floor {
             break; // sorted, so everything after this is smaller too
@@ -1253,14 +1258,15 @@ fn ocr_scanned_page(doc: &PdfDocument, page: usize) -> Option<String> {
             }
         };
 
-        if let Ok(text) = text_res
-            && !text.trim().is_empty()
-        {
-            parts.push(text.trim().to_string());
+        if let Ok(text) = text_res {
+            read = true;
+            if !text.trim().is_empty() {
+                parts.push(text.trim().to_string());
+            }
         }
     }
 
-    (!parts.is_empty()).then(|| parts.join("\n\n"))
+    ((!parts.is_empty()).then(|| parts.join("\n\n")), read)
 }
 
 /// Bound on how many images one page will OCR. A pathological PDF can embed
