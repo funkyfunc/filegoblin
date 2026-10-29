@@ -1,6 +1,6 @@
 {
   "name": "filegoblin",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "description": "Fast, zero-dependency CLI & MCP server converting PDFs, Office docs, images, audio, and websites into clean Markdown for LLMs",
   "main": "./bin/filegoblin.js",
   "bin": {
@@ -51,10 +51,10 @@
   },
   "homepage": "https://github.com/funkyfunc/filegoblin#readme",
   "optionalDependencies": {
-    "@filegoblin/darwin-arm64": "1.15.0",
-    "@filegoblin/darwin-x64": "1.15.0",
-    "@filegoblin/linux-x64": "1.15.0",
-    "@filegoblin/linux-arm64": "1.15.0",
-    "@filegoblin/win32-x64": "1.15.0"
+    "@filegoblin/darwin-arm64": "1.16.0",
+    "@filegoblin/darwin-x64": "1.16.0",
+    "@filegoblin/linux-x64": "1.16.0",
+    "@filegoblin/linux-arm64": "1.16.0",
+    "@filegoblin/win32-x64": "1.16.0"
   }
 }

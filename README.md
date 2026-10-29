@@ -117,7 +117,7 @@ did case by case. Results are in `GAUNTLET_SCORECARD.md`.
 
 ---
 
-## ⚡ Current Capabilities (v1.15.0)
+## ⚡ Current Capabilities (v1.16.0)
 
 Some capabilities are gated behind opt-in Cargo features (built off by default to
 keep the binary lean). Feature-gated items are marked below.
