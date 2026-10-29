@@ -36,7 +36,7 @@ impl Gobble for SheetGobbler {
 }
 
 /// Delimiters a CSV is sniffed for, in tie-break order.
-const CSV_DELIMITERS: [u8; 4] = [b',', b';', b'\t', b'|'];
+const CSV_DELIMITERS: [u8; 4] = *b",;\t|";
 /// How many leading records the delimiter sniff looks at.
 const CSV_SNIFF_RECORDS: usize = 20;
 

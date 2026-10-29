@@ -408,9 +408,10 @@ mod tests {
     /// Combined because parallel tests mutating FILEGOBLIN_BROWSER race.
     #[test]
     fn discovery_and_js_render() {
-        // Env override wins (any path that certainly exists).
-        unsafe { std::env::set_var("FILEGOBLIN_BROWSER", "/bin/ls") };
-        assert_eq!(find_browser(), Some(PathBuf::from("/bin/ls")));
+        // Env override wins (any path that certainly exists, on every OS).
+        let exists = std::env::current_exe().unwrap();
+        unsafe { std::env::set_var("FILEGOBLIN_BROWSER", &exists) };
+        assert_eq!(find_browser(), Some(exists));
         unsafe { std::env::remove_var("FILEGOBLIN_BROWSER") };
 
         if find_browser().is_none() {
