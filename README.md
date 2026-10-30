@@ -275,7 +275,7 @@ filegoblin ./src/ --horde -q --json | jq '.[].path'
 **fails to parse** appears in-band as `{ "path", "format", "error" }` rather than silently
 vanishing — so an agent can trust that every input is accounted for. Exit codes: `0` success,
 `4` when nothing could be extracted (empty result vs. total failure), `3` when
-`--scrub --scrub-fail` redacted something.
+`--scrub --scrub-fail` redacted something, `5` when the run went over its memory ceiling.
 
 **Multi-Format Output (`--format markdown|plain|json` / `-f`):**
 ```bash
@@ -503,6 +503,11 @@ why that is off by default.
   before parsing, and a parser panic is still an ordinary error. Library users of
   `filegoblin-core` convert in-process unless they opt in
   (`parsers::pdf_worker`).
+- **No run can take the machine's memory.** The CLI process has the same
+  self-measured ceiling as a PDF worker: past half the machine's RAM
+  (`FILEGOBLIN_MEMORY_MB` sets it) it stops with a message and exit 5. Input it
+  reads as a stream is bounded too: an MCP message over 1 MB is answered with an
+  error and dropped as it arrives, and piped stdin is read up to 1 GB.
 - **A damaged legacy Office file fails on its own.** `.doc`, `.ppt` and `.xls` are
   read on a separate thread with its own stack, so a reader panic is an error for
   that file. 1,600 truncated and corrupted variants of the fixtures (700 of them

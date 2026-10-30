@@ -22,6 +22,11 @@ const SUPPORTED_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2024-11-05"];
 /// tens of megabytes.
 const MAX_TOOL_RESULT_BYTES: usize = 1024 * 1024;
 
+/// Ceiling on one incoming message. A request names a file or URL, so real
+/// ones are a few hundred bytes; anything longer is answered with an error and
+/// dropped as it arrives, never held.
+const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+
 /// How many conversions may run at once. Beyond this, a `tools/call` runs on
 /// the read loop as it always did — the point is that `ping` and `tools/list`
 /// stay answerable, not unbounded parallelism.
@@ -40,7 +45,6 @@ type SharedOut = std::sync::Arc<std::sync::Mutex<std::io::Stdout>>;
 /// server is dead. Only conversions are slow, so only they need to move off the
 /// read loop, which keeps the handshake ordering exactly as it was.
 pub fn serve() -> Result<()> {
-    use std::io::BufRead;
     let stdin = std::io::stdin();
     let mut stdin = stdin.lock();
     let stdout: SharedOut = std::sync::Arc::new(std::sync::Mutex::new(std::io::stdout()));
@@ -57,10 +61,21 @@ pub fn serve() -> Result<()> {
     // A bad line deserves -32700, not a dead transport.
     let mut buf: Vec<u8> = Vec::new();
     loop {
-        buf.clear();
-        match stdin.read_until(b'\n', &mut buf) {
-            Ok(0) => break, // EOF
-            Ok(_) => {}
+        match read_message(&mut stdin, &mut buf, MAX_MESSAGE_BYTES) {
+            Ok(Message::End) => break,
+            Ok(Message::Line) => {}
+            Ok(Message::TooLong) => {
+                let error = rpc_error(
+                    &Value::Null,
+                    -32600,
+                    &format!("Message larger than {MAX_MESSAGE_BYTES} bytes"),
+                );
+                if let Err(e) = write_line(&stdout, &error) {
+                    join_workers(workers);
+                    return Err(e.into());
+                }
+                continue;
+            }
             Err(e) => {
                 join_workers(workers);
                 return Err(e.into());
@@ -123,6 +138,61 @@ pub fn serve() -> Result<()> {
     // lost to EOF.
     join_workers(workers);
     Ok(())
+}
+
+/// How reading one message ended.
+#[derive(Debug, PartialEq)]
+enum Message {
+    End,
+    Line,
+    TooLong,
+}
+
+/// Reads one newline-terminated message into `buf`, keeping at most `max`
+/// bytes: a longer one is read to its end and dropped. `read_until` kept
+/// everything up to the next newline, so input without one (`--mcp <
+/// /dev/zero`) took 8.6 GB in three seconds.
+fn read_message(
+    r: &mut impl std::io::BufRead,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<Message> {
+    buf.clear();
+    let (mut started, mut too_long) = (false, false);
+    loop {
+        let chunk = match r.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        let (take, ends) = match chunk.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None if chunk.is_empty() => {
+                return Ok(match (started, too_long) {
+                    (false, _) => Message::End,
+                    (true, false) => Message::Line,
+                    (true, true) => Message::TooLong,
+                });
+            }
+            None => (chunk.len(), false),
+        };
+        started = true;
+        if !too_long && buf.len() + take > max {
+            too_long = true;
+            buf.clear();
+        }
+        if !too_long {
+            buf.extend_from_slice(&chunk[..take]);
+        }
+        r.consume(take);
+        if ends {
+            return Ok(if too_long {
+                Message::TooLong
+            } else {
+                Message::Line
+            });
+        }
+    }
 }
 
 fn join_workers(workers: Vec<std::thread::JoinHandle<()>>) {
@@ -416,6 +486,27 @@ mod tests {
             !SUPPORTED_VERSIONS.contains(&"2025-03-26"),
             "2025-03-26 made batching mandatory and we reject batches"
         );
+    }
+
+    #[test]
+    fn an_oversized_message_is_dropped_without_being_held() {
+        let mut input = vec![b'x'; 5000];
+        input.extend_from_slice(b"\n{\"short\":1}\n");
+        input.extend_from_slice(&[b'y'; 5000]); // no newline: cut off by EOF
+        let mut r = std::io::BufReader::with_capacity(64, &input[..]);
+        let mut buf = Vec::new();
+        assert_eq!(
+            read_message(&mut r, &mut buf, 1000).unwrap(),
+            Message::TooLong
+        );
+        assert!(buf.len() <= 1000, "held {} bytes", buf.len());
+        assert_eq!(read_message(&mut r, &mut buf, 1000).unwrap(), Message::Line);
+        assert_eq!(buf, b"{\"short\":1}\n");
+        assert_eq!(
+            read_message(&mut r, &mut buf, 1000).unwrap(),
+            Message::TooLong
+        );
+        assert_eq!(read_message(&mut r, &mut buf, 1000).unwrap(), Message::End);
     }
 
     #[test]

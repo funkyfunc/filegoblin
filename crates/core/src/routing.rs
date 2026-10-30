@@ -49,11 +49,38 @@ pub fn route_targets(
     Ok(())
 }
 
-fn route_stdin(tx: &std::sync::mpsc::SyncSender<crate::pipeline::GobbleDocument>) {
+/// The most piped input read as one document. Without a ceiling, a stream
+/// that never ends (`yes | filegoblin`) was read until memory ran out.
+const MAX_STDIN_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Up to `max` bytes of `r`, or `None` when it holds more than that.
+fn read_at_most(r: impl Read, max: u64) -> std::io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
-    if let Err(e) = std::io::stdin().read_to_end(&mut bytes) {
-        eprintln!("{} Error reading stdin: {}", "⚠️".yellow(), e);
-    }
+    r.take(max + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= max).then_some(bytes))
+}
+
+fn route_stdin(tx: &std::sync::mpsc::SyncSender<crate::pipeline::GobbleDocument>) {
+    let bytes = match read_at_most(std::io::stdin().lock(), MAX_STDIN_BYTES) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            let error = format!(
+                "stdin is larger than {} MB; save it to a file and convert that",
+                MAX_STDIN_BYTES >> 20
+            );
+            eprintln!("{} {}", "⚠️".yellow(), error);
+            let _ = tx.send(crate::pipeline::GobbleDocument::failed(
+                "stdin".to_string(),
+                "text",
+                error,
+            ));
+            return;
+        }
+        Err(e) => {
+            eprintln!("{} Error reading stdin: {}", "⚠️".yellow(), e);
+            Vec::new()
+        }
+    };
     // Piped text gets the same decoding as a text file (`iconv`-free Latin-1
     // and UTF-16), and piped binary is refused in-band rather than dumped.
     let buffer = match crate::parsers::text::decode_text(bytes) {
@@ -517,5 +544,14 @@ mod github_url_tests {
         for u in fetches {
             assert!(!is_github_repo_url(&Url::parse(u).unwrap()), "{u}");
         }
+    }
+
+    #[test]
+    fn piped_input_is_read_up_to_its_ceiling() {
+        use super::read_at_most;
+        assert_eq!(read_at_most(&b"abc"[..], 3).unwrap(), Some(b"abc".to_vec()));
+        assert_eq!(read_at_most(&b"abcd"[..], 3).unwrap(), None);
+        // An endless stream stops at the ceiling instead of being read forever.
+        assert_eq!(read_at_most(std::io::repeat(b'y'), 1 << 20).unwrap(), None);
     }
 }
