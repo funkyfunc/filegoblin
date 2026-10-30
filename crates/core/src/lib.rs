@@ -439,7 +439,6 @@ pub(crate) fn route_and_gobble(
     path_str: &str,
     args: &crate::cli::Cli,
 ) -> (crate::format::Format, Result<String>) {
-    use crate::format::Format;
     let path = Path::new(path_str);
     let extension = path
         .extension()
@@ -456,29 +455,65 @@ pub(crate) fn route_and_gobble(
         return (format, run_explicit_plugin(plugin_name, path, &opts));
     }
 
-    let result = match format {
-        Format::Pdf => parsers::pdf::PdfGobbler.gobble(path, &opts),
-        Format::Docx => parsers::office::OfficeGobbler.gobble(path, &opts),
-        Format::Spreadsheet => parsers::sheet::SheetGobbler.gobble(path, &opts),
-        Format::Pptx => parsers::powerpoint::PptxGobbler.gobble(path, &opts),
-        Format::OpenDocument => parsers::opendocument::OpenDocGobbler.gobble(path, &opts),
-        Format::LegacyOffice => parsers::legacy_office::LegacyOfficeGobbler.gobble(path, &opts),
-        Format::Jupyter => parsers::jupyter::JupyterGobbler.gobble(path, &opts),
-        Format::Email => parsers::email::EmailGobbler.gobble(path, &opts),
-        Format::Rtf => parsers::rtf::RtfGobbler.gobble(path, &opts),
-        Format::Code => parsers::code::CodeGobbler.gobble(path, &opts),
-        Format::Epub => parsers::epub::EpubGobbler.gobble(path, &opts),
-        Format::Feed => parsers::feed::FeedGobbler.gobble(path, &opts),
-        Format::Subtitle => parsers::subtitle::SubtitleGobbler.gobble(path, &opts),
+    // A parser panic is that file's failure, not the run's. The readers
+    // underneath (calamine, docx-rs, …) index and multiply by values taken
+    // from the file: one mutated `.xlsx` in a `--horde` of a thousand files
+    // ended everything with "The ingestion thread panicked" (exit 1).
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dispatch(format, path, &opts, &extension)
+    }))
+    .unwrap_or_else(|panic| {
+        Err(anyhow::anyhow!(
+            "The goblin choked on this file: its parser crashed ({}). The file is probably \
+             damaged.",
+            panic_message(panic.as_ref())
+        ))
+    });
+
+    (format, result)
+}
+
+/// The text of a caught panic, when it carried one.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_string())
+}
+
+/// Sends a file to the parser for its format.
+#[allow(unused_variables)]
+fn dispatch(
+    format: crate::format::Format,
+    path: &Path,
+    opts: &crate::parsers::gobble::ParseOptions,
+    extension: &str,
+) -> Result<String> {
+    use crate::format::Format;
+    match format {
+        Format::Pdf => parsers::pdf::PdfGobbler.gobble(path, opts),
+        Format::Docx => parsers::office::OfficeGobbler.gobble(path, opts),
+        Format::Spreadsheet => parsers::sheet::SheetGobbler.gobble(path, opts),
+        Format::Pptx => parsers::powerpoint::PptxGobbler.gobble(path, opts),
+        Format::OpenDocument => parsers::opendocument::OpenDocGobbler.gobble(path, opts),
+        Format::LegacyOffice => parsers::legacy_office::LegacyOfficeGobbler.gobble(path, opts),
+        Format::Jupyter => parsers::jupyter::JupyterGobbler.gobble(path, opts),
+        Format::Email => parsers::email::EmailGobbler.gobble(path, opts),
+        Format::Rtf => parsers::rtf::RtfGobbler.gobble(path, opts),
+        Format::Code => parsers::code::CodeGobbler.gobble(path, opts),
+        Format::Epub => parsers::epub::EpubGobbler.gobble(path, opts),
+        Format::Feed => parsers::feed::FeedGobbler.gobble(path, opts),
+        Format::Subtitle => parsers::subtitle::SubtitleGobbler.gobble(path, opts),
         Format::Html => parsers::html::HtmlGobbler {
             extract_full: opts.full,
             ..Default::default()
         }
-        .gobble(path, &opts),
+        .gobble(path, opts),
         // On macOS this always works (Apple Vision); elsewhere the gobbler
         // itself explains the missing `ocr` feature.
-        Format::Image => parsers::ocr::OcrGobbler.gobble(path, &opts),
-        Format::Audio | Format::Video => parsers::transcribe::TranscribeGobbler.gobble(path, &opts),
+        Format::Image => parsers::ocr::OcrGobbler.gobble(path, opts),
+        Format::Audio | Format::Video => parsers::transcribe::TranscribeGobbler.gobble(path, opts),
         // Archives reaching this point were found *inside* a directory walk
         // (a directly-targeted archive is intercepted and extracted upstream in
         // `gobble_local`). Reading one as plaintext would emit binary garbage.
@@ -489,21 +524,19 @@ pub(crate) fn route_and_gobble(
         // (if one is installed for the extension) or a plaintext read.
         Format::Markdown | Format::Text => {
             #[cfg(feature = "wasm")]
-            if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(&extension, false)
+            if let Some(plugin_path) = parsers::wasm::WasmGobbler::sniff(extension, false)
                 && let Ok(markdown) = (parsers::wasm::WasmGobbler {
                     wasm_path: plugin_path,
                 })
-                .gobble(path, &opts)
+                .gobble(path, opts)
             {
-                return (format, Ok(markdown));
+                return Ok(markdown);
             }
             // Latin-1 and UTF-16 text is still text: decode it rather than
             // failing the UTF-8-only read. Binary bytes are refused.
             parsers::text::read_text_file(path)
         }
-    };
-
-    (format, result)
+    }
 }
 
 /// Runs an explicitly requested WASM plugin (`--plugin`). Allowed to use the local

@@ -250,6 +250,41 @@ fn ustar(entries: &[(&str, &[u8])]) -> Vec<u8> {
     out
 }
 
+/// Regression: a parser panic ended the whole run ("The ingestion thread
+/// panicked", exit 1), so one damaged workbook in a directory lost every other
+/// file. `hostile/calamine_panic.xlsb` is a 1.2 KB mutant that makes calamine
+/// panic ("no entry found for key").
+#[test]
+fn a_parser_panic_fails_only_that_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(
+        repo_root().join("test_assets/hostile/calamine_panic.xlsb"),
+        dir.path().join("broken.xlsb"),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "the goblin survives").unwrap();
+
+    let out = cmd()
+        .args([dir.path().to_str().unwrap(), "--horde", "--json", "-q"])
+        .assert()
+        .success();
+    let json: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let docs = json.as_array().unwrap();
+    let find = |name: &str| docs.iter().find(|d| d["path"] == name).unwrap();
+    assert_eq!(find("notes.txt")["content"], "the goblin survives");
+    let err = find("broken.xlsb")["error"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert!(err.contains("parser crashed"), "{err}");
+
+    // Alone, the same file is an ordinary failed conversion: exit 4, not 1.
+    cmd()
+        .args([dir.path().join("broken.xlsb").to_str().unwrap(), "-q"])
+        .assert()
+        .code(4);
+}
+
 /// The README listed tar support, but a plain `.tar` failed as "plaintext".
 #[test]
 fn plain_tar_is_extracted() {

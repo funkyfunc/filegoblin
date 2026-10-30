@@ -70,6 +70,10 @@ impl Gobble for HtmlGobbler {
 
     fn gobble_str(&self, content: &str, opts: &ParseOptions) -> Result<String> {
         let full = self.extract_full || opts.full;
+        // Before html5ever ever sees it: the DOM check below runs after a parse
+        // whose cost grows with the square of the depth (300,000 nested divs:
+        // over two minutes of full CPU before that check could refuse them).
+        refuse_deep_nesting(content)?;
         // CSS bold, footnote marks, hidden facts and page furniture, before
         // anything reads the DOM.
         let prepared = crate::parsers::html_prep::prepare_document(content);
@@ -318,6 +322,97 @@ fn select_content_roots(doc: &Html) -> Vec<String> {
 /// pages nest a few dozen levels) and far below where the HTML dependencies
 /// become pathologically slow.
 const MAX_DOM_DEPTH: usize = 1_000;
+
+/// The raw-markup nesting [`refuse_deep_nesting`] allows. Generous on purpose:
+/// it counts every unclosed `<b>` or `<font>` that the parser would quietly
+/// close, so it must sit well above [`MAX_DOM_DEPTH`], which the parsed DOM is
+/// still held to. At this depth html5ever takes a few hundredths of a second.
+const MAX_RAW_NESTING: usize = 5 * MAX_DOM_DEPTH;
+
+/// Refuses markup that opens elements more than [`MAX_RAW_NESTING`] deep, in
+/// one linear pass over the text and before any parsing.
+///
+/// A counter rather than a parser: every start tag of an element that can hold
+/// children adds one and every end tag takes one away. Void elements, elements
+/// the parser closes by itself (`<p>`, `<li>`, `<td>`, …), comments, and the
+/// raw text of `<script>`/`<style>` do not count.
+pub(crate) fn refuse_deep_nesting(html: &str) -> Result<()> {
+    const UNCOUNTED: &[&str] = &[
+        // Void elements.
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr", "keygen",
+        // Closed by the parser when a sibling starts.
+        "p", "li", "dt", "dd", "option", "optgroup", "tr", "td", "th", "thead", "tbody", "tfoot",
+        "colgroup", "caption", "rb", "rp", "rt", "rtc", "html", "head", "body",
+    ];
+    let bytes = html.as_bytes();
+    let lower_at = |at: usize, word: &[u8]| {
+        bytes
+            .get(at..at + word.len())
+            .is_some_and(|b| b.eq_ignore_ascii_case(word))
+    };
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while let Some(off) = bytes[i..].iter().position(|&b| b == b'<') {
+        i += off + 1;
+        if lower_at(i, b"!--") {
+            i = find(bytes, i, b"-->").map_or(bytes.len(), |e| e + 3);
+            continue;
+        }
+        let closing = bytes.get(i) == Some(&b'/');
+        let start = if closing { i + 1 } else { i };
+        let end = bytes[start..]
+            .iter()
+            .position(|b| !b.is_ascii_alphanumeric())
+            .map_or(bytes.len(), |n| start + n);
+        if end == start {
+            continue; // `<!doctype`, `<?xml`, a bare `<`
+        }
+        let name = html[start..end].to_ascii_lowercase();
+        let tag_end = find(bytes, end, b">").unwrap_or(bytes.len());
+        i = tag_end;
+        if UNCOUNTED.contains(&name.as_str()) || (!closing && bytes[..tag_end].ends_with(b"/")) {
+            continue;
+        }
+        if closing {
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        if matches!(
+            name.as_str(),
+            "script" | "style" | "textarea" | "title" | "xmp"
+        ) {
+            let close = format!("</{name}");
+            i = find_ignore_case(bytes, i, close.as_bytes()).unwrap_or(bytes.len());
+            continue;
+        }
+        depth += 1;
+        if depth > MAX_RAW_NESTING {
+            anyhow::bail!(
+                "HTML nests more than {} levels deep — refusing to convert it, as this is far \
+                 past anything a real document does",
+                MAX_RAW_NESTING
+            );
+        }
+    }
+    Ok(())
+}
+
+fn find(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    bytes
+        .get(from..)?
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| from + p)
+}
+
+fn find_ignore_case(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    bytes
+        .get(from..)?
+        .windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle))
+        .map(|p| from + p)
+}
 
 /// `Some(depth)` when the document nests deeper than `limit`, else `None`.
 /// Single pre-order pass: a parent always precedes its children, so each node's
@@ -785,6 +880,34 @@ mod regression_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the depth check ran after html5ever's parse, which is
+    /// quadratic in depth, so 300,000 nested divs spun for minutes before
+    /// being refused (and no memory limit noticed: the parse stays small).
+    #[test]
+    fn absurd_nesting_is_refused_before_parsing() {
+        let deep = "<div>".repeat(300_000);
+        let started = std::time::Instant::now();
+        let err = HtmlGobbler::default()
+            .gobble_str(&deep, &ParseOptions::default())
+            .unwrap_err();
+        assert!(err.to_string().contains("levels deep"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// The pre-scan counts only what the parser would really nest.
+    #[test]
+    fn ordinary_unclosed_markup_is_not_counted_as_nesting() {
+        let mut page = String::from("<html><body>");
+        page.push_str(&"<p>para<br><img src=x.png><input/>".repeat(20_000));
+        page.push_str(&"<ul><li>a<li>b</ul>".repeat(10_000));
+        page.push_str("<script>if (a < b) { x = '<div><div><div>'; }</script>");
+        page.push_str(&"<!-- <div><div> -->".repeat(10_000));
+        page.push_str(&"<div><span>x</span></div>".repeat(10_000));
+        assert!(refuse_deep_nesting(&page).is_ok());
+        assert!(refuse_deep_nesting(&"<div>".repeat(MAX_RAW_NESTING)).is_ok());
+        assert!(refuse_deep_nesting(&"<div>".repeat(MAX_RAW_NESTING + 1)).is_err());
+    }
 
     fn gobble(html: &str) -> String {
         HtmlGobbler::default()

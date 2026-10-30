@@ -52,6 +52,58 @@ pub(crate) fn read_zip_entry_to_string<R: std::io::Read>(
         .map_err(|_| anyhow::anyhow!("`{}` is not valid UTF-8 (corrupt container?)", name))
 }
 
+/// Whether every XML part of a zip package (OOXML or OpenDocument) parses: no
+/// syntax error, and every element closed by the end of the part. Parts are
+/// read under the usual [`MAX_ZIP_ENTRY_BYTES`] cap.
+///
+/// docx-rs and calamine both loop forever on some damaged parts (a truncated
+/// `numbering.xml`, an unclosed `<table:table>` in an `.ods`): full CPU, flat
+/// memory, so no memory limit ever stops them. Callers check first.
+pub(crate) fn check_package_xml(buf: &[u8]) -> anyhow::Result<()> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buf))
+        .map_err(|e| anyhow::anyhow!("not a readable zip package: {e}"))?;
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| anyhow::anyhow!("entry {i} of the package is unreadable: {e}"))?;
+        let name = file.name().to_string();
+        if !(name.ends_with(".xml") || name.ends_with(".rels")) {
+            continue;
+        }
+        let xml = read_zip_entry_to_string(&mut file, &name)?;
+        if !xml_is_well_formed(&xml) {
+            anyhow::bail!("`{name}` is malformed or cut short");
+        }
+    }
+    Ok(())
+}
+
+/// Well-formed enough for docx-rs: no syntax error, a root element, and every
+/// element closed by the end (an empty part made docx-rs panic too).
+fn xml_is_well_formed(xml: &str) -> bool {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut depth = 0usize;
+    let mut root = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(_)) => {
+                depth += 1;
+                root = true;
+            }
+            Ok(Event::Empty(_)) => root = true,
+            Ok(Event::End(_)) => depth = depth.saturating_sub(1),
+            Ok(Event::Eof) => return root && depth == 0,
+            Err(_) => return false,
+            Ok(_) => {}
+        }
+    }
+}
+
+/// The widest table row a document can produce. Word stops at 63 columns and
+/// Excel at 16,384; a markdown table wider than this is not readable anyway.
+pub(crate) const MAX_TABLE_COLUMNS: usize = 1024;
+
 /// Builds a markdown pipe table from cells fed in row order.
 ///
 /// Five parsers (docx, pptx, ODF, spreadsheets, and the HTML extractor) each
@@ -69,9 +121,14 @@ pub(crate) struct TableBuilder {
 impl TableBuilder {
     /// Appends `text` as `repeat` identical cells (formats that carry a
     /// "repeat this cell N times" attribute expand through this).
+    ///
+    /// A row holds at most [`MAX_TABLE_COLUMNS`] cells. The repeat count comes
+    /// from the file: `<w:gridSpan w:val="1000000000"/>` in an 871-byte `.docx`
+    /// pushed a billion cells and took the process past 6 GB.
     pub(crate) fn push_cell(&mut self, text: &str, repeat: usize) {
         let cell = Self::escape(text);
-        for _ in 0..repeat {
+        let room = MAX_TABLE_COLUMNS.saturating_sub(self.current.len());
+        for _ in 0..repeat.min(room) {
             self.current.push(cell.clone());
         }
     }
@@ -121,7 +178,20 @@ impl TableBuilder {
 
 #[cfg(test)]
 mod table_tests {
-    use super::TableBuilder;
+    use super::{MAX_TABLE_COLUMNS, TableBuilder};
+
+    /// Regression: a repeat count from the file was trusted, so one cell
+    /// with a gridSpan of 10^9 allocated a billion cells.
+    #[test]
+    fn a_row_cannot_outgrow_the_column_cap() {
+        let mut t = TableBuilder::default();
+        t.push_cell("a", 1_000_000_000);
+        t.push_cell("b", 5);
+        t.end_row();
+        let md = t.render();
+        let first = md.lines().next().unwrap();
+        assert_eq!(first.matches('|').count(), MAX_TABLE_COLUMNS + 1);
+    }
 
     #[test]
     fn pads_short_rows_and_escapes_cells() {

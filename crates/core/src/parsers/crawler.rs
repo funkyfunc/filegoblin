@@ -382,7 +382,11 @@ async fn fetch_page(client: &reqwest::Client, url: &Url) -> Result<Option<String
         media_type: Some(media_type),
         content_type,
     };
-    Ok(Some(body.decode_text()))
+    let html = body.decode_text();
+    // Checked here because link discovery parses the page before the HTML
+    // extractor (which checks too) ever sees it.
+    crate::parsers::html::refuse_deep_nesting(&html).map_err(|e| e.to_string())?;
+    Ok(Some(html))
 }
 
 pub fn crawl_web(url: &Url, args: &crate::cli::Cli) -> Result<Vec<GobbleDocument>> {
