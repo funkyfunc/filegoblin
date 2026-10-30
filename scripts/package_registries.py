@@ -84,6 +84,13 @@ TARGETS = {
 }
 
 SUMMARY = "Converts PDFs, Office documents, web pages and more into clean Markdown for LLMs"
+
+# Whether the base wheel declares the `models` extra. Keep this False until
+# `filegoblin-models` and every `filegoblin-model-<name>` exist on PyPI under
+# our account: an extra that names an unregistered project lets whoever
+# registers it first ship code to every `pip install "filegoblin[models]"`.
+# publish.yml's "Base package only" step and this flag go together.
+PYPI_MODELS_EXTRA = False
 HOMEPAGE = "https://github.com/funkyfunc/filegoblin"
 
 
@@ -275,8 +282,10 @@ def build_pypi(version: str, archives: dict, models: Path, out: Path) -> list:
                     "filegoblin",
                     version,
                     SUMMARY,
-                    requires=[f'filegoblin-models=={version}; extra == "models"'],
-                    extras=["models"],
+                    requires=[f'filegoblin-models=={version}; extra == "models"']
+                    if PYPI_MODELS_EXTRA
+                    else [],
+                    extras=["models"] if PYPI_MODELS_EXTRA else [],
                     readme=readme,
                 ),
                 entry_points="[console_scripts]\nfilegoblin = filegoblin.__main__:main\n",
@@ -474,9 +483,11 @@ def main():
     archives = find_archives(args.archives)
     if not archives:
         raise SystemExit(f"no filegoblin-<target> archives in {args.archives}")
+    # Fatal: carrying on published a release that quietly dropped a platform
+    # (the launcher's optionalDependencies were rewritten to what was built).
     missing = sorted(set(TARGETS) - set(archives))
     if missing:
-        print(f"warning: no archive for {', '.join(missing)}", file=sys.stderr)
+        raise SystemExit(f"no archive for {', '.join(missing)} in {args.archives}")
     with tempfile.TemporaryDirectory() as scratch:
         models = model_dir(args.models, Path(scratch)) if args.models else None
         if args.registry == "pypi":

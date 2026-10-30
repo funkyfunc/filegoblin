@@ -44,11 +44,54 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        !contains(github.event.workflow_run.head_branch, '-'))
+    permissions:
+      actions: read # read the Release and Horde Check runs
     outputs:
       run-id: ${{ steps.run.outputs.id }}
     steps:
+      # Through the environment, never spliced into the script: `run-id` is
+      # free text typed into the dispatch form.
       - id: run
-        run: echo "id=${{ inputs.run-id || github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run-id || github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          case "$RUN_ID" in
+            ''|*[!0-9]*) echo "run-id must be a number, got: $RUN_ID"; exit 1 ;;
+          esac
+          # A manual run must still name a successful Release run, not any
+          # run that happens to have a registry-packages artifact.
+          read -r name conclusion sha < <(gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" \
+            --json workflowName,conclusion,headSha -q '"\(.workflowName) \(.conclusion) \(.headSha)"')
+          if [ "$name" != "Release" ] || [ "$conclusion" != "success" ]; then
+            echo "Run $RUN_ID is '$name' with conclusion '$conclusion', not a successful Release run"
+            exit 1
+          fi
+          echo "id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      # Publishing is permanent, and Release itself runs no tests: wait for
+      # Horde Check on the same commit and refuse to publish unless it passed.
+      # (v1.15.0 went out while Horde Check on its commit was red.)
+      - name: Horde Check passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.run.outputs.sha }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            result=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/horde-check.yml/runs?head_sha=$SHA&event=push" \
+              -q '[.workflow_runs[] | "\(.status) \(.conclusion)"] | first // "none"')
+            case "$result" in
+              "completed success") echo "Horde Check passed on $SHA"; exit 0 ;;
+              completed*) echo "Horde Check on $SHA finished as: $result"; exit 1 ;;
+              none) echo "No Horde Check run for $SHA yet" ;;
+              *) echo "Horde Check on $SHA: $result" ;;
+            esac
+            sleep 60
+          done
+          echo "Gave up waiting for Horde Check on $SHA"
+          exit 1
 
   pypi:
     needs: check
