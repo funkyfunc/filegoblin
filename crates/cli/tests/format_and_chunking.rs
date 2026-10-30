@@ -248,3 +248,50 @@ Paragraph in section B.
     assert!(out.contains("<!-- Context: Chapter One > Section A > Subsection Alpha -->"));
     assert!(out.contains("<!-- Context: Chapter One > Section B -->"));
 }
+
+/// Regression: `--chunk-size 0` was accepted and split the text into one
+/// chunk per word.
+#[test]
+fn a_zero_chunk_size_is_refused() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sample_file = temp_dir.path().join("sample.txt");
+    fs::write(&sample_file, "one two three four").unwrap();
+    for size in ["0", "0k", "0.0001k"] {
+        let out = cmd()
+            .args([sample_file.to_str().unwrap(), "--chunk-size", size, "-q"])
+            .assert()
+            .code(2);
+        let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+        assert!(stderr.contains("at least 1 token"), "{size}: {stderr}");
+    }
+}
+
+/// Regression: `--split` mapped `notes` and `notes.md` to the same
+/// `notes.md` (and `A.txt`/`a.txt` to one file on case-insensitive disks), and
+/// the second document silently replaced the first.
+#[test]
+fn split_never_overwrites_one_document_with_another() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let src = temp_dir.path().join("src");
+    fs::create_dir(&src).unwrap();
+    fs::write(src.join("notes"), "plain notes without an extension").unwrap();
+    fs::write(src.join("notes.md"), "# markdown notes").unwrap();
+    let out = temp_dir.path().join("out");
+    // The streaming writer, then the buffered one (`--max-tokens` buffers).
+    for extra in [&[][..], &["--max-tokens", "100000"][..]] {
+        let _ = fs::remove_dir_all(&out);
+        let mut args = vec![src.to_str().unwrap(), "--horde", "--split", "-q"];
+        args.extend(["--write", out.to_str().unwrap()]);
+        args.extend(extra);
+        cmd().args(&args).assert().success();
+        let mut all = String::new();
+        for entry in fs::read_dir(&out).unwrap() {
+            all.push_str(&fs::read_to_string(entry.unwrap().path()).unwrap());
+        }
+        assert!(
+            all.contains("plain notes without an extension"),
+            "{extra:?}: {all}"
+        );
+        assert!(all.contains("# markdown notes"), "{extra:?}: {all}");
+    }
+}

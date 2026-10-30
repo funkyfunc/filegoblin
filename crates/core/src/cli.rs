@@ -87,7 +87,17 @@ pub fn parse_token_budget(raw: &str) -> Result<String, String> {
 }
 
 /// Parses a token count like `512`, `1024`, `1k`, `2m` into a usize token limit.
+///
+/// Zero is refused: `--chunk-size 0` (or `0.0001k`) was accepted and emitted
+/// one chunk per word.
 pub fn parse_chunk_size(raw: &str) -> Result<usize, String> {
+    match parse_token_count(raw)? {
+        0 => Err(format!("a chunk must hold at least 1 token — got `{raw}`")),
+        n => Ok(n),
+    }
+}
+
+fn parse_token_count(raw: &str) -> Result<usize, String> {
     let c = raw.trim().to_lowercase();
     if let Some(n) = c.strip_suffix('k') {
         n.parse::<f64>()
