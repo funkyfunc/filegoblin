@@ -665,10 +665,15 @@ pub(crate) fn fetch_url(url: &Url, quiet: bool) -> Result<FetchedBody> {
 
     let client = crate::net::blocking_client()?;
 
-    let resp = client
-        .get(url.clone())
-        .send()
-        .context("Mischievous network error: Failed to reach the URL")?;
+    let resp = client.get(url.clone()).send().map_err(|e| {
+        anyhow::anyhow!(
+            "Mischievous network error: Failed to reach the URL: {}",
+            crate::net::error_chain(&e)
+        )
+    })?;
+    // Before the body is read or cached: an error page is not the document.
+    crate::net::check_status(resp.status())
+        .map_err(|e| anyhow::anyhow!("Mischievous network error: {}", e))?;
 
     // Reject oversized bodies up front when the server declares a length.
     if let Some(len) = resp.content_length()
@@ -806,6 +811,42 @@ mod tests {
             .gobble_str(&html_content, &(&args).into())
             .unwrap();
         assert!(parsed_content.contains("Goblin network testing!"));
+    }
+
+    /// Regression: reqwest returns 4xx/5xx as ordinary responses, so a 404
+    /// page was converted, reported as success and cached.
+    #[test]
+    #[cfg(feature = "web")]
+    fn error_statuses_fail_the_fetch_and_are_not_cached() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0; 1024];
+                let _ = stream.read(&mut buf);
+                let body = b"<html><body><h1>Not Found</h1></body></html>";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = stream.write_all(body);
+            }
+        });
+        let _lock = crate::net::LOCAL_URL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::net::set_allow_local_urls(true);
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/missing")).unwrap();
+        let first = fetch_url(&url, true).map(|_| ());
+        let cached = crate::cache::get_url(url.as_str());
+        crate::net::set_allow_local_urls(false);
+        let err = first.unwrap_err();
+        assert!(format!("{err:#}").contains("404"), "{err:#}");
+        assert!(cached.is_none(), "an error page must not be cached");
     }
 
     #[test]
