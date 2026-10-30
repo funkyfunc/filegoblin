@@ -38,7 +38,7 @@ Builds are published for macOS (Apple Silicon and Intel), Linux (x86_64 and aarc
 
 **Behind a corporate network.** The npm model packages (and the PyPI ones, once they're published) carry the weights themselves, one package per model, with the two largest models in halves to stay under the registries' 100 MB per-file limit. They install from a company mirror (Artifactory, Nexus, CodeArtifact) like any other package, with no access to github.com.
 
-**Air-gapped machines.** Copy the full download. Alternatively, put the `filegoblin-vision-models.tar.gz` archive on a shared read-only path and name it in `FILEGOBLIN_MODELS`. That variable takes a `PATH`-style list. Licenses are in `LICENSES.md` inside the archive.
+**Air-gapped machines.** Copy the full download. Alternatively, unpack the `filegoblin-vision-models.tar.gz` archive on a shared read-only path and name that directory in `FILEGOBLIN_MODELS` (the archive itself is not read). That variable takes a `PATH`-style list. Licenses are in `LICENSES.md` inside the archive.
 
 **From source** — needs a Rust toolchain (1.87+):
 
@@ -143,7 +143,7 @@ keep the binary lean). Feature-gated items are marked below.
 - [x] **Trafilatura DOM Content Extraction**: Native port of `trafilatura.core` text/link-density heuristics, boilerplate token pruning, syntax-highlighted code block preservation, and citation-link dampening
 - [x] PowerPoint: manifest-true slide order + speaker notes + embedded chart tables
 - [x] **Legacy Office binaries (Word, PowerPoint and Excel 97–2003)** via `office_oxide` (pure Rust): `.doc` heading levels from the document's styles, tables, nested lists, links and footnotes; `.ppt` slides in the same shape as `.pptx`, with speaker notes; `.xls` sheets in the same layout as `.xlsx`, cells as Excel displays them. The file's own streams decide whether it is Word, PowerPoint or Excel, so renamed and extension-less files convert; RTF or HTML saved as `.doc` goes to its own parser; password-protected files and Outlook `.msg` get a clear error
-- [x] Magic-byte format detection — extension-first, falling back to content signatures so renamed / extension-less files still route correctly (zip, tar and gzip archives; Office documents are recognised by the parts inside their zip, legacy ones by the streams inside their OLE2 container)
+- [x] Magic-byte format detection — extension-first, falling back to content signatures, so extension-less files and files with an unknown extension still route correctly (zip, tar and gzip archives; Office documents are recognised by the parts inside their zip, legacy ones by the streams inside their OLE2 container). A known but wrong extension (a `.docx` renamed to `.pdf`) still goes to that extension's parser
 - [x] URL fetching routes by Content-Type: HTML → extractor, raw markdown/JSON/text → passthrough, binary documents (a PDF URL!) → the normal parser pipeline
 - [x] `--browser`: render JavaScript-built pages (SPAs) with your installed Chrome/Edge/Brave — headless, throwaway profile, no bundled browser
 - [x] Recursive crawling (`--horde`) + GitHub repo cloning — **on by default** in the CLI binary (`web` feature; disable with `--no-default-features`)
@@ -455,18 +455,9 @@ why that is off by default.
 
 ## 🗺️ Roadmap
 
-- [ ] **Unified Output Formats (`--format`):**
-  - `--format markdown` / `--format md` (default): Clean, token-optimized Markdown for LLM context windows.
-  - `--format plain` (or `--plain`): Syntax-stripped prose for text-embedding models (OpenAI, Cohere, Voyage) and token counters.
-  - `--format json` (or `--json`): Structured AST array of typed semantic blocks (`heading`, `paragraph`, `table`, `code`, `math`, `callout`) with bounding box and page metadata for RAG ingestors.
-- [ ] **Semantic Section Chunking (`--chunk-tokens`, `--chunk-by`):**
-  - Chunk documents into LLM context-ready token budgets (`--chunk-tokens 512`) without severing tables, code blocks, or mathematical equations across chunk boundaries.
-  - Boundary-aware splitting (`--chunk-by section|chapter|page`).
-- [ ] **Multi-Channel Distribution:**
-  - **PyPI (`pip install filegoblin`):** Python wheels built via Maturin for instant drop-in use in LangChain, LlamaIndex, and PyTorch pipelines.
-  - **Crates.io (`cargo install filegoblin`):** Publish CLI binary and `filegoblin-core` library crate.
-  - **Homebrew Tap (`brew install funkyfunc/tap/filegoblin`):** Zero-dependency native macOS installation.
-  - **Precompiled Binary Releases:** Automated cross-platform release archives (Linux x64/arm64, macOS Apple Silicon/Intel, Windows x64) via `cargo-dist`.
+- [ ] **Model packages on PyPI:** `pip install "filegoblin[models]"`, once the model projects exist there (see `docs/RELEASING.md`).
+- [ ] **Crates.io (`cargo install filegoblin`):** publish the CLI binary and the `filegoblin-core` library crate.
+- [ ] **Homebrew tap (`brew install funkyfunc/tap/filegoblin`).**
 
 ---
 
@@ -477,16 +468,26 @@ why that is off by default.
   hostname that *resolves* to one are blocked — on the initial URL, on every
   redirect hop, and inside the DNS resolver itself, so a name that resolves
   differently between the check and the connection (DNS rebinding) is refused
-  too. Set `FILEGOBLIN_ALLOW_LOCAL_URLS=1` to allow them — reasonable for
-  converting your own dev server, and worth thinking about before enabling it
-  for the MCP server, where the URL comes from a model.
-- **`--browser` is a wider surface.** Chrome does not honour those redirect
-  guards, so a page it renders can redirect somewhere filegoblin would refuse to
-  fetch directly. The initial URL is still validated, the profile is a throwaway
-  temp dir, and the mode is strictly opt-in.
+  too. IPv6 spellings of those addresses (`[::ffff:127.0.0.1]`, NAT64, 6to4)
+  count as the address they carry. Set `FILEGOBLIN_ALLOW_LOCAL_URLS=1` (or
+  `true`) to allow them — reasonable for converting your own dev server, and
+  worth thinking about before enabling it for the MCP server, where the URL
+  comes from a model.
+- **`--browser` goes through the same guard.** Chrome is pointed at a small
+  proxy inside filegoblin, so every connection the page makes — redirects,
+  JavaScript navigations, images and scripts — is checked like a direct fetch.
+  A render that ends on a refused address fails; refused subresources are
+  listed on stderr. The profile is a throwaway temp dir, and the mode is opt-in.
 - **Archives and Office files have decompression caps.** Zip, tar, tar.gz, and the
   zip-container formats (`.docx`/`.pptx`/`.odt`/`.epub`) bound what they inflate
   and refuse entries whose paths escape the extraction directory.
+- **A damaged file fails on its own.** A parser that panics, a zip document with
+  malformed XML (which some readers loop on forever) and HTML nested thousands
+  of levels deep are each that file's error; the rest of the run goes on.
+- **Symlinks stay inside the tree.** In a directory walk (`--horde`, an
+  extracted archive, a cloned repository) a symlink is followed only if it
+  resolves inside the walked directory; links that point elsewhere are skipped
+  and listed on stderr. A file you name directly is read wherever it points.
 - **A hostile PDF fails on its own.** The CLI converts every PDF in a worker
   process (its own binary, re-run), so nothing a PDF does to the parser can end
   or exhaust the run. A worker that crashes (a stack overflow from nesting too
