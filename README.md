@@ -491,7 +491,7 @@ why that is off by default.
 - **A hostile PDF fails on its own.** The CLI converts every PDF in a worker
   process (its own binary, re-run), so nothing a PDF does to the parser can end
   or exhaust the run. A worker that crashes (a stack overflow from nesting too
-  deep), uses more than half the machine's memory (a decompression bomb) or
+  deep), uses more than its share of memory (a decompression bomb) or
   finishes no page for 120 seconds (pathological, effectively endless work) is
   stopped; that file fails with an error saying which (exit 4 if nothing else
   converted), and the next PDF gets a fresh worker. Workers are reused across
@@ -506,7 +506,10 @@ why that is off by default.
   (`parsers::pdf_worker`).
 - **No run can take the machine's memory.** The CLI process has the same
   self-measured ceiling as a PDF worker: past half the machine's RAM
-  (`FILEGOBLIN_MEMORY_MB` sets it) it stops with a message and exit 5. Input it
+  (`FILEGOBLIN_MEMORY_MB` sets it) it stops with a message and exit 5. The PDF
+  workers share the other half (a quarter of the RAM each with the default two;
+  `FILEGOBLIN_PDF_MEMORY_MB` sets one worker's limit instead), so together the
+  run's processes stay within the machine's memory. Input it
   reads as a stream is bounded too: an MCP message over 1 MB is answered with an
   error and dropped as it arrives, and piped stdin is read up to 1 GB.
 - **A damaged legacy Office file fails on its own.** `.doc`, `.ppt` and `.xls` are

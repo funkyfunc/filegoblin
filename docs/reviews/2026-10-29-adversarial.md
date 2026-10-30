@@ -50,7 +50,7 @@ prompt) or an ordinary mistake can do to a user who runs filegoblin as documente
 | L7 | Low | MCP: converting `/` or `~` is unbounded work; a 5th concurrent call blocks `ping` | Deferred |
 | L8 | Low | `--chunk-overlap` silently ignored when ≥ the chunk size or without `--chunk-size` | Deferred |
 | L9 | Low | CI gaps: `bundled-models` never compiled, actions unpinned, `--locked` unused | Deferred |
-| P1–P3 | — | PDF worker boundary findings | For the PDF session (below) |
+| P1–P3 | — | PDF worker boundary findings | P2 fixed; P1, P3 for the PDF session (below) |
 
 The parser findings (H5–H7) come from a fuzzing pass over the non-PDF parsers:
 241 crafted inputs (bombs, deep nesting, huge repeat counts, entity expansion,
@@ -490,7 +490,7 @@ and SHA-256s, and the pip versions.
 
 ## For the PDF session
 
-Not fixed here (`parsers/pdf*.rs` belong to the PDF session).
+Not fixed here (`parsers/pdf*.rs` belong to the PDF session), except P2.
 
 - **P1. The worker boundary fails open.** `pdf_worker.rs` `Pool::convert`: when a
   worker cannot be started, the PDF converts in the parent "instead", with a
@@ -502,14 +502,16 @@ Not fixed here (`parsers/pdf*.rs` belong to the PDF session).
   "could not start a PDF worker (… Resource temporarily unavailable (os error 35));
   converting PDFs in this process instead", exit 0. Recommendation: fail that file
   (an ordinary per-file error) instead, or at least never fall back silently.
-- **P2. Memory budgets add up past the machine.** `default_memory_mb` gives each
+- **P2. Memory budgets added up past the machine.** `default_memory_mb` gave each
   PDF worker half of physical RAM, `default_workers` is 2, and since `4283928` the
-  CLI process itself may also hold half. One run can therefore hold 1.5× the
-  machine's RAM before any limit fires (two hostile PDFs in a `--horde` run or
-  two MCP calls, plus the parent). Found by reading; not run, to avoid exhausting
-  this machine. Recommendation: one budget, split — e.g. the CLI keeps half and the
-  workers share the other half (`half_of_ram_mb() / workers` per worker). Raised
-  with the session that owns `pdf_worker.rs`; not changed here.
+  CLI process itself may also hold half: one run could hold 1.5× the machine's RAM
+  before any limit fired (two hostile PDFs in a `--horde` run or two MCP calls,
+  plus the parent). Found by reading. **Fixed** (with the coordinating session's
+  approval, the one change in `pdf_worker.rs`): the defaults are shares of one run
+  budget, the machine's memory. The CLI keeps half; the workers split the other
+  half (`memory::worker_share_mb`). Test:
+  `memory::tests::the_cli_and_its_workers_share_one_budget`. An explicit
+  `FILEGOBLIN_PDF_MEMORY_MB` still overrides.
 - **P3.** The worker samples its footprint every 25 ms, so it can overshoot by
   whatever it allocates in that window (already in the ADR as open).
 
