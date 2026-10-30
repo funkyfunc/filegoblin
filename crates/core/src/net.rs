@@ -26,7 +26,19 @@ pub fn set_allow_local_urls(allow: bool) {
 
 pub fn allow_local_urls() -> bool {
     ALLOW_LOCAL_URLS.load(std::sync::atomic::Ordering::Relaxed)
-        || std::env::var_os("FILEGOBLIN_ALLOW_LOCAL_URLS").is_some()
+        || env_opts_in(std::env::var("FILEGOBLIN_ALLOW_LOCAL_URLS").ok().as_deref())
+}
+
+/// Whether the opt-in variable's value means "yes". Mere presence used to
+/// count, so `FILEGOBLIN_ALLOW_LOCAL_URLS=0` — someone explicitly saying no —
+/// switched the SSRF guard off.
+fn env_opts_in(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 /// Serializes tests that flip [`set_allow_local_urls`], since it is process-global
@@ -109,26 +121,66 @@ pub fn is_blocked_host(host: &str) -> bool {
     lower == "localhost" || lower.ends_with(".localhost")
 }
 
-fn is_blocked_ip(ip: IpAddr) -> bool {
+pub(crate) fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                // Carrier-grade NAT 100.64.0.0/10
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
-        }
+        IpAddr::V4(v4) => is_blocked_v4(v4),
         IpAddr::V6(v6) => {
+            // An IPv6 address that *carries* an IPv4 one reaches that IPv4
+            // host, so it is judged by it. `[::ffff:127.0.0.1]` passed every
+            // check below and a dual-stack socket connected it to loopback.
+            if let Some(v4) = embedded_v4(v6) {
+                return is_blocked_v4(v4);
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
+                || v6.is_multicast()
                 // Unique local fc00::/7
                 || (v6.segments()[0] & 0xfe00) == 0xfc00
                 // Link-local fe80::/10
                 || (v6.segments()[0] & 0xffc0) == 0xfe80
         }
     }
+}
+
+fn is_blocked_v4(v4: std::net::Ipv4Addr) -> bool {
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || v4.is_multicast()
+        // "This network" 0.0.0.0/8: Linux connects 0.x.x.x to the local host.
+        || v4.octets()[0] == 0
+        // Carrier-grade NAT 100.64.0.0/10
+        || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+}
+
+/// The IPv4 address inside an IPv6 one that routes to it: IPv4-mapped
+/// (`::ffff:a.b.c.d`), the deprecated IPv4-compatible form (`::a.b.c.d`), the
+/// NAT64 well-known prefix (`64:ff9b::/96`) and 6to4 (`2002:AABB:CCDD::/48`).
+fn embedded_v4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    let s = v6.segments();
+    let tail =
+        std::net::Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8);
+    // `::` and `::1` are themselves; anything else in ::/96 is IPv4-compatible.
+    if s[..6].iter().all(|&x| x == 0) && !(s[6] == 0 && s[7] <= 1) {
+        return Some(tail);
+    }
+    if s[0] == 0x64 && s[1] == 0xff9b && s[2..6].iter().all(|&x| x == 0) {
+        return Some(tail);
+    }
+    if s[0] == 0x2002 {
+        return Some(std::net::Ipv4Addr::new(
+            (s[1] >> 8) as u8,
+            s[1] as u8,
+            (s[2] >> 8) as u8,
+            s[2] as u8,
+        ));
+    }
+    None
 }
 
 /// DNS resolver that refuses to hand back a blocked address.
@@ -203,6 +255,43 @@ fn ssrf_redirect_policy(max: usize) -> reqwest::redirect::Policy {
     })
 }
 
+/// Refuses a response that is not a success. reqwest hands back 4xx/5xx as
+/// ordinary responses, so `filegoblin https://site/missing` converted the
+/// server's "404 Not Found" page, exited 0 and cached it.
+///
+/// A 3xx here is a redirect we declined: to a blocked or non-http(s) target,
+/// or past the hop limit.
+#[cfg(feature = "web")]
+pub fn check_status(status: reqwest::StatusCode) -> anyhow::Result<()> {
+    if status.is_success() {
+        Ok(())
+    } else if status.is_redirection() {
+        anyhow::bail!(
+            "the server answered {} and the redirect was not followed (it leads to a \
+             private, loopback or non-http(s) address, or past 10 hops)",
+            status
+        )
+    } else {
+        anyhow::bail!("the server answered {}", status)
+    }
+}
+
+/// An error and its sources on one line. reqwest's own Display is just "error
+/// sending request"; the reason (refused by our resolver, DNS failure,
+/// timeout) is further down the chain.
+pub fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut src = err.source();
+    while let Some(e) = src {
+        let text = e.to_string();
+        if !parts.iter().any(|p| p.contains(&text)) {
+            parts.push(text);
+        }
+        src = e.source();
+    }
+    parts.join(": ")
+}
+
 /// Builds the hardened blocking client used by the single-URL fetch path.
 #[cfg(feature = "web")]
 pub fn blocking_client() -> reqwest::Result<reqwest::blocking::Client> {
@@ -257,6 +346,48 @@ mod tests {
         assert!(is_blocked_host("[::1]"));
         assert!(is_blocked_host("localhost"));
         assert!(is_blocked_host("foo.localhost"));
+    }
+
+    /// Regression: an IPv6 literal that embeds an IPv4 address was judged as
+    /// IPv6 only, so `http://[::ffff:127.0.0.1]:port/` fetched a loopback
+    /// service that `http://127.0.0.1:port/` was refused.
+    #[test]
+    fn ipv6_forms_of_blocked_ipv4_are_blocked() {
+        for host in [
+            "[::ffff:127.0.0.1]",
+            "[::ffff:7f00:1]",
+            "[::ffff:169.254.169.254]",
+            "[::ffff:10.0.0.1]",
+            "[::127.0.0.1]",
+            "[64:ff9b::7f00:1]",
+            "[64:ff9b::a9fe:a9fe]",
+            "[2002:7f00:1::]",
+            "[2002:a9fe:a9fe::1]",
+            "[ff02::1]",
+            "0.1.2.3",
+            "224.0.0.1",
+        ] {
+            assert!(is_blocked_host(host), "{host} must be blocked");
+        }
+        // The same wrappers around a public address stay allowed.
+        for host in [
+            "[::ffff:8.8.8.8]",
+            "[64:ff9b::808:808]",
+            "[2606:4700::1111]",
+        ] {
+            assert!(!is_blocked_host(host), "{host} must be allowed");
+        }
+    }
+
+    /// Regression: any value at all — including `0` — turned the guard off.
+    #[test]
+    fn only_a_yes_value_opts_in_to_local_urls() {
+        for no in [None, Some(""), Some("0"), Some("false"), Some("no")] {
+            assert!(!env_opts_in(no), "{no:?} must not opt in");
+        }
+        for yes in [Some("1"), Some("true"), Some("YES"), Some(" on ")] {
+            assert!(env_opts_in(yes), "{yes:?} must opt in");
+        }
     }
 
     #[test]

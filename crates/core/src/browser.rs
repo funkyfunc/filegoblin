@@ -12,6 +12,8 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+mod guard_proxy;
+
 /// Reaching `load` is bounded by Chrome's own --timeout; the settle phase by
 /// --virtual-time-budget; this is the outer wall-clock kill for the known
 /// new-headless hang bugs.
@@ -124,10 +126,15 @@ pub fn find_browser() -> Option<PathBuf> {
 }
 
 /// Renders `url` in the discovered browser and returns the post-JavaScript
-/// serialized DOM. The caller is responsible for SSRF pre-validation — the
-/// browser does NOT honour our redirect guards (which is one reason this is
-/// strictly opt-in via `--browser`).
+/// serialized DOM. Every connection the browser makes — the page, its
+/// redirects and navigations, every subresource — goes through a guarding
+/// proxy (see `guard_proxy`), so the SSRF rules of the static fetch hold here
+/// too.
 pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
+    render_url_with(url, quiet, guard_proxy::ssrf_policy())
+}
+
+fn render_url_with(url: &url::Url, quiet: bool, policy: guard_proxy::Policy) -> Result<String> {
     let browser = find_browser().ok_or_else(|| {
         anyhow::anyhow!(
             "No Chromium-family browser found. Install Chrome/Chromium/Edge/Brave, \
@@ -165,29 +172,30 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
         "--disable-logging",
         "--log-level=3",
         "--run-all-compositor-stages-before-draw",
+        // Never touch the OS keyring (Linux D-Bus secret service, macOS
+        // keychain) for the throwaway profile's cookie key: on a machine
+        // without one, that lookup is a known way for headless Chrome to
+        // stall at startup.
+        "--password-store=basic",
+        "--use-mock-keychain",
     ])
     .arg(format!("--user-data-dir={}", profile.path().display()))
     .arg(format!("--user-agent={}", crate::net::user_agent()))
     .arg(format!("--timeout={}", LOAD_TIMEOUT_MS))
     .arg(format!("--virtual-time-budget={}", SETTLE_BUDGET_MS));
 
+    // All of Chrome's traffic goes through the guard. `<-loopback>` removes
+    // Chrome's built-in "never proxy localhost" rule, which would otherwise be
+    // the way around it, and WebRTC may not send UDP outside the proxy.
+    //
     // Chrome does not read HTTP_PROXY/HTTPS_PROXY on macOS or Windows, so
-    // behind a corporate proxy the static fetch worked and `--browser` failed
-    // — reported, unhelpfully, as the page blocking headless rendering.
-    if let Some(proxy) = std::env::var("HTTPS_PROXY")
-        .or_else(|_| std::env::var("https_proxy"))
-        .or_else(|_| std::env::var("HTTP_PROXY"))
-        .or_else(|_| std::env::var("http_proxy"))
-        .ok()
-        .filter(|p| !p.trim().is_empty())
-    {
-        cmd.arg(format!("--proxy-server={}", proxy.trim()));
-        if let Ok(no_proxy) = std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy"))
-            && !no_proxy.trim().is_empty()
-        {
-            cmd.arg(format!("--proxy-bypass-list={}", no_proxy.trim()));
-        }
-    }
+    // behind a corporate proxy the static fetch worked and `--browser` failed;
+    // the guard forwards allowed connections to that proxy instead.
+    let guard = guard_proxy::GuardProxy::start(policy, upstream_proxy())
+        .context("Failed to start the browser's guarding proxy")?;
+    cmd.arg(format!("--proxy-server=http://{}", guard.addr))
+        .arg("--proxy-bypass-list=<-loopback>")
+        .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
 
     cmd.arg("--dump-dom")
         .arg(url.as_str())
@@ -341,14 +349,52 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
         || trimmed.starts_with("<?xml");
     if dom.trim().len() < 40 || !looks_like_a_document {
         let stderr_tail = browser_diagnostics(&diagnostics);
+        let said = if stderr_tail.is_empty() {
+            String::new()
+        } else {
+            format!(" — Chrome said: {}", stderr_tail)
+        };
+        // Killed by our wall clock having written nothing is a browser that
+        // never got going, not a page refusing to render. Saying "the page
+        // may block headless rendering" here sent the CI flake hunt the
+        // wrong way.
+        if timed_out {
+            anyhow::bail!(
+                "Browser made no progress on {} in {}s and was stopped ({} bytes of DOM){}",
+                url,
+                WALL_CLOCK_KILL_MS / 1000,
+                dom.len(),
+                said
+            );
+        }
         anyhow::bail!(
             "Browser produced no usable DOM for {}{}",
             url,
-            if stderr_tail.is_empty() {
+            if said.is_empty() {
                 " (page may block headless rendering)".to_string()
             } else {
-                format!(" — Chrome said: {}", stderr_tail)
+                said
             }
+        );
+    }
+    // A refused navigation renders as our refusal page, or as Chrome's own
+    // network-error page when the refused connection was a CONNECT (https).
+    let refused = guard.refused();
+    if !refused.is_empty()
+        && (dom.contains(guard_proxy::REFUSAL_MARKER) || dom.contains("class=\"neterror\""))
+    {
+        anyhow::bail!(
+            "The page at {} tried to reach a blocked address: {}. Set \
+             FILEGOBLIN_ALLOW_LOCAL_URLS=1 if that is intended.",
+            url,
+            refused.join(", ")
+        );
+    }
+    if !refused.is_empty() && !quiet {
+        eprintln!(
+            "⚠️  Blocked {} request(s) from the rendered page to private or loopback addresses: {}",
+            refused.len(),
+            refused.join(", ")
         );
     }
     // A wall-clock kill mid-write leaves a document that still starts with
@@ -362,6 +408,26 @@ pub fn render_url(url: &url::Url, quiet: bool) -> Result<String> {
         );
     }
     Ok(dom)
+}
+
+/// The user's own HTTP(S) proxy, which allowed connections are forwarded to.
+fn upstream_proxy() -> Option<guard_proxy::Upstream> {
+    let raw = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .find_map(|v| std::env::var(v).ok().filter(|p| !p.trim().is_empty()))?;
+    let parsed = url::Url::parse(raw.trim())
+        .or_else(|_| url::Url::parse(&format!("http://{}", raw.trim())))
+        .ok()?;
+    let addr = format!(
+        "{}:{}",
+        parsed.host_str()?,
+        parsed.port_or_known_default().unwrap_or(8080)
+    );
+    let no_proxy = std::env::var("NO_PROXY")
+        .or_else(|_| std::env::var("no_proxy"))
+        .map(|v| v.split(',').map(str::to_string).collect())
+        .unwrap_or_default();
+    Some(guard_proxy::Upstream { addr, no_proxy })
 }
 
 /// Waits up to `timeout` for a pipe-reader thread, then gives up and lets it
@@ -389,6 +455,16 @@ fn browser_diagnostics(diagnostics: &std::sync::Mutex<Vec<u8>>) -> String {
         // those lines are noise, not the reason a render failed.
         .filter(|l| !l.contains("dbus") && !l.contains("GPU") && !l.contains("Vulkan"))
         .collect();
+    // When the noise is all there is, it is the clue: a startup stall waiting
+    // on D-Bus says so in exactly the lines filtered out above.
+    let interesting = if interesting.is_empty() {
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect()
+    } else {
+        interesting
+    };
     interesting
         .iter()
         .rev()
@@ -403,6 +479,47 @@ fn browser_diagnostics(diagnostics: &std::sync::Mutex<Vec<u8>>) -> String {
 mod tests {
     use super::*;
 
+    /// Serves `body` for every request on a fresh loopback port. One thread per
+    /// connection: Chrome opens speculative preconnect sockets that never send
+    /// a request, which would wedge a sequential accept loop.
+    fn serve(body: &'static str) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let mut s = stream;
+                    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                    let mut buf = [0u8; 4096];
+                    if s.read(&mut buf).unwrap_or(0) == 0 {
+                        return; // preconnect socket, no request
+                    }
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = s.write_all(resp.as_bytes());
+                });
+            }
+        });
+        port
+    }
+
+    /// True when a browser is available; panics instead of skipping when CI
+    /// says one must be (a silent skip still reports "ok").
+    fn have_browser() -> bool {
+        if find_browser().is_some() {
+            return true;
+        }
+        if std::env::var_os("FILEGOBLIN_REQUIRE_BROWSER").is_some() {
+            panic!("FILEGOBLIN_REQUIRE_BROWSER is set but no browser was found");
+        }
+        eprintln!("SKIPPING the --browser render assertions: no Chromium-family browser installed");
+        false
+    }
+
     /// One sequential test: env-override discovery, then a real render of a
     /// JS-only page served locally (skipped when no browser is installed).
     /// Combined because parallel tests mutating FILEGOBLIN_BROWSER race.
@@ -414,51 +531,77 @@ mod tests {
         assert_eq!(find_browser(), Some(exists));
         unsafe { std::env::remove_var("FILEGOBLIN_BROWSER") };
 
-        if find_browser().is_none() {
-            // A silent `return` still reports "ok", so this looked like browser
-            // coverage on machines that have none. CI sets
-            // FILEGOBLIN_REQUIRE_BROWSER=1 to turn the skip into a failure.
-            if std::env::var_os("FILEGOBLIN_REQUIRE_BROWSER").is_some() {
-                panic!("FILEGOBLIN_REQUIRE_BROWSER is set but no browser was found");
-            }
-            eprintln!(
-                "SKIPPING the --browser render assertions: no Chromium-family browser installed"
-            );
+        if !have_browser() {
             return;
         }
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            // Serve a page whose content exists ONLY after JS runs. One thread
-            // per connection: Chrome opens speculative preconnect sockets that
-            // never send a request, which would wedge a sequential accept loop.
-            for stream in listener.incoming().flatten() {
-                std::thread::spawn(move || {
-                    let mut s = stream;
-                    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-                    let mut buf = [0u8; 4096];
-                    if s.read(&mut buf).unwrap_or(0) == 0 {
-                        return; // preconnect socket, no request
-                    }
-                    let body = "<html><head><title>js page</title></head><body>\
-                        <div id=app></div><script>document.getElementById('app').innerHTML = \
-                        '<main><h1>Hydrated Title<\\/h1><p>Content born from JavaScript execution.<\\/p><\\/main>';\
-                        </script></body></html>";
-                    let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
-                    let _ = s.write_all(resp.as_bytes());
-                });
-            }
-        });
+        // Serve a page whose content exists ONLY after JS runs.
+        let port = serve(
+            "<html><head><title>js page</title></head><body>\
+            <div id=app></div><script>document.getElementById('app').innerHTML = \
+            '<main><h1>Hydrated Title<\\/h1><p>Content born from JavaScript execution.<\\/p><\\/main>';\
+            </script></body></html>",
+        );
         let url = url::Url::parse(&format!("http://127.0.0.1:{}/", port)).unwrap();
-        let dom = render_url(&url, true).expect("render should succeed");
+        // The page is on loopback, which the guarding proxy refuses unless told
+        // otherwise; this is the legitimate local-service case.
+        let only_this_port: guard_proxy::Policy = std::sync::Arc::new(move |host: &str, p: u16| {
+            use std::net::ToSocketAddrs;
+            if p != port {
+                return Err("not the test server".to_string());
+            }
+            (host, p)
+                .to_socket_addrs()
+                .map(|a| a.collect())
+                .map_err(|e| e.to_string())
+        });
+        let dom = render_url_with(&url, true, only_this_port).expect("render should succeed");
         assert!(
             dom.contains("Content born from JavaScript execution"),
             "post-JS DOM expected"
         );
+    }
+
+    /// Regression: only the seed URL was vetted, and Chrome went wherever the
+    /// page sent it. One line of JavaScript navigated the render to a loopback
+    /// service the static fetch refuses, and its page came back as the result.
+    #[test]
+    fn a_page_cannot_navigate_the_render_to_a_blocked_address() {
+        if !have_browser() {
+            return;
+        }
+        let secret = serve(
+            "<html><body><main><h1>INTERNAL</h1><p>secret-token-for-the-ssrf-test lorem ipsum dolor sit amet.</p></main></body></html>",
+        );
+        // Leaked through a static page; the port is filled in below.
+        let page: &'static str = Box::leak(
+            format!(
+                "<html><body><main><p>Public article text, long enough to count as content.</p></main>\
+                 <script>location.href = 'http://127.0.0.1:{secret}/';</script></body></html>"
+            )
+            .into_boxed_str(),
+        );
+        let public = serve(page);
+        let policy: guard_proxy::Policy = std::sync::Arc::new(move |host: &str, p: u16| {
+            use std::net::ToSocketAddrs;
+            if p != public {
+                return Err("blocked for the test".to_string());
+            }
+            (host, p)
+                .to_socket_addrs()
+                .map(|a| a.collect())
+                .map_err(|e| e.to_string())
+        });
+        let url = url::Url::parse(&format!("http://127.0.0.1:{}/", public)).unwrap();
+        let result = render_url_with(&url, true, policy);
+        match result {
+            Ok(dom) => assert!(
+                !dom.contains("secret-token-for-the-ssrf-test"),
+                "the render reached the blocked server: {dom}"
+            ),
+            Err(e) => assert!(
+                e.to_string().contains("blocked address"),
+                "unexpected failure: {e:#}"
+            ),
+        }
     }
 }

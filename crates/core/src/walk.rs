@@ -7,6 +7,12 @@ use std::path::{Path, PathBuf};
 
 /// Walks `target` (respecting `.gitignore` via `ignore::WalkBuilder`) and returns a
 /// rendered ASCII tree plus the list of files to process.
+///
+/// A symlink is followed only when it resolves to somewhere **inside** the
+/// walked root. The tree being walked is often not the user's own: an archive
+/// extracts into it, a GitHub URL clones into it, and a repository someone
+/// downloaded is one. A tar entry `notes.txt -> ~/.ssh/id_rsa` used to come out
+/// as `notes.txt` with the key as its content.
 pub fn walk_tree(target: &str, max_depth: Option<usize>) -> (String, Vec<PathBuf>) {
     let mut walk_builder = ignore::WalkBuilder::new(target);
     if let Some(d) = max_depth {
@@ -19,6 +25,8 @@ pub fn walk_tree(target: &str, max_depth: Option<usize>) -> (String, Vec<PathBuf
     let mut tree_out = String::from("```tree\n.");
     let mut files = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut escaping: Vec<String> = Vec::new();
+    let root = std::fs::canonicalize(target).ok();
 
     for result in walk_builder.build() {
         // `.flatten()` silently dropped these, so a permission-denied subtree
@@ -35,6 +43,16 @@ pub fn walk_tree(target: &str, max_depth: Option<usize>) -> (String, Vec<PathBuf
         let depth = entry.depth();
         let prefix = " ".repeat(depth * 2);
         let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if entry.path_is_symlink() && depth > 0 {
+            let inside = match (&root, std::fs::canonicalize(path)) {
+                (Some(root), Ok(resolved)) => resolved.starts_with(root),
+                _ => false,
+            };
+            if !inside {
+                escaping.push(path.display().to_string());
+                continue;
+            }
+        }
         if path.is_dir() {
             if depth > 0 {
                 tree_out.push_str(&format!("\n{}├── {}/", prefix, name));
@@ -55,6 +73,20 @@ pub fn walk_tree(target: &str, max_depth: Option<usize>) -> (String, Vec<PathBuf
         }
         if skipped.len() > 5 {
             eprintln!("   … and {} more", skipped.len() - 5);
+        }
+    }
+    if !escaping.is_empty() {
+        eprintln!(
+            "{} Skipped {} symlink(s) that point outside {} (or nowhere):",
+            "⚠️".yellow(),
+            escaping.len(),
+            target
+        );
+        for link in escaping.iter().take(5) {
+            eprintln!("   {}", link);
+        }
+        if escaping.len() > 5 {
+            eprintln!("   … and {} more", escaping.len() - 5);
         }
     }
     tree_out.push_str("\n```\n\n");
@@ -155,6 +187,40 @@ mod tests {
         assert!(matches_globset(&set, Path::new("src/main.rs")));
         assert!(matches_globset(&set, Path::new("Cargo.toml")));
         assert!(!matches_globset(&set, Path::new("readme.md")));
+    }
+
+    /// Regression: a symlink to a file outside the walked tree was read like
+    /// any other file, so an archive or cloned repository could put any file
+    /// the user can read into the output.
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_that_leave_the_root_are_skipped() {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "outside").unwrap();
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.txt"), "inside").unwrap();
+        std::os::unix::fs::symlink(&secret, root.path().join("abs.txt")).unwrap();
+        std::os::unix::fs::symlink(
+            "../../../../../../../../etc/hosts",
+            root.path().join("rel.txt"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("missing", root.path().join("dangling.txt")).unwrap();
+        // A link that stays inside the tree is still followed.
+        std::os::unix::fs::symlink("a.txt", root.path().join("alias.txt")).unwrap();
+
+        let (tree, files) = walk_tree(&root.path().to_string_lossy(), None);
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["a.txt", "alias.txt"], "tree:\n{tree}");
+        assert!(
+            !tree.contains("abs.txt") && !tree.contains("rel.txt"),
+            "{tree}"
+        );
     }
 
     #[test]

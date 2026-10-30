@@ -259,7 +259,10 @@ fn plain_tar_is_extracted() {
         let path = dir.path().join(name);
         std::fs::write(&path, &tar).unwrap();
         let out = gobble(&[path.to_str().unwrap(), "-q"]);
-        assert!(out.contains("FILE_START: hoard/notes.md"), "{name}: {out}");
+        assert!(
+            out.contains(&format!("FILE_START: {name}/hoard/notes.md")),
+            "{name}: {out}"
+        );
         assert!(out.contains("Count the coins."), "{name}: {out}");
     }
 }

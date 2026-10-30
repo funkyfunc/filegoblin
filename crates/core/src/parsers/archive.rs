@@ -20,6 +20,22 @@ impl ArchiveGobbler {
         path: &Path,
         args: &crate::cli::Cli,
     ) -> Result<Vec<crate::pipeline::GobbleDocument>> {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        self.extract_archive_as(path, &name, args)
+    }
+
+    /// [`Self::extract_archive`] with the name members are reported under —
+    /// the URL, for an archive fetched over HTTP, rather than its temp file.
+    pub fn extract_archive_as(
+        &self,
+        path: &Path,
+        display_name: &str,
+        args: &crate::cli::Cli,
+    ) -> Result<Vec<crate::pipeline::GobbleDocument>> {
         // Refuse archives nested inside other archives. `gobble_local` forces
         // `--horde` when recursing into an extracted temp dir, so without this
         // guard a zip-quine (or deeply nested archive) would recurse unbounded.
@@ -75,21 +91,17 @@ impl ArchiveGobbler {
         let temp_path_str = temp_dir.path().to_string_lossy().to_string();
         let mut extracted = crate::gobble_local(&temp_path_str, &archive_args)?;
 
-        // Map ugly temp paths back to {archive_name}/{internal_path}
-        let target_name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
+        // Report members as {archive_name}/{internal_path}. The walk already
+        // yields paths relative to the temp dir, so the old remapping (which
+        // only fired on a temp-dir prefix) never ran: two archives that both
+        // held a README.md produced two documents named `README.md`, and
+        // `--split` wrote the second over the first.
         for doc in &mut extracted {
             if doc.path == "_tree.md" {
                 continue;
             }
-            if let Some(stripped) = doc.path.strip_prefix(&temp_path_str) {
-                let cleaned = stripped.trim_start_matches(['/', '\\']);
-                doc.path = format!("{}/{}", target_name, cleaned);
-            }
+            let inner = doc.path.strip_prefix(&temp_path_str).unwrap_or(&doc.path);
+            doc.path = format!("{}/{}", display_name, inner.trim_start_matches(['/', '\\']));
         }
 
         Ok(extracted)
@@ -159,7 +171,10 @@ fn extract_zip_capped(path: &Path, dest: &Path, cap: u64) -> Result<()> {
 /// hit the tar reader and fail with a misleading "Corrupt tar entry".
 fn extract_gzip(path: &Path, dest: &Path) -> Result<()> {
     match extract_tar_gz(path, dest) {
-        Ok(()) => Ok(()),
+        // Zero entries is not a tarball: a gzipped file that starts with two
+        // NUL blocks reads as an empty tar, and the run printed an empty tree.
+        Ok(0) => extract_single_gz(path, dest),
+        Ok(_) => Ok(()),
         Err(tar_err) => match extract_single_gz(path, dest) {
             Ok(()) => Ok(()),
             // Report the tar failure: if it is neither, "corrupt tar" is the
@@ -171,6 +186,10 @@ fn extract_gzip(path: &Path, dest: &Path) -> Result<()> {
 
 /// Inflates a single-member gzip to `dest/<stem>`, bounded by the same cap.
 fn extract_single_gz(path: &Path, dest: &Path) -> Result<()> {
+    extract_single_gz_capped(path, dest, MAX_TOTAL_UNCOMPRESSED)
+}
+
+fn extract_single_gz_capped(path: &Path, dest: &Path, cap: u64) -> Result<()> {
     use std::io::Read;
     let file = std::fs::File::open(path).context("Failed to open gzip file")?;
     let mut decoder = flate2::read::GzDecoder::new(file);
@@ -182,27 +201,27 @@ fn extract_single_gz(path: &Path, dest: &Path) -> Result<()> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "decompressed".to_string());
 
-    let mut buf = Vec::new();
-    decoder
-        .by_ref()
-        .take(MAX_TOTAL_UNCOMPRESSED + 1)
-        .read_to_end(&mut buf)
+    // Straight to disk: buffering the whole member first held up to the 2 GiB
+    // cap in memory on top of the copy the parser then reads back (a 7 MB
+    // `.log.gz` peaked at 3.2 GB resident).
+    let mut out =
+        std::fs::File::create(dest.join(stem)).context("Failed to write decompressed file")?;
+    let written = std::io::copy(&mut decoder.by_ref().take(cap + 1), &mut out)
         .context("Failed to inflate gzip file")?;
-    if buf.len() as u64 > MAX_TOTAL_UNCOMPRESSED {
+    if written > cap {
         anyhow::bail!(
-            "Gzip inflates past the {} GiB uncompressed limit (bomb guard)",
-            MAX_TOTAL_UNCOMPRESSED / (1024 * 1024 * 1024)
+            "Gzip inflates past the {} byte uncompressed limit (bomb guard)",
+            cap
         );
     }
-    if buf.is_empty() {
+    if written == 0 {
         anyhow::bail!("Gzip file decompressed to nothing");
     }
-    std::fs::write(dest.join(stem), buf).context("Failed to write decompressed file")?;
     Ok(())
 }
 
 /// Extracts a gzipped tar through the same capped unpacker as a plain tar.
-fn extract_tar_gz(path: &Path, dest: &Path) -> Result<()> {
+fn extract_tar_gz(path: &Path, dest: &Path) -> Result<usize> {
     let file = std::fs::File::open(path).context("Failed to open tar.gz archive")?;
     unpack_tar(flate2::read::GzDecoder::new(file), dest)
 }
@@ -211,12 +230,13 @@ fn extract_tar_gz(path: &Path, dest: &Path) -> Result<()> {
 /// `.tar` was never routed here and failed as "plaintext".
 fn extract_tar(path: &Path, dest: &Path) -> Result<()> {
     let file = std::fs::File::open(path).context("Failed to open tar archive")?;
-    unpack_tar(file, dest)
+    unpack_tar(file, dest).map(|_| ())
 }
 
 /// Unpacks a tar stream with entry-count and total-size caps. `tar`'s `unpack`
 /// handles `..` and absolute-path traversal internally; we bound the volume.
-fn unpack_tar<R: std::io::Read>(reader: R, dest: &Path) -> Result<()> {
+/// Returns how many entries it unpacked.
+fn unpack_tar<R: std::io::Read>(reader: R, dest: &Path) -> Result<usize> {
     let mut archive = tar::Archive::new(reader);
 
     let mut total: u64 = 0;
@@ -255,7 +275,7 @@ fn unpack_tar<R: std::io::Read>(reader: R, dest: &Path) -> Result<()> {
             anyhow::bail!("Refusing tar entry with unsafe path: {}", entry_path);
         }
     }
-    Ok(())
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -335,6 +355,105 @@ mod tests {
             assert!(doc.error.is_none(), "{name}: {:?}", doc.error);
             assert!(doc.content.contains("hello tar"), "{name}");
         }
+    }
+
+    /// Regression: a tar symlink to a file outside the archive was extracted
+    /// as a link and then read, so `notes.txt -> /etc/hosts` printed the
+    /// host's file as if it were archive content.
+    #[cfg(unix)]
+    #[test]
+    fn tar_symlinks_cannot_read_files_outside_the_archive() {
+        use clap::Parser;
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "TOP SECRET OUTSIDE THE ARCHIVE").unwrap();
+
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_ustar();
+        header.set_size(6);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "readme.txt", &b"hello\n"[..])
+            .unwrap();
+        for (name, target) in [
+            ("abs.txt", secret.to_string_lossy().into_owned()),
+            ("rel.txt", "../../../../../../../../etc/hosts".to_string()),
+        ] {
+            let mut link = tar::Header::new_ustar();
+            link.set_entry_type(tar::EntryType::Symlink);
+            link.set_size(0);
+            builder.append_link(&mut link, name, target).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("links.tar");
+        std::fs::write(&archive, builder.into_inner().unwrap()).unwrap();
+
+        let args = crate::cli::Cli::parse_from(["filegoblin", "-q", "dummy"]);
+        let docs = crate::gobble_local(&archive.to_string_lossy(), &args).unwrap();
+        let all: String = docs.iter().map(|d| d.content.as_str()).collect();
+        assert!(all.contains("hello"), "{docs:?}");
+        assert!(!all.contains("TOP SECRET"), "{docs:?}");
+        assert!(!all.contains("localhost"), "{docs:?}");
+    }
+
+    /// Regression: members were named by their inner path alone, so two
+    /// archives holding a `README.md` collided (and `--split` overwrote one).
+    #[test]
+    fn members_are_named_under_their_archive() {
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let tar_bytes = make_tar(&[("README.md", b"alpha\n")]);
+        let archive = dir.path().join("alpha.tar");
+        std::fs::write(&archive, &tar_bytes).unwrap();
+        let args = crate::cli::Cli::parse_from(["filegoblin", "-q", "dummy"]);
+        let docs = crate::gobble_local(&archive.to_string_lossy(), &args).unwrap();
+        let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
+        assert!(paths.contains(&"alpha.tar/README.md"), "{paths:?}");
+    }
+
+    #[test]
+    fn single_gzip_cap_counts_actual_bytes() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let gz = dir.path().join("big.log.gz");
+        let mut enc =
+            flate2::write::GzEncoder::new(std::fs::File::create(&gz).unwrap(), Default::default());
+        enc.write_all(&vec![b'a'; 64 * 1024]).unwrap();
+        enc.finish().unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let err = extract_single_gz_capped(&gz, dest.path(), 1024).unwrap_err();
+        assert!(err.to_string().contains("bomb guard"), "got: {err}");
+        extract_single_gz_capped(&gz, dest.path(), 1 << 20).unwrap();
+        assert_eq!(
+            std::fs::metadata(dest.path().join("big.log"))
+                .unwrap()
+                .len(),
+            64 * 1024
+        );
+    }
+
+    /// Regression: a gzipped file whose first 1 KiB is NUL reads as an empty
+    /// tar, and the single-file fallback never ran.
+    #[test]
+    fn gzip_that_reads_as_an_empty_tar_is_a_single_file() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let gz = dir.path().join("dump.bin.gz");
+        let mut payload = vec![0u8; 4096];
+        payload.extend_from_slice(b"tail text");
+        let mut enc =
+            flate2::write::GzEncoder::new(std::fs::File::create(&gz).unwrap(), Default::default());
+        enc.write_all(&payload).unwrap();
+        enc.finish().unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        extract_gzip(&gz, dest.path()).unwrap();
+        assert_eq!(
+            std::fs::read(dest.path().join("dump.bin")).unwrap(),
+            payload
+        );
     }
 
     #[test]
