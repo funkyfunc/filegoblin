@@ -8,6 +8,7 @@ pub mod explore;
 pub mod format;
 pub mod git;
 pub mod mcp;
+pub mod memory;
 pub mod net;
 pub mod parsers;
 pub mod pipeline;

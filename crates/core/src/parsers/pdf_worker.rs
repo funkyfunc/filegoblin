@@ -26,6 +26,7 @@
 //! The wire format, both ways: frames of a tag byte, a little-endian u64
 //! length and that many bytes.
 
+use crate::memory::{env_number, footprint, half_of_ram_mb, parse_number};
 use crate::parsers::gobble::ParseOptions;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -71,35 +72,9 @@ impl Limits {
     fn from_env() -> Result<Self> {
         Ok(Self {
             stall: Duration::from_secs(env_number(TIMEOUT_ENV, DEFAULT_STALL_SECS)?),
-            memory_mb: env_number(MEMORY_ENV, default_memory_mb())?,
+            memory_mb: env_number(MEMORY_ENV, half_of_ram_mb())?,
         })
     }
-}
-
-/// Half the machine's memory (8 GiB where that cannot be told): above what
-/// real PDFs take (with the vision models, the PDFs in `test_assets` peak at
-/// 1.7 GB in the median and 6.4 GB at most), while a bomb is stopped with half
-/// the memory still free.
-fn default_memory_mb() -> u64 {
-    physical_memory().map_or(8192, |bytes| (bytes >> 20) / 2)
-}
-
-fn env_number(name: &str, default: u64) -> Result<u64> {
-    parse_number(name, std::env::var(name).ok().as_deref(), default)
-}
-
-/// A positive whole number from the environment; anything else set there is
-/// an error rather than a silently ignored setting.
-fn parse_number(name: &str, value: Option<&str>, default: u64) -> Result<u64> {
-    let Some(value) = value else {
-        return Ok(default);
-    };
-    value
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .filter(|n| *n > 0)
-        .with_context(|| format!("{name} must be a whole number above 0, not {value:?}"))
 }
 
 static POOL: OnceLock<Pool> = OnceLock::new();
@@ -453,7 +428,7 @@ fn pass_on_stderr(stderr: impl Read, state: &StderrState, pool: &Pool, _closed: 
 /// Runs this process as a worker: converts the PDFs its parent sends until the
 /// parent closes stdin — and at once, even mid-conversion, if it goes away.
 pub fn serve() -> Result<()> {
-    let memory = env_number(MEMORY_ENV, default_memory_mb())?;
+    let memory = env_number(MEMORY_ENV, half_of_ram_mb())?;
     let (tx, requests) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("filegoblin-pdf-requests".into())
@@ -504,81 +479,6 @@ fn watch(limit: u64) {
             }
         }
     }
-}
-
-/// The memory this process holds: private pages, whether resident, compressed
-/// or swapped where the OS says. `None` where it cannot be told, which leaves
-/// the worker without a memory limit.
-#[cfg(target_os = "macos")]
-fn footprint() -> Option<u64> {
-    // SAFETY: a zeroed rusage_info_v2 is a valid value, and proc_pid_rusage
-    // writes exactly one of them for RUSAGE_INFO_V2.
-    unsafe {
-        let mut info: libc::rusage_info_v2 = std::mem::zeroed();
-        let buffer = (&raw mut info).cast::<libc::rusage_info_t>();
-        (libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V2, buffer) == 0)
-            .then_some(info.ri_phys_footprint)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn footprint() -> Option<u64> {
-    // Resident pages that are not file-backed: statm's resident minus shared.
-    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
-    let mut fields = statm.split_whitespace().skip(1);
-    let resident: u64 = fields.next()?.parse().ok()?;
-    let shared: u64 = fields.next()?.parse().ok()?;
-    // SAFETY: sysconf has no preconditions.
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    Some(resident.saturating_sub(shared) * u64::try_from(page).ok()?)
-}
-
-#[cfg(windows)]
-fn footprint() -> Option<u64> {
-    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-    use windows::Win32::System::Threading::GetCurrentProcess;
-    let mut counters = PROCESS_MEMORY_COUNTERS::default();
-    let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-    // SAFETY: GetCurrentProcess returns a pseudo-handle that needs no closing,
-    // and `size` is the size of the struct the counters are written into.
-    unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) }.ok()?;
-    // Private committed memory.
-    Some(counters.PagefileUsage as u64)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-fn footprint() -> Option<u64> {
-    None
-}
-
-/// The machine's installed memory.
-#[cfg(unix)]
-fn physical_memory() -> Option<u64> {
-    // SAFETY: sysconf has no preconditions.
-    let (pages, page) = unsafe {
-        (
-            libc::sysconf(libc::_SC_PHYS_PAGES),
-            libc::sysconf(libc::_SC_PAGESIZE),
-        )
-    };
-    Some(u64::try_from(pages).ok()? * u64::try_from(page).ok()?)
-}
-
-#[cfg(windows)]
-fn physical_memory() -> Option<u64> {
-    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    let mut status = MEMORYSTATUSEX {
-        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: `dwLength` is the size of the struct the status is written into.
-    unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
-    Some(status.ullTotalPhys)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn physical_memory() -> Option<u64> {
-    None
 }
 
 // --- The wire ---------------------------------------------------------------
@@ -731,16 +631,6 @@ mod tests {
         assert_eq!(from_wire(back.path), path);
     }
 
-    #[test]
-    fn limits_from_the_environment_must_be_positive_numbers() {
-        assert_eq!(parse_number("X", None, 7).unwrap(), 7);
-        assert_eq!(parse_number("X", Some(" 30 "), 7).unwrap(), 30);
-        for bad in ["", "0", "-1", "1.5", "lots"] {
-            let e = parse_number("X", Some(bad), 7).unwrap_err().to_string();
-            assert!(e.contains("X must be a whole number"), "{e}");
-        }
-    }
-
     #[cfg(unix)]
     #[test]
     fn a_lost_worker_is_explained() {
@@ -775,15 +665,5 @@ mod tests {
         assert!(!is_crash_report(
             "filegoblin: 3 of 9 pages read with the vision models"
         ));
-    }
-
-    #[test]
-    fn this_process_can_measure_its_memory_and_the_machines() {
-        if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
-            let used = footprint().expect("a footprint on this platform");
-            let installed = physical_memory().expect("the installed memory");
-            assert!(0 < used && used < installed, "{used} of {installed}");
-            assert_eq!(default_memory_mb(), (installed >> 20) / 2);
-        }
     }
 }

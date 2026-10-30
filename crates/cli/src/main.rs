@@ -81,6 +81,13 @@ fn main() -> Result<()> {
 
     let mut args = Cli::parse();
 
+    // A ceiling for this process, as each PDF worker has for itself: whatever
+    // runs away (MCP mode included) ends this run, not the machine.
+    if let Err(e) = filegoblin_core::memory::guard() {
+        eprintln!("{} {e:#}", "❌".red());
+        std::process::exit(2);
+    }
+
     if let Err(e) = pdf_worker::enable() {
         eprintln!("{} {e:#}", "❌".red());
         std::process::exit(2);

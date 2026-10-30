@@ -1223,3 +1223,17 @@ The CI workflows pass actionlint (one new runner label is not in its list yet), 
 This replaces the `Format::LegacyOffice` bullet of 2026-07-30.
 
 **Status:** Accepted.
+
+## 2026-10-29: A memory ceiling for the CLI process, and bounded stream input
+
+**Context.** During two parallel agent sessions (one hammering the CLI with hostile input, one benchmarking PDF parsers), `filegoblin` processes grew until the 24 GB Mac swapped to a standstill: macOS's jetsam killed one at 100 GB, two more had reached 60–70 GB before they were force-quit, and several others sat spinning on a core. The exact command was not recovered — the binaries had been rebuilt since, and the sessions' own transcripts show nothing that reproduces it, nor does the hostile-review branch's test suite under a memory watchdog. What it showed is that only PDF workers had a ceiling; the CLI process itself would hold whatever it was given. Two such paths were found at once: the MCP server's `read_until` kept everything up to the next newline (`filegoblin --mcp < /dev/zero` took 8.6 GB in three seconds), and piped stdin was read with `read_to_end` (`yes | filegoblin` never stops).
+
+**Decision.**
+- **A ceiling for the CLI process** (`memory::guard`, called first thing in `main`, MCP mode included): the PDF worker's self-measurement — macOS `phys_footprint`, Linux resident minus file-backed pages, Windows private commit, every 25 ms on a thread of its own — moved to `memory.rs` and is now shared. Past half the machine's RAM (`FILEGOBLIN_MEMORY_MB`; a malformed value is exit 2) the process prints what it held and its limit and exits **5**, a new documented code. Workers keep their own ceiling, so a run's processes can together hold more than half the RAM; each one alone cannot.
+- **MCP messages are capped at 1 MB** (`read_message`): a longer one is read to its end without being kept and answered with -32600; requests name a file or URL, so real ones are a few hundred bytes. `--mcp < /dev/zero` now stays at 25 MB.
+- **Piped stdin is read up to 1 GB**; past that it is an in-band failed document saying to save the input to a file (exit 4 if nothing else converted).
+
+**Rejected.** A ceiling on the sum of the CLI and its workers: it would mean measuring other processes and dividing one budget between the parent and workers whose needs (models, up to 6.4 GB for a real PDF) are known only per file; the incident was single processes, each far past any sane share.
+
+**Status:** Accepted.
+
