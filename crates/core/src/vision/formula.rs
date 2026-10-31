@@ -19,7 +19,11 @@ use std::sync::OnceLock;
 const SIDE: u32 = 384;
 const BOS: i32 = 1;
 const EOS: i32 = 2;
-const BATCH: usize = 16;
+/// Formulas recognized together. The decoder keeps every sequence's
+/// cross-attention cache (six layers of keys and values over the encoder's
+/// 577 positions), so a batch of 16 held about 0.7 GB besides the encoder's
+/// attention; 8 cut a math page's peak by 0.4 GB at the same speed.
+const BATCH: usize = 8;
 
 struct Mfr {
     encoder: Model,

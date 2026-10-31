@@ -23,6 +23,12 @@ use std::sync::OnceLock;
 const DET_LONG_SIDE: u32 = 2400;
 const REC_HEIGHT: u32 = 48;
 const REC_BATCH: usize = 24;
+/// Most padded pixel columns one recognition batch may hold. A batch is
+/// padded to its widest crop and the recognizer's output grows with that
+/// width times its character set (some 18,000 classes), so 24 full-width
+/// lines of a dense page took gigabytes; the budget keeps a batch of short
+/// lines at 24 and cuts a batch of long ones to a few.
+const REC_BATCH_COLUMNS: u32 = 16_384;
 
 struct Ocr {
     det: Model,
@@ -276,7 +282,7 @@ fn read_crops(
         let rb = boxes[b].len / boxes[b].thick.max(1.0);
         ra.total_cmp(&rb)
     });
-    for chunk in order.chunks(REC_BATCH) {
+    for chunk in width_batches(&order, |i| rec_width(&boxes[i])) {
         let crops: Vec<RgbImage> = chunk.iter().map(|&i| crop(&boxes[i])).collect();
         let texts = recognize(o, &crops)?;
         for (&i, r) in chunk.iter().zip(texts) {
@@ -284,6 +290,39 @@ fn read_crops(
         }
     }
     Some(())
+}
+
+/// The width a line box is recognized at: its length scaled to the
+/// recognizer's height, as [`recognize`] resizes its crop.
+fn rec_width(b: &RotBox) -> u32 {
+    rec_scaled(b.len, b.thick)
+}
+
+fn rec_scaled(width: f32, height: f32) -> u32 {
+    ((width * REC_HEIGHT as f32 / height.max(1.0)).round() as u32).clamp(16, 3200)
+}
+
+/// Consecutive runs of `order` (sorted by width) for one recognition batch
+/// each: at most [`REC_BATCH`] crops, and at most [`REC_BATCH_COLUMNS`]
+/// columns once padded to the widest.
+fn width_batches(order: &[usize], width: impl Fn(usize) -> u32) -> Vec<&[usize]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut widest = 0;
+    for (k, &i) in order.iter().enumerate() {
+        let w = width(i).max(widest);
+        if k > start && ((k + 1 - start) as u32 * w > REC_BATCH_COLUMNS || k - start == REC_BATCH) {
+            batches.push(&order[start..k]);
+            start = k;
+            widest = width(i);
+        } else {
+            widest = w;
+        }
+    }
+    if start < order.len() {
+        batches.push(&order[start..]);
+    }
+    batches
 }
 
 /// Line boxes in image pixels.
@@ -496,10 +535,7 @@ fn ctc_collapse(o: &Ocr, steps: &[(usize, f32)]) -> (String, f32) {
 fn recognize(o: &Ocr, crops: &[RgbImage]) -> Option<Vec<Reading>> {
     let widths: Vec<u32> = crops
         .iter()
-        .map(|c| {
-            ((c.width() as f32 * REC_HEIGHT as f32 / c.height().max(1) as f32).round() as u32)
-                .clamp(16, 3200)
-        })
+        .map(|c| rec_scaled(c.width() as f32, c.height() as f32))
         .collect();
     let maxw = *widths.iter().max()? as usize;
     let hh = REC_HEIGHT as usize;
@@ -526,7 +562,7 @@ fn recognize(o: &Ocr, crops: &[RgbImage]) -> Option<Vec<Reading>> {
             None,
         )
         .ok()?;
-    let probs: NdTensor<f32, 3> = out.first()?.clone().try_into().ok()?;
+    let probs: NdTensor<f32, 3> = out.into_iter().next()?.try_into().ok()?;
     let (steps, classes) = (probs.size(1), probs.size(2));
     let mut res = Vec::with_capacity(crops.len());
     for k in 0..crops.len() {
@@ -622,6 +658,24 @@ mod tests {
         let mut page = vec![reading("十", Some("+")), reading("ab", None)];
         keep_one_script(&mut page);
         assert_eq!(page[0].text, "十");
+    }
+
+    #[test]
+    fn recognition_batches_are_bounded_by_padded_width() {
+        // Short lines batch 24 at a time; full-width lines a few at a time.
+        let widths: Vec<u32> = [vec![300; 30], vec![3200; 12]].concat();
+        let order: Vec<usize> = (0..widths.len()).collect();
+        let batches = width_batches(&order, |i| widths[i]);
+        assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), widths.len());
+        assert_eq!(batches[0].len(), REC_BATCH);
+        for b in &batches {
+            let widest = b.iter().map(|&i| widths[i]).max().unwrap();
+            assert!(
+                b.len() == 1 || b.len() as u32 * widest <= REC_BATCH_COLUMNS,
+                "{b:?}"
+            );
+        }
+        assert!(batches.iter().any(|b| b.len() == 5 && widths[b[0]] == 3200));
     }
 
     #[test]

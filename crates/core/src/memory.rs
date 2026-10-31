@@ -60,6 +60,19 @@ pub(crate) fn half_of_ram_mb() -> u64 {
     physical_memory().map_or(8192, |bytes| (bytes >> 20) / 2)
 }
 
+/// The memory this process may use, in MB: the lower of the CLI's ceiling
+/// and, in a PDF worker, the worker's allowance (both half the RAM unless
+/// set). Work that can trade speed for memory sizes itself to it.
+#[cfg(feature = "vision")]
+pub(crate) fn budget_mb() -> u64 {
+    let half = half_of_ram_mb();
+    [MEMORY_ENV, "FILEGOBLIN_PDF_MEMORY_MB"]
+        .iter()
+        .map(|name| env_number(name, half).unwrap_or(half))
+        .min()
+        .unwrap_or(half)
+}
+
 pub(crate) fn env_number(name: &str, default: u64) -> Result<u64> {
     parse_number(name, std::env::var(name).ok().as_deref(), default)
 }
