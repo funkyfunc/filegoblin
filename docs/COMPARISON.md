@@ -245,6 +245,7 @@ not recur. Same machine, same limits, same harness:
 | gauntlet, all graded cases, smart | 74.1 | **91.4** | |
 | gauntlet, all graded cases, off | 83.1 | **84.3** | |
 
-MinerU still leads olmOCR-bench's dev split by 0.7, all of it from scanned
-pages (old scans and old scans with math); filegoblin leads every other
-category but headers/footers and multi-column, where the gap is 2 or 3 tests.
+MinerU still leads olmOCR-bench's dev split by 0.7. It is 10 and 11 points
+ahead on the two scanned categories, and 2–3 tests ahead on headers/footers
+and multi-column; filegoblin leads arXiv math, long tiny text, tables and
+baseline.
