@@ -1327,6 +1327,22 @@ fn band_table(bands: &[Band], x0: f32, x1: f32, word_gap: f32, em: f32) -> Optio
     if multi * 2 < body.len() || unexplained * 4 > body.len() {
         return None;
     }
+    // Columns of running text (a two-column page between a head rule and a
+    // foot rule) have a true gutter too, but each of their "cells" is a
+    // full line of prose; a table's cells are mostly short.
+    let mut cell_words: Vec<usize> = body
+        .iter()
+        .flat_map(|l| cells_of(l))
+        .filter(|c| !c.is_empty())
+        .map(|c| c.split_whitespace().count())
+        .collect();
+    cell_words.sort_unstable();
+    if cell_words
+        .get(cell_words.len() / 2)
+        .is_some_and(|&n| n >= 6)
+    {
+        return None;
+    }
     // Cells of nothing but leader dots or fill-in rules belong to a form or
     // a table of contents, whose rules are not a table's.
     let leaders = body
@@ -1755,6 +1771,40 @@ mod tests {
         }
         let md = rule_bounded_tables(&edges, &words, 3.0)[0].to_markdown();
         assert_eq!(md.matches("| 1.0 | 2.0 |").count(), 6, "{md}");
+    }
+
+    #[test]
+    fn two_columns_of_prose_between_rules_are_not_a_table() {
+        let edges = vec![
+            Edge::horizontal(50.0, 560.0, 100.0),
+            Edge::horizontal(50.0, 560.0, 200.0),
+        ];
+        let left = [
+            "Pennsylvania, like most other states, has waiting lists for",
+            "services. In recent years, it was estimated that many",
+            "persons were on such waiting lists in counties across",
+            "the state, and the counties kept those lists in their own way.",
+        ];
+        let right = [
+            "support of annual county plans. Individual counties varied",
+            "widely in their reporting. There was a lack of a clear",
+            "definition of the waiting list. As a result, it was",
+            "recommended that the office develop consistent definitions.",
+        ];
+        let mut words = Vec::new();
+        for (k, (l, r)) in left.iter().zip(right).enumerate() {
+            let y = 103.0 + 15.0 * k as f32;
+            // Narrow glyphs, so each column line fits its 230 pt column.
+            for (x0, text) in [(55.0, *l), (310.0, r)] {
+                let mut x = x0;
+                for w in text.split_whitespace() {
+                    let x1 = x + 3.4 * w.chars().count() as f32;
+                    words.push(PdfWord::new(w, x, y, x1, y + 10.0));
+                    x = x1 + 3.0;
+                }
+            }
+        }
+        assert!(rule_bounded_tables(&edges, &words, 3.0).is_empty());
     }
 
     #[test]

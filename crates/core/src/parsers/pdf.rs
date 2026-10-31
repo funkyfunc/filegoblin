@@ -2294,10 +2294,11 @@ fn recover_page_vector_tables(
         .collect();
 
     let word_gap = median_word_gap(geom);
-    // Tables ruled only across (booktabs) first. Their rules then leave the
-    // grid extractor, which would otherwise look for columns in everything
-    // between the page's topmost and bottommost rule.
-    // Only what is seen counts as a rule there: a shape filled with white
+    // Tables ruled only across (booktabs) go first; a grid table over the
+    // same place is then left out (the grid extractor, given only rules
+    // across, looks for columns in everything between the page's topmost
+    // and bottommost rule).
+    // Only what is seen counts as a rule for them: a shape filled with white
     // and not stroked (a cell's background) draws no line, though its sides
     // would otherwise look like column lines.
     let white = |c: &pdf_oxide::layout::Color| c.r >= 0.95 && c.g >= 0.95 && c.b >= 0.95;
@@ -2311,25 +2312,10 @@ fn recover_page_vector_tables(
         &pdf_words,
         word_gap,
     );
-    let edges: Vec<_> = edges
-        .into_iter()
-        .filter(|e| {
-            !booktabs.iter().any(|t| {
-                e.top >= t.bbox.top - 1.0
-                    && e.bottom <= t.bbox.bottom + 1.0
-                    && e.x0 < t.bbox.x1
-                    && e.x1 > t.bbox.x0
-            })
-        })
-        .collect();
     let settings = crate::parsers::pdf_table::TableSettings::default();
-    let grids = if edges.is_empty() {
-        Vec::new()
-    } else {
-        crate::parsers::pdf_table::extract_tables_from_edges_and_words(
-            &edges, &pdf_words, &settings,
-        )
-    };
+    let grids = crate::parsers::pdf_table::extract_tables_from_edges_and_words(
+        &edges, &pdf_words, &settings,
+    );
 
     if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
         eprintln!(
@@ -2340,12 +2326,21 @@ fn recover_page_vector_tables(
             grids.len()
         );
     }
-    let tables = grids
+    let tables = booktabs
         .into_iter()
-        .map(|t| (t, false))
-        .chain(booktabs.into_iter().map(|t| (t, true)));
+        .map(|t| (t, true))
+        .chain(grids.into_iter().map(|t| (t, false)));
+    let mut placed: Vec<crate::parsers::pdf_table::CellBbox> = Vec::new();
     for (table, booktabs) in tables {
         if table.rows.len() < 2 || table.rows.iter().all(|r| r.len() < 2) {
+            continue;
+        }
+        let b = &table.bbox;
+        if !booktabs
+            && placed
+                .iter()
+                .any(|p| b.x0 < p.x1 && b.x1 > p.x0 && b.top < p.bottom && b.bottom > p.top)
+        {
             continue;
         }
         // A booktabs table's columns are its gutters, checked as it was found.
@@ -2393,15 +2388,9 @@ fn recover_page_vector_tables(
         // replace it with the ruling-line version.
         if let Some((start, end)) = find_pipe_table_span(&page_md, &sample_words) {
             let existing_table = &page_md[start..end];
-            // A booktabs reading never replaces a table the converter found
-            // with more columns.
-            let columns = |t: &str| {
-                t.trim()
-                    .lines()
-                    .next()
-                    .map_or(0, |l| l.matches('|').count())
-            };
-            if booktabs && columns(existing_table) > columns(&table_md) {
+            // A booktabs reading never replaces a table the converter
+            // found itself.
+            if booktabs {
                 continue;
             }
             if existing_table.trim() != table_md.trim() {
@@ -2535,6 +2524,7 @@ fn recover_page_vector_tables(
             }
         }
         if replaced && booktabs {
+            placed.push(table.bbox.clone());
             let cells: Vec<String> = table
                 .rows
                 .iter()
@@ -2551,6 +2541,9 @@ fn recover_page_vector_tables(
                     page_md.push_str("\n\n");
                 }
                 page_md.push_str(&table_md);
+                if booktabs {
+                    placed.push(table.bbox.clone());
+                }
             }
         }
     }
