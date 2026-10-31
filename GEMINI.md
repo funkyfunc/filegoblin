@@ -56,6 +56,9 @@ The documentation set is deliberately small. Do not add new top-level docs.
 - **`docs/ADR.md`** — append an entry for every significant technical decision
   (context, decision, status). This is the project's memory; it is honest about
   reverts and dead ends. When docs and code disagree, the code and ADR win.
+- **`docs/COMPARISON.md`** — filegoblin measured against free PDF-to-markdown
+  tools (olmOCR-bench dev split and the gauntlet, `--engine`), with versions,
+  licences and where each tool wins. Re-measure before quoting it.
 - **`docs/agent_context/`** — ephemeral session state only (`task.md`,
   `HANDOFF.md`).
 - **`docs/research/`** — read-only archive of past research reports. Never cite

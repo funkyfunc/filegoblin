@@ -67,9 +67,12 @@ impl UserBox {
 /// Bounds how many pages run through the models at once.
 ///
 /// Each model already spreads one page over every core (rten's own thread
-/// pool), so running more pages side by side adds memory — a few hundred MB
-/// of activations per page — without adding speed. Page-level parallelism is
-/// kept for the cheap geometric path.
+/// pool), so a second page side by side gains little (5–9% on a scanned and
+/// a math paper) for a gigabyte more at the peak (3.7 → 2.7 GB on the scan).
+/// Two pages run at once only when the process may use 8 GB or more
+/// ([`crate::memory::budget_mb`]); below that, one, so a worker held to 4 GB
+/// still converts long documents. Page-level parallelism is kept for the
+/// cheap geometric path.
 ///
 /// The gated work runs on a plain thread, never on a rayon worker. A rayon
 /// worker that waits for rten's pool steals other jobs meanwhile; if it
@@ -92,7 +95,11 @@ impl PageGate {
         GATE.get_or_init(|| PageGate {
             busy: std::sync::Mutex::new(0),
             freed: std::sync::Condvar::new(),
-            limit: 2,
+            limit: if crate::memory::budget_mb() >= 8192 {
+                2
+            } else {
+                1
+            },
         })
     }
 

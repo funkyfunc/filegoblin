@@ -1098,6 +1098,363 @@ pub fn extract_tables_from_edges_and_words(
     tables
 }
 
+/// Tables drawn with horizontal rules only: the "booktabs" style of papers
+/// and reports, a rule above the table, usually one under its header and
+/// one below it, and no vertical lines at all. The grid extractor above
+/// needs both directions of ruling, so these came out as loose lines.
+///
+/// The rules give the table's top, bottom and width; the words give the
+/// columns. Rules of one table share their left and right ends, so rules
+/// are stacked by their ends, and the text between two neighbouring rules
+/// of a stack is a band. Consecutive bands form a table when the lines
+/// below its first band (or below its first line, for a table with no rule
+/// under the header) leave at least one gutter: a strip, clearly wider
+/// than a word space, that no word of any of those lines crosses. Prose
+/// fills its lines edge to edge, so a band of prose between two rules (a
+/// boxed note, the text between a running-head rule and a footnote rule)
+/// has no gutter and is left alone.
+///
+/// A band with a vertical rule inside it holds a drawn grid (or part of
+/// one), which is the grid extractor's; and the body's lines must not break
+/// at more wide gaps than its gutters explain.
+///
+/// The lines of the first band, when there is more than one band, are the
+/// header, merged into one row per column. Below it, each line is a row,
+/// except that when rows are set apart by extra space (at least a quarter
+/// of the line pitches clearly wider than the tightest), a line at the
+/// tightest pitch continues the cells of the row above it if its first
+/// column is empty or it fills fewer cells than the row's first line.
+pub fn rule_bounded_tables(
+    edges: &[Edge],
+    words: &[PdfWord],
+    word_gap: f32,
+) -> Vec<ExtractedTable> {
+    let verticals: Vec<&Edge> = edges
+        .iter()
+        .filter(|e| e.orientation == EdgeOrientation::Vertical)
+        .collect();
+    // A rule that vertical lines meet at three or more places belongs to a
+    // drawn grid (it has an inner column line). Two, at its ends, are only a
+    // box: a bordered table without inner lines, or a shaded header row.
+    let mut rules: Vec<Edge> = edges
+        .iter()
+        .filter(|e| e.orientation == EdgeOrientation::Horizontal && e.length() >= 40.0)
+        .filter(|e| {
+            let mut xs: Vec<f32> = verticals
+                .iter()
+                .filter(|v| {
+                    v.x0 >= e.x0 - 2.0
+                        && v.x0 <= e.x1 + 2.0
+                        && v.top <= e.top + 2.0
+                        && v.bottom >= e.top - 2.0
+                })
+                .map(|v| v.x0)
+                .collect();
+            xs.sort_by(f32::total_cmp);
+            xs.dedup_by(|a, b| (*a - *b).abs() <= 2.0);
+            xs.len() < 3
+        })
+        .copied()
+        .collect();
+    rules.sort_by(|a, b| a.top.total_cmp(&b.top).then(a.x0.total_cmp(&b.x0)));
+    // One rule per drawn line: segments at the same height that touch, and
+    // a thick rule stroked twice, are one rule.
+    let mut merged: Vec<Edge> = Vec::new();
+    for r in rules {
+        match merged.last_mut() {
+            Some(m) if (r.top - m.top).abs() <= 1.5 && r.x0 <= m.x1 + 2.0 && r.x1 >= m.x0 - 2.0 => {
+                m.x0 = m.x0.min(r.x0);
+                m.x1 = m.x1.max(r.x1);
+            }
+            _ => merged.push(r),
+        }
+    }
+
+    let mut stacks: Vec<Vec<Edge>> = Vec::new();
+    for r in merged {
+        let tol = (0.03 * r.length()).max(3.0);
+        match stacks
+            .iter_mut()
+            .find(|s| (s[0].x0 - r.x0).abs() <= tol && (s[0].x1 - r.x1).abs() <= tol)
+        {
+            Some(s) => s.push(r),
+            None => stacks.push(vec![r]),
+        }
+    }
+
+    let em = {
+        let mut h: Vec<f32> = words
+            .iter()
+            .map(|w| w.bottom - w.top)
+            .filter(|h| *h > 0.0)
+            .collect();
+        h.sort_by(f32::total_cmp);
+        h.get(h.len() / 2).copied().unwrap_or(10.0)
+    };
+    let mut tables = Vec::new();
+    for stack in stacks.iter().filter(|s| s.len() >= 2) {
+        let (x0, x1) = (stack[0].x0, stack[0].x1);
+        // Bands with text, top to bottom: (top rule, bottom rule, lines),
+        // or None for a band with a vertical rule inside, which no table
+        // here may include.
+        let bands: Vec<Option<Band>> = stack
+            .windows(2)
+            .filter_map(|p| {
+                let (top, bottom) = (p[0].top, p[1].top);
+                let ruled_inside = verticals.iter().any(|v| {
+                    v.x0 > x0 + 3.0
+                        && v.x0 < x1 - 3.0
+                        && v.bottom.min(bottom) - v.top.max(top) >= (0.5 * (bottom - top)).min(8.0)
+                });
+                if ruled_inside {
+                    return Some(None);
+                }
+                let inside: Vec<&PdfWord> = words
+                    .iter()
+                    .filter(|w| {
+                        let (mx, my) = w.midpoint();
+                        my > top && my < bottom && mx >= x0 - 2.0 && mx <= x1 + 2.0
+                    })
+                    .collect();
+                (!inside.is_empty()).then(|| Some((top, bottom, text_lines(inside))))
+            })
+            .collect();
+        let mut i = 0;
+        while i < bands.len() {
+            // The longest run of bands from `i`, up to a ruled band, that
+            // reads as one table.
+            let end = (i..bands.len())
+                .find(|&j| bands[j].is_none())
+                .unwrap_or(bands.len());
+            let run: Vec<_> = bands[i..end].iter().flatten().cloned().collect();
+            let best = (0..run.len())
+                .rev()
+                .find_map(|j| band_table(&run[..=j], x0, x1, word_gap, em).map(|t| (i + j, t)));
+            match best {
+                Some((j, t)) => {
+                    tables.push(t);
+                    i = j + 1;
+                }
+                None => i += 1,
+            }
+        }
+    }
+    tables
+}
+
+/// The text between two rules of a stack: (top rule, bottom rule, lines).
+type Band<'a> = (f32, f32, Vec<Vec<&'a PdfWord>>);
+
+/// Words grouped into lines (by vertical midpoint), top to bottom, each
+/// line left to right.
+fn text_lines(mut words: Vec<&PdfWord>) -> Vec<Vec<&PdfWord>> {
+    words.sort_by(|a, b| a.midpoint().1.total_cmp(&b.midpoint().1));
+    let mut lines: Vec<Vec<&PdfWord>> = Vec::new();
+    for w in words {
+        let (_, my) = w.midpoint();
+        let h = (w.bottom - w.top).max(1.0);
+        match lines.last_mut() {
+            Some(l) if (my - l[0].midpoint().1).abs() <= 0.5 * h => l.push(w),
+            _ => lines.push(vec![w]),
+        }
+    }
+    for l in &mut lines {
+        l.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    }
+    lines
+}
+
+/// One table from consecutive bands of a rule stack, or None when the
+/// lines below the header leave no gutter between columns.
+fn band_table(bands: &[Band], x0: f32, x1: f32, word_gap: f32, em: f32) -> Option<ExtractedTable> {
+    let lines: Vec<&Vec<&PdfWord>> = bands.iter().flat_map(|b| b.2.iter()).collect();
+    let header_lines = if bands.len() > 1 { bands[0].2.len() } else { 1 };
+    let body = &lines[header_lines..];
+    if body.len() < 2 || header_lines > 4 {
+        return None;
+    }
+
+    // Columns: the strips no body word crosses, at least `min_gutter` wide.
+    let min_gutter = (2.0 * word_gap).max(0.5 * em);
+    let mut covered: Vec<(f32, f32)> = body
+        .iter()
+        .flat_map(|l| l.iter().map(|w| (w.x0, w.x1)))
+        .collect();
+    covered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut spans: Vec<(f32, f32)> = Vec::new();
+    for (a, b) in covered {
+        match spans.last_mut() {
+            Some(s) if a < s.1 + min_gutter => s.1 = s.1.max(b),
+            _ => spans.push((a, b)),
+        }
+    }
+    if spans.len() < 2 {
+        return None;
+    }
+    // Column boundaries: the middle of each gutter, and the rule's ends.
+    let mut bounds = vec![x0.min(spans[0].0)];
+    bounds.extend(spans.windows(2).map(|p| 0.5 * (p[0].1 + p[1].0)));
+    bounds.push(x1.max(spans[spans.len() - 1].1));
+    let ncols = bounds.len() - 1;
+    let column = |w: &PdfWord| {
+        let mx = w.midpoint().0;
+        (1..ncols).take_while(|&c| mx > bounds[c]).count()
+    };
+    let cells_of = |line: &[&PdfWord]| {
+        let mut cells = vec![String::new(); ncols];
+        for w in line {
+            let c = &mut cells[column(w)];
+            if !c.is_empty() {
+                c.push(' ');
+            }
+            c.push_str(&w.text);
+        }
+        cells
+    };
+    // Most body lines must use two or more columns: a list of short items
+    // with one stray gap is not a table. And the gutters must explain the
+    // lines: a line whose words break at more wide gaps than it has filled
+    // cells is not read by these columns.
+    let filled = |l: &[&PdfWord]| cells_of(l).iter().filter(|c| !c.is_empty()).count();
+    let segments = |l: &[&PdfWord]| {
+        1 + l
+            .windows(2)
+            .filter(|p| p[1].x0 - p[0].x1 >= min_gutter)
+            .count()
+    };
+    let multi = body.iter().filter(|l| filled(l) >= 2).count();
+    let unexplained = body.iter().filter(|l| segments(l) > filled(l)).count();
+    if multi * 2 < body.len() || unexplained * 4 > body.len() {
+        return None;
+    }
+    // Columns of running text (a two-column page between a head rule and a
+    // foot rule) have a true gutter too, but each of their "cells" is a
+    // full line of prose; a table's cells are mostly short.
+    let mut cell_words: Vec<usize> = body
+        .iter()
+        .flat_map(|l| cells_of(l))
+        .filter(|c| !c.is_empty())
+        .map(|c| c.split_whitespace().count())
+        .collect();
+    cell_words.sort_unstable();
+    if cell_words
+        .get(cell_words.len() / 2)
+        .is_some_and(|&n| n >= 6)
+    {
+        return None;
+    }
+    // Cells of nothing but leader dots or fill-in rules belong to a form or
+    // a table of contents, whose rules are not a table's.
+    let leaders = body
+        .iter()
+        .flat_map(|l| cells_of(l))
+        .filter(|c| {
+            !c.is_empty()
+                && c.chars()
+                    .all(|ch| matches!(ch, '.' | '_' | '…' | '·' | ' '))
+        })
+        .count();
+    if leaders >= 2 {
+        return None;
+    }
+    // Titles beside page numbers that never go down (a section may have
+    // none) are a table of contents, which reads better as the lines it is.
+    let last: Vec<String> = body
+        .iter()
+        .map(|l| cells_of(l)[ncols - 1].trim().to_string())
+        .collect();
+    let pages: Vec<u32> = last.iter().filter_map(|c| c.parse().ok()).collect();
+    if pages.len() >= 3
+        && pages.len() * 5 >= last.len() * 4
+        && pages.len() == last.iter().filter(|c| !c.is_empty()).count()
+        && pages.windows(2).all(|p| p[0] <= p[1])
+    {
+        return None;
+    }
+
+    let mut rows: Vec<(f32, f32, Vec<String>)> = Vec::new();
+    let header = lines[..header_lines]
+        .iter()
+        .fold(vec![String::new(); ncols], |mut acc, l| {
+            for (a, c) in acc.iter_mut().zip(cells_of(l)) {
+                if !c.is_empty() {
+                    if !a.is_empty() {
+                        a.push(' ');
+                    }
+                    a.push_str(&c);
+                }
+            }
+            acc
+        });
+    let line_box = |l: &[&PdfWord]| {
+        (
+            l.iter().map(|w| w.top).fold(f32::INFINITY, f32::min),
+            l.iter().map(|w| w.bottom).fold(f32::NEG_INFINITY, f32::max),
+        )
+    };
+    rows.push((
+        line_box(lines[0]).0,
+        line_box(lines[header_lines - 1]).1,
+        header,
+    ));
+
+    // Rows set apart by extra space: the tightest pitch is within a row.
+    let tops: Vec<f32> = body.iter().map(|l| line_box(l).0).collect();
+    let pitches: Vec<f32> = tops.windows(2).map(|p| p[1] - p[0]).collect();
+    let tight = pitches.iter().copied().fold(f32::INFINITY, f32::min);
+    let wide = pitches.iter().filter(|p| **p > 1.4 * tight).count();
+    let spaced_rows = wide >= 2 && wide * 4 >= pitches.len();
+    let mut row_filled = 0;
+    for (k, line) in body.iter().enumerate() {
+        let cells = cells_of(line);
+        let (top, bottom) = line_box(line);
+        let filled = cells.iter().filter(|c| !c.is_empty()).count();
+        let continues = k > 0
+            && rows.len() > 1
+            && spaced_rows
+            && pitches[k - 1] <= 1.2 * tight
+            && (cells[0].is_empty() || filled < row_filled);
+        if !continues {
+            row_filled = filled;
+        }
+        match rows.last_mut() {
+            Some(row) if continues => {
+                for (a, c) in row.2.iter_mut().zip(cells) {
+                    if !c.is_empty() {
+                        if !a.is_empty() {
+                            a.push(' ');
+                        }
+                        a.push_str(&c);
+                    }
+                }
+                row.1 = bottom;
+            }
+            _ => rows.push((top, bottom, cells)),
+        }
+    }
+
+    let top = bands[0].0;
+    let bottom = bands[bands.len() - 1].1;
+    Some(ExtractedTable {
+        bbox: CellBbox::new(x0, top, x1, bottom),
+        rows: rows
+            .into_iter()
+            .map(|(rt, rb, cells)| {
+                cells
+                    .into_iter()
+                    .enumerate()
+                    .map(|(c, text)| TableCell {
+                        bbox: CellBbox::new(bounds[c], rt, bounds[c + 1], rb),
+                        text,
+                        col_span: 1,
+                        row_span: 1,
+                    })
+                    .collect()
+            })
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,5 +1581,268 @@ mod tests {
         assert!(md.contains("| Item | Qty | Price |"), "{md}");
         assert!(md.contains("| Apples | 5 | $1.50 |"), "{md}");
         assert!(md.contains("| Oranges | 12 | $2.00 |"), "{md}");
+    }
+
+    /// Words of one line, laid out from `x` with 3 pt spaces, 6.5 pt per char.
+    fn line_words(y: f32, cells: &[(f32, &str)]) -> Vec<PdfWord> {
+        let mut out = Vec::new();
+        for (x, text) in cells {
+            let mut x = *x;
+            for w in text.split_whitespace() {
+                let x1 = x + 6.5 * w.chars().count() as f32;
+                out.push(PdfWord::new(w, x, y, x1, y + 10.0));
+                x = x1 + 3.0;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn booktabs_table_reads_header_and_rows() {
+        let edges = vec![
+            Edge::horizontal(50.0, 400.0, 100.0),
+            Edge::horizontal(50.0, 400.0, 116.0),
+            Edge::horizontal(50.0, 400.0, 170.0),
+        ];
+        let mut words = line_words(
+            103.0,
+            &[(55.0, "Primer name"), (200.0, "Length (bp)"), (320.0, "Tm")],
+        );
+        words.extend(line_words(
+            120.0,
+            &[(55.0, "PDCoV-1-F"), (200.0, "3,300"), (320.0, "58")],
+        ));
+        words.extend(line_words(
+            135.0,
+            &[(55.0, "PDCoV-3300-R"), (200.0, "1,770"), (320.0, "51")],
+        ));
+        words.extend(line_words(
+            150.0,
+            &[(55.0, "Oligo(dT)"), (200.0, "1,616"), (320.0, "55")],
+        ));
+        // Prose outside the rules is not part of it.
+        words.extend(line_words(
+            185.0,
+            &[(55.0, "The sizes of these genes were measured twice.")],
+        ));
+        let tables = rule_bounded_tables(&edges, &words, 3.0);
+        assert_eq!(tables.len(), 1);
+        let md = tables[0].to_markdown();
+        assert!(md.contains("| Primer name | Length (bp) | Tm |"), "{md}");
+        assert!(md.contains("| PDCoV-3300-R | 1,770 | 51 |"), "{md}");
+        assert!(md.contains("| Oligo(dT) | 1,616 | 55 |"), "{md}");
+        assert!(!md.contains("sizes"), "{md}");
+    }
+
+    #[test]
+    fn a_shaded_header_box_still_reads_as_rules() {
+        // The header row's background is a rectangle: rules at its top and
+        // bottom, and short sides, which make it no grid.
+        let edges = vec![
+            Edge::horizontal(50.0, 400.0, 100.0),
+            Edge::horizontal(50.0, 400.0, 116.0),
+            Edge::vertical(50.0, 100.0, 116.0),
+            Edge::vertical(400.0, 100.0, 116.0),
+            Edge::horizontal(50.0, 400.0, 170.0),
+        ];
+        let mut words = line_words(103.0, &[(55.0, "Primer"), (200.0, "Tm")]);
+        words.extend(line_words(120.0, &[(55.0, "PDCoV-1-F"), (200.0, "58")]));
+        words.extend(line_words(135.0, &[(55.0, "Oligo(dT)"), (200.0, "55")]));
+        let tables = rule_bounded_tables(&edges, &words, 3.0);
+        assert_eq!(tables.len(), 1);
+        assert!(tables[0].to_markdown().contains("| Oligo(dT) | 55 |"));
+    }
+
+    #[test]
+    fn prose_between_rules_is_not_a_table() {
+        let edges = vec![
+            Edge::horizontal(50.0, 400.0, 100.0),
+            Edge::horizontal(50.0, 400.0, 160.0),
+        ];
+        let mut words = Vec::new();
+        for (k, text) in [
+            "Note that every value in this report was audited and the auditors",
+            "found no material weakness in the controls over financial reporting",
+            "during the year that ended on the last day of December this year.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            words.extend(line_words(
+                105.0 + 15.0 * k as f32,
+                &[(52.0 + 4.0 * k as f32, text)],
+            ));
+        }
+        assert!(rule_bounded_tables(&edges, &words, 3.0).is_empty());
+    }
+
+    #[test]
+    fn wrapped_cells_in_spaced_rows_stay_in_their_row() {
+        let edges = vec![
+            Edge::horizontal(50.0, 400.0, 100.0),
+            Edge::horizontal(50.0, 400.0, 116.0),
+            Edge::horizontal(50.0, 400.0, 195.0),
+        ];
+        let mut words = line_words(103.0, &[(55.0, "Feature"), (200.0, "Neuroretinitis")]);
+        words.extend(line_words(
+            120.0,
+            &[(55.0, "VA"), (200.0, "Light perception")],
+        ));
+        words.extend(line_words(131.0, &[(200.0, "to 6/12")]));
+        words.extend(line_words(
+            150.0,
+            &[(55.0, "Laterality"), (200.0, "Unilateral,")],
+        ));
+        words.extend(line_words(161.0, &[(200.0, "rarely bilateral")]));
+        words.extend(line_words(180.0, &[(55.0, "Eye pain"), (200.0, "Nil")]));
+        let tables = rule_bounded_tables(&edges, &words, 3.0);
+        assert_eq!(tables.len(), 1);
+        let md = tables[0].to_markdown();
+        assert!(md.contains("| VA | Light perception to 6/12 |"), "{md}");
+        assert!(
+            md.contains("| Laterality | Unilateral, rarely bilateral |"),
+            "{md}"
+        );
+        assert!(md.contains("| Eye pain | Nil |"), "{md}");
+    }
+
+    #[test]
+    fn a_wrapped_first_cell_continues_its_spaced_row() {
+        let edges = vec![
+            Edge::horizontal(50.0, 400.0, 100.0),
+            Edge::horizontal(50.0, 400.0, 116.0),
+            Edge::horizontal(50.0, 400.0, 200.0),
+        ];
+        let mut words = line_words(
+            103.0,
+            &[(55.0, "Milestone"), (200.0, "Date"), (300.0, "Deliverable")],
+        );
+        words.extend(line_words(
+            120.0,
+            &[(55.0, "Initiate"), (200.0, "Sep 2001"), (300.0, "Notice")],
+        ));
+        words.extend(line_words(
+            138.0,
+            &[
+                (55.0, "Complete Design"),
+                (200.0, "Nov 2002"),
+                (300.0, "Documents"),
+            ],
+        ));
+        words.extend(line_words(
+            149.0,
+            &[(55.0, "(60% level)"), (300.0, "to EPA")],
+        ));
+        words.extend(line_words(
+            167.0,
+            &[(55.0, "Notice to"), (200.0, "Oct 2003"), (300.0, "Notice")],
+        ));
+        words.extend(line_words(178.0, &[(55.0, "Proceed")]));
+        let tables = rule_bounded_tables(&edges, &words, 3.0);
+        assert_eq!(tables.len(), 1);
+        let md = tables[0].to_markdown();
+        assert!(
+            md.contains("| Complete Design (60% level) | Nov 2002 | Documents to EPA |"),
+            "{md}"
+        );
+        assert!(
+            md.contains("| Notice to Proceed | Oct 2003 | Notice |"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn rows_grouped_by_spacing_are_not_merged() {
+        // Full rows at the tight pitch, groups set apart: every line a row.
+        let edges = vec![
+            Edge::horizontal(50.0, 400.0, 100.0),
+            Edge::horizontal(50.0, 400.0, 200.0),
+        ];
+        let mut words = line_words(103.0, &[(55.0, "Item"), (200.0, "Q1"), (300.0, "Q2")]);
+        for (k, y) in [118.0, 129.0, 147.0, 158.0, 176.0, 187.0]
+            .iter()
+            .enumerate()
+        {
+            let name = format!("Row{k}");
+            words.extend(line_words(
+                *y,
+                &[(55.0, &name), (200.0, "1.0"), (300.0, "2.0")],
+            ));
+        }
+        let md = rule_bounded_tables(&edges, &words, 3.0)[0].to_markdown();
+        assert_eq!(md.matches("| 1.0 | 2.0 |").count(), 6, "{md}");
+    }
+
+    #[test]
+    fn two_columns_of_prose_between_rules_are_not_a_table() {
+        let edges = vec![
+            Edge::horizontal(50.0, 560.0, 100.0),
+            Edge::horizontal(50.0, 560.0, 200.0),
+        ];
+        let left = [
+            "Pennsylvania, like most other states, has waiting lists for",
+            "services. In recent years, it was estimated that many",
+            "persons were on such waiting lists in counties across",
+            "the state, and the counties kept those lists in their own way.",
+        ];
+        let right = [
+            "support of annual county plans. Individual counties varied",
+            "widely in their reporting. There was a lack of a clear",
+            "definition of the waiting list. As a result, it was",
+            "recommended that the office develop consistent definitions.",
+        ];
+        let mut words = Vec::new();
+        for (k, (l, r)) in left.iter().zip(right).enumerate() {
+            let y = 103.0 + 15.0 * k as f32;
+            // Narrow glyphs, so each column line fits its 230 pt column.
+            for (x0, text) in [(55.0, *l), (310.0, r)] {
+                let mut x = x0;
+                for w in text.split_whitespace() {
+                    let x1 = x + 3.4 * w.chars().count() as f32;
+                    words.push(PdfWord::new(w, x, y, x1, y + 10.0));
+                    x = x1 + 3.0;
+                }
+            }
+        }
+        assert!(rule_bounded_tables(&edges, &words, 3.0).is_empty());
+    }
+
+    #[test]
+    fn a_contents_list_between_rules_is_not_a_table() {
+        let edges = vec![
+            Edge::horizontal(50.0, 400.0, 100.0),
+            Edge::horizontal(50.0, 400.0, 170.0),
+        ];
+        let mut words = Vec::new();
+        for (k, (title, page)) in [
+            ("Highlights", "03"),
+            ("Financial Summary", "04"),
+            ("Outlook", "12"),
+            ("Key Metrics", "22"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            words.extend(line_words(
+                103.0 + 15.0 * k as f32,
+                &[(55.0, title), (350.0, page)],
+            ));
+        }
+        assert!(rule_bounded_tables(&edges, &words, 3.0).is_empty());
+    }
+
+    #[test]
+    fn rules_of_a_drawn_grid_are_left_to_the_grid() {
+        let edges = vec![
+            Edge::horizontal(50.0, 400.0, 100.0),
+            Edge::horizontal(50.0, 400.0, 170.0),
+            Edge::vertical(50.0, 100.0, 170.0),
+            Edge::vertical(190.0, 100.0, 170.0),
+            Edge::vertical(400.0, 100.0, 170.0),
+        ];
+        let mut words = line_words(103.0, &[(55.0, "Item"), (200.0, "Price")]);
+        words.extend(line_words(120.0, &[(55.0, "Apples"), (200.0, "$1.50")]));
+        words.extend(line_words(135.0, &[(55.0, "Pears"), (200.0, "$2.00")]));
+        assert!(rule_bounded_tables(&edges, &words, 3.0).is_empty());
     }
 }

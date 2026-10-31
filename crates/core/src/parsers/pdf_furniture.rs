@@ -690,6 +690,27 @@ fn folio_number(text: &str) -> Option<u32> {
     arabic.or(roman)
 }
 
+/// A page number set after a fixed prefix of numbers, as specifications and
+/// manuals number pages within sections ("01 1100 - 3", "4-12", "§ 2.1-7"):
+/// (the prefix, digits only; the page number). Lines with more than two
+/// letters are not page numbers; a lone number is a plain folio.
+fn section_folio(text: &str) -> Option<(String, u32)> {
+    let t = text.trim();
+    if t.len() > 24 || t.chars().filter(|c| c.is_alphabetic()).count() > 2 {
+        return None;
+    }
+    let digits_end = t.trim_end_matches(|c: char| !c.is_ascii_digit());
+    let start = digits_end
+        .trim_end_matches(|c: char| c.is_ascii_digit())
+        .len();
+    let n: u32 = digits_end[start..].parse().ok()?;
+    let prefix: String = digits_end[..start]
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    (!prefix.is_empty() && prefix.chars().any(|c| c.is_ascii_digit())).then_some((prefix, n))
+}
+
 /// A line number found in a gutter, with the words beside it on its line, so
 /// it can be removed from converted text even when the converter merged it
 /// into a span with its neighbours (exclusion works on whole spans).
@@ -717,6 +738,9 @@ pub(crate) struct Furniture {
 /// from the page edge in points).
 type Hit = (usize, usize, f32);
 
+/// A page number found on a page: (page, line index, number).
+type Folio = (usize, usize, u32);
+
 /// Detects running headers/footers, folios and line-number gutters.
 pub(crate) fn detect_furniture(pages: &[Option<PageGeom>]) -> Furniture {
     let n_pages = pages.len();
@@ -727,13 +751,23 @@ pub(crate) fn detect_furniture(pages: &[Option<PageGeom>]) -> Furniture {
     // (edge, signature) -> list of (page, line index, relative y)
     let mut occ: HashMap<(Edge, String), Vec<Hit>> = HashMap::new();
     let mut folio_cands: Vec<(usize, usize, u32)> = Vec::new();
+    let mut section_cands: HashMap<(Edge, String), Vec<Folio>> = HashMap::new();
     let frame = text_frame(pages);
+    let mut candidates: Vec<Vec<usize>> = vec![Vec::new(); n_pages];
     for (pi, p) in pages.iter().enumerate() {
         let Some(p) = p else { continue };
         for (edge, li) in edge_candidates(p, frame) {
+            candidates[pi].push(li);
             let line = &p.lines[li];
             if let Some(n) = folio_number(&line.text) {
                 folio_cands.push((pi, li, n));
+                continue;
+            }
+            if let Some((prefix, n)) = section_folio(&line.text) {
+                section_cands
+                    .entry((edge, prefix))
+                    .or_default()
+                    .push((pi, li, n));
                 continue;
             }
             let sig = signature(&line.text);
@@ -754,53 +788,79 @@ pub(crate) fn detect_furniture(pages: &[Option<PageGeom>]) -> Furniture {
 
     let text_pages = pages.iter().filter(|p| p.is_some()).count().max(1);
     for ((_edge, _sig), hits) in occ.iter() {
-        // One hit per page; keep hits at a consistent vertical position.
-        let mut by_page: Vec<Hit> = Vec::new();
+        // One hit per page.
+        let mut once: Vec<Hit> = Vec::new();
         for &h in hits {
-            if !by_page.iter().any(|b| b.0 == h.0) {
-                by_page.push(h);
+            if !once.iter().any(|b| b.0 == h.0) {
+                once.push(h);
             }
         }
-        if by_page.len() < 2 {
-            continue;
-        }
-        let mut ys: Vec<f32> = by_page.iter().map(|h| h.2).collect();
-        ys.sort_by(f32::total_cmp);
-        let median_y = ys[ys.len() / 2];
-        by_page.retain(|h| (h.2 - median_y).abs() <= 8.0);
-        let count = by_page.len();
-        if count < 2 {
-            continue;
-        }
-        by_page.sort_by_key(|h| h.0);
-
-        let global = count >= 3 && (count as f32) >= 0.2 * text_pages as f32;
-        // A chapter running head recurs only within its chapter, often on
-        // alternate pages: three or more hits with gaps of at most two pages.
-        let mut best_run = 1;
-        let mut run = 1;
-        for w in by_page.windows(2) {
-            if w[1].0 - w[0].0 <= 2 {
-                run += 1;
-                best_run = best_run.max(run);
-            } else {
-                run = 1;
+        // Hits at one vertical position recur together. A document can set
+        // the same running head at more than one position (sections laid
+        // out apart): each position is judged on its own.
+        once.sort_by(|a, b| a.2.total_cmp(&b.2));
+        let mut positions: Vec<Vec<Hit>> = Vec::new();
+        for h in once {
+            match positions.last_mut() {
+                Some(c) if h.2 - c[c.len() - 1].2 <= 8.0 => c.push(h),
+                _ => positions.push(vec![h]),
             }
         }
-        let local = best_run >= 3;
-        // Tiny documents: on every page counts.
-        let all_pages = text_pages <= 4 && count == text_pages && count >= 2;
-        if !(global || local || all_pages) {
-            continue;
-        }
-        for &(pi, li, _) in &by_page {
-            let Some(p) = &pages[pi] else { continue };
-            let line = &p.lines[li];
-            // A line set larger than body text is a heading, not a running head.
-            if line.size > body * 1.15 {
+        for mut by_page in positions {
+            let count = by_page.len();
+            if count < 2 {
                 continue;
             }
-            out[pi].push(line_rect(line));
+            by_page.sort_by_key(|h| h.0);
+
+            let global = count >= 3 && (count as f32) >= 0.2 * text_pages as f32;
+            // A chapter running head recurs only within its chapter, often on
+            // alternate pages: three or more hits with gaps of at most two pages.
+            let mut best_run = 1;
+            let mut run = 1;
+            for w in by_page.windows(2) {
+                if w[1].0 - w[0].0 <= 2 {
+                    run += 1;
+                    best_run = best_run.max(run);
+                } else {
+                    run = 1;
+                }
+            }
+            let local = best_run >= 3;
+            // Tiny documents: on every page counts.
+            let all_pages = text_pages <= 4 && count == text_pages && count >= 2;
+            if !(global || local || all_pages) {
+                continue;
+            }
+            for &(pi, li, _) in &by_page {
+                let Some(p) = &pages[pi] else { continue };
+                let line = &p.lines[li];
+                // A line set larger than body text is a heading, not a running head.
+                if line.size > body * 1.15 {
+                    continue;
+                }
+                out[pi].push(line_rect(line));
+            }
+        }
+    }
+
+    // ---- Section folios: "01 1100 - 3", a page number under a prefix that
+    // stays the same while the number advances with the page index -------
+    for hits in section_cands.values() {
+        let mut offsets: HashMap<i64, usize> = HashMap::new();
+        for &(pi, _, n) in hits {
+            *offsets.entry(n as i64 - pi as i64).or_default() += 1;
+        }
+        for &(pi, li, n) in hits {
+            if offsets[&(n as i64 - pi as i64)] < 2 {
+                continue;
+            }
+            if let Some(p) = &pages[pi] {
+                let line = &p.lines[li];
+                if line.size <= body * 1.15 {
+                    out[pi].push(line_rect(line));
+                }
+            }
         }
     }
 
@@ -819,6 +879,58 @@ pub(crate) fn detect_furniture(pages: &[Option<PageGeom>]) -> Furniture {
                 let line = &p.lines[li];
                 if line.size <= body * 1.15 {
                     out[pi].push(line_rect(line));
+                    // The folio's row is the running head's: a short line
+                    // beside the page number at the edge goes with it, which
+                    // is how a head set only once ("(Slip Opinion)  OCTOBER
+                    // TERM" on a first page) is found without recurring.
+                    // Not when the next row in also ends in a number: that
+                    // is a list of page references (a table of contents),
+                    // not a head.
+                    let inward = p
+                        .lines
+                        .iter()
+                        .filter(|o| overlap(o.y0, o.y1, line.y0, line.y1) <= 0.0)
+                        .min_by(|a, b| {
+                            let d =
+                                |o: &GLine| (0.5 * (o.y0 + o.y1) - 0.5 * (line.y0 + line.y1)).abs();
+                            d(a).total_cmp(&d(b))
+                        });
+                    // The whole inward row: a contents entry's page number is
+                    // often a line object of its own beside its title.
+                    let listed = inward.is_some_and(|o| {
+                        p.lines
+                            .iter()
+                            .filter(|r| overlap(r.y0, r.y1, o.y0, o.y1) > 0.0)
+                            .any(|r| {
+                                r.text
+                                    .trim_end()
+                                    .chars()
+                                    .last()
+                                    .is_some_and(|c| c.is_ascii_digit())
+                            })
+                    });
+                    // And only when the row stands apart from the text, as a
+                    // running head does: a number in a table's last row at
+                    // the page edge has the next row close by.
+                    let apart = inward.is_none_or(|o| {
+                        let gap = if o.y1 <= line.y0 {
+                            line.y0 - o.y1
+                        } else {
+                            o.y0 - line.y1
+                        };
+                        gap >= 0.5 * (line.y1 - line.y0)
+                    });
+                    for &mate in candidates[pi].iter().filter(|_| !listed && apart) {
+                        let m = &p.lines[mate];
+                        let shared = overlap(m.y0, m.y1, line.y0, line.y1);
+                        if mate != li
+                            && shared > 0.5 * (m.y1 - m.y0).min(line.y1 - line.y0).max(0.1)
+                            && m.size <= body * 1.15
+                            && m.text.split_whitespace().count() <= 8
+                        {
+                            out[pi].push(line_rect(m));
+                        }
+                    }
                 }
             }
         }
@@ -1343,6 +1455,111 @@ mod tests {
             assert_eq!(r.len(), 2, "page {i}: {r:?}");
             assert!(r.iter().all(|r| r.y > 600.0 || r.y < 100.0));
         }
+    }
+
+    #[test]
+    fn section_page_numbers_are_folios() {
+        assert_eq!(section_folio("01 1100 - 3"), Some(("011100".into(), 3)));
+        assert_eq!(section_folio("01 2500-12"), Some(("012500".into(), 12)));
+        assert_eq!(section_folio("4-12"), Some(("4".into(), 12)));
+        assert_eq!(section_folio("12"), None);
+        assert_eq!(section_folio("Revenue 2023"), None);
+    }
+
+    #[test]
+    fn a_running_head_moved_in_one_section_and_section_folios_are_furniture() {
+        // Pages 0-2 set the head at one height, 3-5 lower (a section laid
+        // out apart); the footers number pages within each section.
+        let mut pages = Vec::new();
+        for i in 0..6 {
+            let head_y = if i < 3 { 742.0 } else { 725.0 };
+            let (section, n) = if i < 3 {
+                ("01 1100", i + 1)
+            } else {
+                ("01 2500", i - 2)
+            };
+            pages.push(page(vec![
+                line("JOHNSON DEAN PRESERVE", head_y, 9.0),
+                line(
+                    "Body text that is long enough to be ordinary prose here.",
+                    650.0,
+                    10.0,
+                ),
+                line(
+                    "More body text follows on this page in the same size.",
+                    630.0,
+                    10.0,
+                ),
+                line(&format!("{section} - {n}"), 40.0, 9.0),
+            ]));
+        }
+        let rects = detect_furniture(&pages).rects;
+        for (i, r) in rects.iter().enumerate() {
+            assert_eq!(r.len(), 2, "page {i}: {r:?}");
+        }
+    }
+
+    #[test]
+    fn a_head_beside_the_first_folio_goes_with_it() {
+        let mut pages = Vec::new();
+        for i in 0..4 {
+            let mut lines = vec![
+                line(
+                    "Body text that is long enough to be ordinary prose here.",
+                    650.0,
+                    10.0,
+                ),
+                line(
+                    "More body text follows on this page in the same size.",
+                    630.0,
+                    10.0,
+                ),
+            ];
+            let mut folio = line(&format!("{}", i + 1), 760.0, 9.0);
+            folio.x1 = 80.0;
+            lines.push(folio);
+            if i == 0 {
+                // Set once, on the folio's row: no recurrence to find it by.
+                let mut head = line("(Slip Opinion) OCTOBER TERM, 2025", 760.0, 9.0);
+                head.x0 = 200.0;
+                lines.push(head);
+            }
+            pages.push(page(lines));
+        }
+        let rects = detect_furniture(&pages).rects;
+        assert_eq!(rects[0].len(), 2, "{:?}", rects[0]);
+        assert!(rects.iter().skip(1).all(|r| r.len() == 1));
+    }
+
+    #[test]
+    fn a_number_in_a_tables_last_row_takes_no_neighbours() {
+        // Rows packed tight at the page's foot: the number that reads as a
+        // folio leaves the rest of its row alone.
+        let pins = [
+            ("MTDI", "MTCK"),
+            ("XTAL", "CAPN"),
+            ("SDIO", "RXDA"),
+            ("VDET", "SENS"),
+        ];
+        let mut pages = Vec::new();
+        for (i, (above, name)) in pins.iter().enumerate() {
+            let mut num = line(&format!("{}", i + 1), 30.0, 9.0);
+            num.x0 = 300.0;
+            let mut name = line(&format!("{name} power supply"), 30.0, 9.0);
+            name.x1 = 150.0;
+            pages.push(page(vec![
+                line(
+                    "Body text that is long enough to be ordinary prose here.",
+                    650.0,
+                    10.0,
+                ),
+                line(&format!("{above} input output analog supply"), 41.0, 9.0),
+                name,
+                num,
+            ]));
+        }
+        let rects = detect_furniture(&pages).rects;
+        assert!(rects.iter().all(|r| r.len() <= 1), "{rects:?}");
     }
 
     #[test]

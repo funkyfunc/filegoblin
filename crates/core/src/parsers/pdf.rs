@@ -146,6 +146,12 @@ fn detect_two_column_bands(
         return None;
     }
     let gx = (best_gx_min + best_gx_max) / 2.0;
+    if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+        eprintln!(
+            "two-column band page {}: y {best_top:.0}..{best_bot:.0}, gutter at x {gx:.0}",
+            page + 1
+        );
+    }
     Some((best_top, best_bot, gx))
 }
 
@@ -2287,17 +2293,58 @@ fn recover_page_vector_tables(
         })
         .collect();
 
+    let word_gap = median_word_gap(geom);
+    // Tables ruled only across (booktabs) go first; a grid table over the
+    // same place is then left out (the grid extractor, given only rules
+    // across, looks for columns in everything between the page's topmost
+    // and bottommost rule).
+    // Only what is seen counts as a rule for them: a shape filled with white
+    // and not stroked (a cell's background) draws no line, though its sides
+    // would otherwise look like column lines.
+    let white = |c: &pdf_oxide::layout::Color| c.r >= 0.95 && c.g >= 0.95 && c.b >= 0.95;
+    let seen: Vec<pdf_oxide::elements::PathContent> = paths
+        .iter()
+        .filter(|p| !(p.stroke_color.is_none() && p.fill_color.as_ref().is_some_and(white)))
+        .cloned()
+        .collect();
+    let booktabs = crate::parsers::pdf_table::rule_bounded_tables(
+        &ruling_edges(&seen, page_top),
+        &pdf_words,
+        word_gap,
+    );
     let settings = crate::parsers::pdf_table::TableSettings::default();
-    let tables = crate::parsers::pdf_table::extract_tables_from_edges_and_words(
+    let grids = crate::parsers::pdf_table::extract_tables_from_edges_and_words(
         &edges, &pdf_words, &settings,
     );
 
-    let word_gap = median_word_gap(geom);
-    for table in tables {
+    if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+        eprintln!(
+            "tables page {}: {} edges, {} ruled across only, {} grids",
+            page + 1,
+            edges.len(),
+            booktabs.len(),
+            grids.len()
+        );
+    }
+    let tables = booktabs
+        .into_iter()
+        .map(|t| (t, true))
+        .chain(grids.into_iter().map(|t| (t, false)));
+    let mut placed: Vec<crate::parsers::pdf_table::CellBbox> = Vec::new();
+    for (table, booktabs) in tables {
         if table.rows.len() < 2 || table.rows.iter().all(|r| r.len() < 2) {
             continue;
         }
-        if !table_columns_are_real(&table, &edges, &pdf_words, word_gap) {
+        let b = &table.bbox;
+        if !booktabs
+            && placed
+                .iter()
+                .any(|p| b.x0 < p.x1 && b.x1 > p.x0 && b.top < p.bottom && b.bottom > p.top)
+        {
+            continue;
+        }
+        // A booktabs table's columns are its gutters, checked as it was found.
+        if !booktabs && !table_columns_are_real(&table, &edges, &pdf_words, word_gap) {
             continue;
         }
         if table.rows.first().map(|r| r.len()).unwrap_or(0) > 12 {
@@ -2341,6 +2388,11 @@ fn recover_page_vector_tables(
         // replace it with the ruling-line version.
         if let Some((start, end)) = find_pipe_table_span(&page_md, &sample_words) {
             let existing_table = &page_md[start..end];
+            // A booktabs reading never replaces a table the converter
+            // found itself.
+            if booktabs {
+                continue;
+            }
             if existing_table.trim() != table_md.trim() {
                 let mut new_md = String::with_capacity(page_md.len() + table_md.len());
                 new_md.push_str(&page_md[..start]);
@@ -2366,18 +2418,25 @@ fn recover_page_vector_tables(
         let max_table_char_span = table.rows.len() * 250 + 500;
         let mut replaced = false;
 
-        if !first_header.is_empty() && !last_cell.is_empty() {
-            // The first occurrence of the header that is followed by the last
-            // cell within the table's plausible span.
-            let span = page_md
-                .match_indices(first_header)
-                .find_map(|(start_idx, _)| {
-                    let window_end =
-                        floor_boundary(&page_md, start_idx + max_table_char_span).max(start_idx);
-                    page_md[start_idx..window_end]
-                        .rfind(last_cell)
-                        .map(|rel_end| (start_idx, start_idx + rel_end + last_cell.len()))
-                });
+        if booktabs || (!first_header.is_empty() && !last_cell.is_empty()) {
+            // A booktabs table is found by its content: the converter may
+            // have lost cells or whole columns, and its first header word
+            // may sit in the caption above. Other tables: the first
+            // occurrence of the header that is followed by the last cell
+            // within the table's plausible span.
+            let span = if booktabs {
+                table_line_run(&page_md, &table_tokens)
+            } else {
+                page_md
+                    .match_indices(first_header)
+                    .find_map(|(start_idx, _)| {
+                        let window_end = floor_boundary(&page_md, start_idx + max_table_char_span)
+                            .max(start_idx);
+                        page_md[start_idx..window_end]
+                            .rfind(last_cell)
+                            .map(|rel_end| (start_idx, start_idx + rel_end + last_cell.len()))
+                    })
+            };
             if let Some((start_idx, end_idx)) = span {
                 let line_start = page_md[..start_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let line_end = page_md[end_idx..]
@@ -2388,7 +2447,29 @@ fn recover_page_vector_tables(
                 let existing_chunk = &page_md[line_start..line_end];
                 let line_count = existing_chunk.lines().count();
 
-                if line_count <= table.rows.len() * 3 + 4 {
+                // A booktabs table that leaves more than one line of the
+                // span unexplained is not all of what is there: leave it.
+                let unexplained = if booktabs {
+                    existing_chunk
+                        .lines()
+                        .filter(|l| {
+                            let words: Vec<String> = l
+                                .split_whitespace()
+                                .map(|w| {
+                                    w.trim_matches(|ch: char| !ch.is_alphanumeric())
+                                        .to_lowercase()
+                                })
+                                .filter(|w| !w.is_empty())
+                                .collect();
+                            !words.is_empty() && words.iter().any(|w| !table_tokens.contains(w))
+                        })
+                        .count()
+                } else {
+                    0
+                };
+                if (booktabs && unexplained <= 1)
+                    || (!booktabs && line_count <= table.rows.len() * 3 + 4)
+                {
                     let mut headings: Vec<&str> = Vec::new();
                     let mut prose_paragraphs: Vec<String> = Vec::new();
                     let mut current_p = Vec::new();
@@ -2415,7 +2496,9 @@ fn recover_page_vector_tables(
                                 !clean.is_empty() && !table_tokens.contains(&clean)
                             })
                             .count();
-                        if non_table * 2 > words.len() {
+                        // Inside a booktabs span only lines made wholly of the
+                        // table's words are its text; anything else stays.
+                        if non_table * 2 > words.len() || (booktabs && non_table > 0) {
                             current_p.push(trimmed);
                         }
                     }
@@ -2440,6 +2523,15 @@ fn recover_page_vector_tables(
                 }
             }
         }
+        if replaced && booktabs {
+            placed.push(table.bbox.clone());
+            let cells: Vec<String> = table
+                .rows
+                .iter()
+                .flat_map(|r| r.iter().map(|c| c.text.clone()))
+                .collect();
+            page_md = remove_table_echoes(&page_md, &cells);
+        }
 
         if !replaced {
             // Only append if the table's words are not already predominantly present on the page
@@ -2449,11 +2541,119 @@ fn recover_page_vector_tables(
                     page_md.push_str("\n\n");
                 }
                 page_md.push_str(&table_md);
+                if booktabs {
+                    placed.push(table.bbox.clone());
+                }
             }
         }
     }
 
     page_md
+}
+
+/// Byte span of the run of markdown lines that holds a table's text: lines
+/// whose words are mostly the table's (blank lines and one short stray line
+/// in between allowed), the run with the most table words, if it holds at
+/// least two fifths of the table's distinct words.
+fn table_line_run(md: &str, tokens: &HashSet<String>) -> Option<(usize, usize)> {
+    let words = |line: &str| -> Vec<String> {
+        line.split_whitespace()
+            .map(|w| {
+                w.trim_matches(|ch: char| !ch.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let mut best: Option<(usize, usize, HashSet<String>)> = None;
+    let mut run: Option<(usize, usize, HashSet<String>)> = None;
+    let mut strays = 0;
+    let mut offset = 0;
+    let lines = md.split_inclusive('\n').chain(std::iter::once(""));
+    for line in lines {
+        let text = line.trim_end_matches('\n');
+        let ws = words(text);
+        let hits: Vec<&String> = ws.iter().filter(|w| tokens.contains(*w)).collect();
+        let at_end = line.is_empty();
+        if !at_end && ws.is_empty() {
+            offset += line.len();
+            continue;
+        }
+        if !at_end && !hits.is_empty() && hits.len() * 2 >= ws.len() {
+            let r = run.get_or_insert_with(|| (offset, offset, HashSet::new()));
+            r.1 = offset + text.len();
+            r.2.extend(hits.into_iter().cloned());
+            strays = 0;
+        } else if !at_end && run.is_some() && strays == 0 && ws.len() <= 12 {
+            strays += 1;
+        } else if let Some(r) = run.take() {
+            if best.as_ref().is_none_or(|b| r.2.len() > b.2.len()) {
+                best = Some(r);
+            }
+            strays = 0;
+        }
+        offset += line.len();
+    }
+    best.filter(|b| b.2.len() * 5 >= tokens.len() * 2)
+        .map(|(start, end, _)| (start, end))
+}
+
+/// Drops what is left of a table the converter wrote out in more than one
+/// place (one column here, the rest further down) once the table itself is
+/// in: runs of three or more lines, blank lines between allowed, each of
+/// which is a cell's text or part of one. Pipe rows are the table and stay,
+/// and so do headings (a table's title shares its words).
+fn remove_table_echoes(md: &str, cells: &[String]) -> String {
+    let lines: Vec<&str> = md.lines().collect();
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let cells: Vec<String> = cells
+        .iter()
+        .map(|c| norm(c))
+        .filter(|c| !c.is_empty())
+        .collect();
+    let echo = |line: &str| {
+        let text = norm(line.trim_matches(|c: char| c == '*' || c.is_whitespace()));
+        !line.trim_start().starts_with('|')
+            && !line.trim_start().starts_with('#')
+            && !text.is_empty()
+            && cells.iter().any(|c| c.contains(&text))
+    };
+    let mut drop = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if !echo(lines[i]) {
+            i += 1;
+            continue;
+        }
+        let (mut j, mut count, mut last) = (i, 0, i);
+        while j < lines.len() && (lines[j].trim().is_empty() || echo(lines[j])) {
+            if echo(lines[j]) {
+                count += 1;
+                last = j;
+            }
+            j += 1;
+        }
+        if count >= 3 {
+            drop[i..=last].iter_mut().for_each(|d| *d = true);
+        }
+        i = j;
+    }
+    let mut out = String::with_capacity(md.len());
+    let mut blank = false;
+    for (line, gone) in lines.iter().zip(drop) {
+        if gone || (line.trim().is_empty() && blank) {
+            continue;
+        }
+        blank = line.trim().is_empty();
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 /// Median horizontal gap between consecutive words on a line: the page's
@@ -2583,6 +2783,52 @@ mod tests {
     use super::*;
 
     use clap::Parser;
+
+    #[test]
+    fn a_table_is_found_by_its_words_and_its_echoes_dropped() {
+        let tokens: HashSet<String> = [
+            "milestone",
+            "date",
+            "initiate",
+            "pre-design",
+            "complete",
+            "september",
+            "10",
+            "2001",
+            "march",
+            "2002",
+            "notice",
+            "to",
+            "proceed",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let md = "## Table 4\n\n### Milestone date\n\nMilestones for the design programme\n\nMilestone\n\nInitiate Pre-design\n\nComplete Pre-design\n\nThe dates follow the decree.\n\nSee the schedule for details.\n\nDate\nSeptember 10, 2001\nMarch 10, 2002\nNotice to Proceed\n";
+        // The run with the most table words: the dates block.
+        let (a, b) = table_line_run(md, &tokens).unwrap();
+        assert!(md[a..b].starts_with("Date") && md[a..b].ends_with("Notice to Proceed"));
+        let table =
+            "| Milestone | Date |\n|---|---|\n| Initiate Pre-design | September 10, 2001 |\n";
+        let spliced = format!("{}{}{}", &md[..a], table, &md[b..]);
+        let cells: Vec<String> = [
+            "Milestone",
+            "Date",
+            "Initiate Pre-design",
+            "September 10, 2001",
+            "Complete Pre-design",
+            "March 10, 2002",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let out = remove_table_echoes(&spliced, &cells);
+        assert!(!out.contains("\nInitiate Pre-design\n"), "{out}");
+        assert!(out.contains("Milestones for the design programme"));
+        assert!(out.contains("### Milestone date"), "{out}");
+        assert!(out.contains("The dates follow the decree."));
+        assert!(out.contains("| Initiate Pre-design | September 10, 2001 |"));
+    }
 
     #[test]
     fn test_extract_paths_and_words_on_adversarial() {

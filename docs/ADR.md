@@ -1256,3 +1256,98 @@ This replaces the `Format::LegacyOffice` bullet of 2026-07-30.
 **Not done here.** The PDF worker boundary fails open when a worker cannot start (in the report for the PDF session). The per-process memory defaults that added up to 1.5 times the RAM were fixed afterwards (the amendment to "A memory ceiling for the CLI process"). Deferred with reasons in the report: an MCP bound on directory size, `--chunk-overlap` validation, the glibc floor for npm, pinning model downloads and actions.
 
 **Status:** Accepted.
+
+## 2026-10-30: Measured against free tools; smart mode in a 4 GB worker, booktabs tables, one-off running heads
+
+**Context.** Two questions: does filegoblin beat the free PDF-to-markdown tools, and what should the next PDF work be? `docs/COMPARISON.md` (with `scripts/engines.py`: `run_gauntlet.py --engine`, `olmocr_bench.py run --engine`) answers the first. On the olmOCR-bench dev split filegoblin smart scored 76.03, behind MinerU 4.1.2 (77.93) and ahead of marker 2.1 (70.80), docling 2.145 (54.77), pymupdf4llm 2.0 (40.52) and markitdown 0.1.9 (30.31); `--vision off` scored 37.13, behind pymupdf4llm, a CPU tool. On the gauntlet its PDFs led every tool whenever they converted. olmOCR itself needs an NVIDIA GPU and was not run (published: 82.4). Three findings set the work:
+1. With the memory ceiling of `4283928`, a 4 GB PDF worker (the default on an 8 GB machine) stopped smart mode on six of the 17 gauntlet PDFs (R1, R2, BOOK_2, FIN_1, CLIN_1, FDA_1, peaks 4–6 GB) and one dev page (a scanned dictionary), so smart gauntlet quality was 74.1 instead of 90.5.
+2. In `--vision off`, booktabs tables (a rule above, one under the header, one below, nothing down) passed 0 of 38 dev tests; pymupdf4llm passed 27. That is most of its table lead (55.9 vs 16.2).
+3. docling, MinerU and marker scored 94–96 on SCOTUS_1 and CSI_SPEC against 78 and 76, all from running heads and footers that filegoblin's recurrence could not see.
+
+Success meant: olmOCR-bench overall up on the test split in both modes, gauntlet quality up in both modes, no category and no gauntlet case down, no new failure on hostile PDFs, and time within +5% (smart) and +2% (fast path). The rules of the 2026-10-23 pass held: general rules only, tuned on the dev split, a change kept only if it loses nothing on dev and no gauntlet case loses ground, gains and losses reported. All runs one at a time, with the CLI held to 6 GB and its PDF worker to 4 GB.
+
+**Decision.**
+- **Smart mode inside a 4 GB worker** (`vision/ocr.rs`, `vision/formula.rs`, `vision/mod.rs`, `memory::budget_mb`).
+  - OCR recognition batches were 24 line crops padded to the widest (up to 3,200 px). The output is that width times PP-OCRv6's ~18,000 classes, and it was cloned. A batch is now bounded at 16,384 padded columns and the output is moved, not copied: the dictionary page went from 5.61 to 2.97 GB.
+  - Formula batches of 16 kept each sequence's cross-attention cache (about 0.7 GB). A batch of 8 saves 0.4 GB at the same speed.
+  - Two pages in the models at once only when the budget (the lower of the CLI and worker ceilings) is 8 GB or more; otherwise one, for 5–9% more time.
+  - R1 4.96 → 2.62 GB, R2 4.83 → 3.09 GB; all six gauntlet PDFs convert in a 4 GB worker.
+- **Rule-bounded (booktabs) tables on the fast path** (`pdf_table::rule_bounded_tables`, used by `recover_page_vector_tables`).
+  - Horizontal rules are stacked by their ends. A rule that vertical lines meet in three or more places belongs to a grid; two, at its ends, make only a box or a shaded header row.
+  - A run of bands between rules is a table when the lines below the header leave a gutter no word crosses (wider than twice the word spacing and half an em) and most lines fill two or more columns. It is refused when a line breaks at more wide gaps than the gutters explain, a vertical rule sits inside, cells are leader dots (forms, contents), the last column is page numbers that never decrease (a table of contents), or the median cell is six words or more (two columns of prose between a head rule and a foot rule, which have a true gutter too).
+  - The first band is the header. Rows set apart by extra space take continuation lines at the tightest pitch.
+  - Only seen rules count: unstroked white fills (cell backgrounds) are ignored.
+  - Booktabs tables are placed first; the grid extractor runs on every edge as before, and a grid table over a placed booktabs table is left out.
+  - The table is found in the converter's markdown by its content and replaces that run of lines only when at most one line there is not wholly its text. Leftover lines that are a cell's text are dropped; headings never are. It never replaces a table the converter wrote itself.
+- **Running heads that do not recur** (`pdf_furniture.rs`).
+  - Recurring hits are grouped by position, and each position is judged on its own (a head set lower in some sections).
+  - Section page numbers ("01 1100 - 3") are folios when the prefix is fixed and the number advances with the page index.
+  - A short body-size line in a folio's row goes with the folio ("(Slip Opinion) OCTOBER TERM, 2025", printed once). Not when the next row inward also ends in a number (a table of contents), and not when it sits within half a line (a table's last row at the page edge).
+
+**Rejected or reverted on dev or on the gauntlet.**
+- **Two-column bands from one-sided slices.** A slice with text on one side only counted as evidence neither way, so the fast path's band detector would cover a whole reference list. It gained 3 dev tests on one page. Every variant cost something:
+  - the base rule plus neutral slices: 3 dev losses (figure captions and full-width front matter read as columns);
+  - requiring half the slices to be two-sided, or ending a band at a crossing slice: FDA_1 −2.2 (a title cut mid-word at the gutter), FORM_1 −2.1 (a form's amounts column);
+  - requiring three words on each side: lost the original gain.
+
+  Reverted. The detector is unchanged apart from a `FILEGOBLIN_DEBUG` line.
+- **Booktabs variants that lost gauntlet ground**, each fixed as described above:
+  - white fills dropped for every ruling, which reshaped vision-path lattices (TECH_1 −4.6);
+  - first and last non-empty cells as anchors for every table, which let the old grid path splice a contents list into TECH_1;
+  - a majority of table words for leftover lines, which cut a source line on SLIDE_1;
+  - leftover headings dropped (TI_REG −0.3);
+  - removing every edge inside a detected table even when it was not spliced in, which lost a grid table; and replacing the converter's own tables (an indented degree table split into extra columns, subscript lines read as rows): 6 tests on three test-split pages;
+  - no guard against two columns of prose between a head rule and a foot rule: 10 multi-column tests on two test-split pages;
+  - no guard against forms (FORM_1 −2.6) or contents lists (SLIDE_1 −0.8).
+- **The folio-row rule** removed table-of-contents entries and a pin table's last row on TECH_1 (−4.1) until the inward-row checks.
+- **One page in the models at a time on every machine**: 5–9% slower on vision pages. Used only below an 8 GB budget.
+
+**Result.**
+olmOCR-bench (official scorer; overall is the mean of the eight category rates), the CLI at 6 GB and its PDF worker at 4 GB throughout:
+
+| run | overall | arXiv math | headers/footers | long tiny text | multi-column | old scans | old scans math | tables | baseline |
+|---|---|---|---|---|---|---|---|---|---|
+| before, dev, smart | 76.03 | 87.5 | 95.6 | 80.4 | 77.4 | 28.8 | 65.0 | 74.8 | 98.9 |
+| after, dev, smart | **77.21** | 87.5 | 95.6 | 89.3 | 77.4 | 28.8 | 65.0 | 74.8 | 99.4 |
+| before, test, smart | 73.70 | 86.9 | 91.5 | 85.2 | 71.5 | 28.5 | 47.6 | 79.6 | 98.9 |
+| after, test, smart | **74.29** | 87.1 | 91.5 | 88.1 | 72.0 | 28.9 | 47.6 | 80.0 | 99.2 |
+| before, dev, off | 37.13 | 0.0 | 69.2 | 41.1 | 50.9 | 21.2 | 0.0 | 16.2 | 98.3 |
+| after, dev, off | **39.61** | 0.0 | 69.2 | 41.1 | 50.9 | 21.2 | 0.0 | 36.0 | 98.3 |
+| before, test, off | 39.28 | 0.0 | 67.9 | 54.1 | 49.5 | 17.3 | 0.0 | 26.6 | 98.9 |
+| after, test, off | **40.08** | 0.0 | 68.3 | 54.1 | 49.5 | 17.3 | 0.0 | 32.5 | 98.9 |
+
+Tests gained and lost:
+- Smart: dev +6/−0 (the dictionary page that hit the ceiling); test +29/−0 (long tiny text 11, arXiv math 4, multi-column 4, tables 4, baseline 4, old scans 2).
+- Off: dev +22/−0 (all tables); test +57/−0 (tables +54, headers/footers +3).
+- The baseline's smart test run stopped four PDFs at the 4 GB ceiling; this one stopped none.
+
+The test split is not untouched for the table rules: the prose-columns guard, the never-replace-the-converter's-table rule and the grid fallback came from reading the 16 tests the first full test run lost (two pages of two-column prose between rules, three table pages). All three are general rules. Reading those pages is how they were found, and the dev split did not change with them.
+
+Gauntlet (28 graded cases; failed conversions count as 0):
+
+| | canaries | quality | graded PDF cases |
+|---|---|---|---|
+| smart, before (4 GB worker: six PDFs stopped) | 23/29 | 74.1 | 58.6 |
+| smart, after | 29/29 | **91.4** | 89.0 |
+| off, before | 28/29 | 83.1 | 74.4 |
+| off, after | 28/29 | **84.3** | 76.4 |
+
+- Both modes: CSI_SPEC 76.2 → 91.2 and SCOTUS_1 78.4 → 88.4.
+- Off mode: SCI_2 64.8 → 72.4.
+- Smart mode: R1, R2, BOOK_2, FIN_1, CLIN_1 and FDA_1 convert again.
+- No case lost ground in either mode.
+- For comparison (COMPARISON.md), on graded PDF cases: docling 84.7, marker 80.4, pymupdf4llm 74.9, MinerU 61.0 (five long documents stopped at 8 GB).
+
+Speed: 45 dev PDFs (every fourth), one process each, the old and new builds interleaved, median of three rounds, under the 4 GB worker. `--vision off` took 1.45 → 1.46 s in all (+0.7%). `--vision smart` took 118.2 → 123.4 s (+4.4%), the cost of one page in the models at a time below an 8 GB budget. Both are inside this pass's speed budget (+5% smart, +2% fast path).
+
+Robustness: 54 mutated copies of six gauntlet PDFs (truncated to 25/50/90%, 60 bit flips under four seeds, a zeroed 4 KB block, 64 KB of junk appended), both builds, both modes, under the same limits. No run crashed or hung; every exit was 0 or 4, the longest 37.7 s. Both builds failed the same 5 files in `--vision off`: mutations of the one-page table PDF that leave no readable text. In smart mode the old build failed 22. The 17 the new build converts were all stopped by the 4 GB worker ceiling, on mutated pages that go to OCR; one of them converted on a second try, since it peaks right at the limit. The new build failed only the same 5.
+
+**Open.**
+- **Scanned handwriting and scanned math** are where MinerU (old scans 38.8, old scans math 76.2) and marker (42.5, 82.5) lead filegoblin (28.8, 65.0). Their VLMs read handwriting; PP-OCRv6 does not. That needs a recognizer, not a rule.
+- **pdf_oxide 0.3.77 standard-14 widths.** A Helvetica/Times font without `/Widths` and with a `/Differences` encoding that remaps letter codes gets a flat 550/1000 advance, because the standard widths are looked up by byte code rather than by glyph name. Glyph positions then drift across column gutters (three IRS pages on dev, 7 tests MinerU passes). It wants an upstream fix, not yet reported.
+- **pdf_oxide link anchors.** It links any span whose box overlaps a link rectangle, so `--vision off` wraps whole reference lines in link markup (4 dev tests).
+- **The fast path still trails pymupdf4llm** on multi-column order (50.9 vs 77.4) and on tables without any rules.
+- **Glyph widths of some fonts are too narrow** (a 1.3 pt digit with 2.7 pt gaps), so a booktabs cell can read "1– 3 3 00".
+- **MinerU's standard tier passed 8 GB** on every gauntlet document over 50 pages (killed by the harness).
+
+**Status:** Accepted.

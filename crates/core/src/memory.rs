@@ -77,6 +77,20 @@ pub(crate) fn worker_share_mb(workers: usize) -> u64 {
     (run_budget_mb() - half_of_ram_mb()) / workers.max(1) as u64
 }
 
+/// The memory this process may use, in MB: the lower of the CLI's ceiling
+/// (half the RAM unless set) and, in a PDF worker, the share its parent
+/// passes it (`worker_share_mb`). Work that can trade speed for memory
+/// sizes itself to it.
+#[cfg(feature = "vision")]
+pub(crate) fn budget_mb() -> u64 {
+    let half = half_of_ram_mb();
+    [MEMORY_ENV, "FILEGOBLIN_PDF_MEMORY_MB"]
+        .iter()
+        .map(|name| env_number(name, half).unwrap_or(half))
+        .min()
+        .unwrap_or(half)
+}
+
 pub(crate) fn env_number(name: &str, default: u64) -> Result<u64> {
     parse_number(name, std::env::var(name).ok().as_deref(), default)
 }
