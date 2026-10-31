@@ -1365,3 +1365,76 @@ Robustness: 54 mutated copies of six gauntlet PDFs (truncated to 25/50/90%, 60 b
 **Rejected.** A `--memory` that sets only the CLI's ceiling: on its own it would leave the workers at their RAM-sized shares, so `--memory 2G` on a 4 GB machine could still take 4 GB.
 
 **Status:** Accepted.
+
+## 2026-10-31: What the free converters do where they win; marginal furniture and unruled tables
+
+**Context.** filegoblin had only been measured against MinerU 4.1.2, marker 2.1 and docling 2.145 as black boxes (2026-10-30). This pass read their source, found the technique behind each place where they beat us, and tried the ones that fit our geometry. The findings, with upstream file and function for each, are in `docs/reviews/2026-10-31-competitor-source.md`.
+
+Licences were a hard rule. Only ideas were taken; no code or data file was copied, and every change below is fresh Rust. The sources:
+- MinerU: Apache-2.0 with extra terms. Its geometry lives in the dependency docvortex (MIT AND Apache-2.0 AND BSD-3-Clause).
+- docling: MIT.
+- marker: GPL/Apache code.
+
+Two facts set the scope:
+- In smart mode, the multi-column tests we fail are mostly a sentence that is missing or misread, on scans or on IRS pages whose glyph widths pdf_oxide gets wrong. Only 2 of 24 are true order errors, the same number MinerU and docling make.
+- Long tiny text is no longer a gap: 89.3 against MinerU's 85.7, since the 4 GB-worker fix.
+
+Rules as in the 2026-10-30 pass: tune on the dev split, keep a change only if no dev test and no gauntlet case loses, one heavy job at a time, `FILEGOBLIN_MEMORY_MB=6144` with a 4 GB PDF worker, and benchmark a copy of the binary. Each idea was built behind a temporary switch, so one binary served several runs. Baseline was `ee20ae0`, measured fresh: dev smart 77.21, off 39.61; gauntlet smart 91.4, off 84.3.
+
+**Decision.**
+- **Marginal furniture** (`pdf_furniture::marginal_lines`), after marker's `MarginaliaProcessor`. It finds a head or foot set once, with no recurrence to go on: the usual case on a single page.
+  - **Which rows:** at most the two outermost rows at each edge. A row counts if it lies wholly inside the top 8% or the bottom 13% of the page, is no taller than 3.5% of the page, and has at most 150 characters.
+  - **Standing apart:** marker tests "outside the body" with layout blocks. The fast path has none, so a row must stand apart from the next row inward by at least its own height, or 1.5× for the second row in.
+  - **Never furniture:** a row set larger than body text (a heading), a list item, a caption, a footnote (a bottom row opening with `1 `, `*` or `†`), or a full-width line of prose that ends mid-sentence.
+- **Unruled numeric tables** (`pdf_table::unruled_tables`, used by `recover_page_vector_tables`), after MinerU's (docvortex's) unruled numeric-column detector.
+  - **The body:** three or more consecutive lines that break at gutters into 3–12 cells, two thirds of them numbers, at a pitch of at most 2.5 em.
+  - **The header:** up to three short lines right above the body.
+  - **How it is read:** the table gets the rules it does not draw (above the header, under it, below the body) and goes through the booktabs reader. Every guard there applies: a real gutter, lines explained by their columns, no leader dots, no contents lists, no prose. It never replaces a table the converter wrote itself, and never one already found by its rules.
+  - **Cost:** pages with no vector paths now reach the table pass too.
+
+**Rejected.**
+- **docling's rule-based reading order on smart-mode regions** (`reading_order_rb.py`: a same-row link when the content stream says so, column predecessors, widening by up to 15% of the page, a depth-first walk). It reordered 65 dev pages and changed no test. The PP-DocLayoutV3 order head is as good. Its link pass is cubic in the region count, and three dense OCR pages hit the 120 s no-progress stop.
+- **marker's content-stream order** (blocks sorted by their smallest character index, `builders/line.py`). Multi-column 77.4 → 63.2.
+- **MinerU's XY-cut for fast-path columns**, without its spanning-block step. Words were XY-cut into column regions, each converted by pdf_oxide on its own. A strip counted as a gutter only when both sides hold rows of several words, and when fewer than three rules cross it (after docling's separators). Text up the margin was ignored.
+  - Dev, off: +11/−7. Long tiny text +12.5 (dictionary pages), multi-column −0.9.
+  - Gauntlet: FORM_1 −5.7, SCI_2 −0.8.
+  - Converting a region on its own also loses pdf_oxide's heading levels.
+  - An earlier variant built blocks from line pieces and ordered them with the docling graph. Its blocks overlapped, so text was converted twice.
+- **Reading a paragraph on past figures and captions** in smart mode (docling's `predict_merges`, docvortex's `merge_para_text_blocks`). It moved the continuation on 8 dev pages without changing a test. On the gauntlet it also moved a patent's stray line numbers (PATENT_1 −0.02). It gained nothing anywhere.
+- **surya's repetition-loop guard:** nothing to fix. PP-OCR is CTC, and no formula on dev loops.
+
+**Result.** olmOCR-bench dev split (180 PDFs, official scorer):
+
+| run | overall | headers/footers | tables | others |
+|---|---|---|---|---|
+| before, smart | 77.21 | 95.6 | 74.8 | |
+| after, smart | **77.21** | 95.6 | 74.8 | unchanged (+0/−0) |
+| before, off | 39.61 | 69.2 | 36.0 | |
+| marginal furniture, off | 40.43 | 75.8 | 36.0 | unchanged (+6/−0) |
+| after (+ unruled tables), off | **40.54** | 75.8 | 36.9 | unchanged (+7/−0) |
+
+Gauntlet (28 graded cases; no case lost ground in either mode):
+
+| | smart | off |
+|---|---|---|
+| before | 91.4 | 84.3 |
+| marginal furniture | 91.4 (no case moved) | 84.3 (R2 +0.2) |
+| after (+ unruled tables) | **91.5** (FIN_1 +0.2) | **84.4** (FIN_1 +2.2) |
+
+Test split (1,223 PDFs), checked once at the end. The baseline is the saved run of the 2026-10-30 build, which is byte-identical to this pass's fresh baseline on all 180 dev pages:
+- Smart: 74.29 → **74.31** (+1/−0, headers/footers).
+- Off: 40.08 → **40.98** (+58/−6). Headers/footers 68.3 → 74.0; tables 32.5 → 34.0.
+- All six losses are unruled tables on two pages. One numeric table stands beside a column of prose, and the table took in that column's lines (text lines span the whole page). The other took a caption line ("(B=black, W=white, …)") as its header. Both are general flaws, but they were not fixed: they were found on the test split, and fixing them there would tune on it. They are listed under Open.
+
+Speed: 45 dev PDFs (every fourth), one process each, the old and new builds interleaved, median of three rounds. `--vision off` 1.61 → 1.57 s in all; `--vision smart` 134.9 → 134.4 s. No change beyond noise, though the table pass now also reaches pages with no vector paths.
+
+**Open.**
+- **Smart headers/footers** (95.6 against MinerU's 98.9). Three dev pages have a short top or bottom line the layout model does not label as furniture. MinerU relabels by position: everything above the lowest header is header, and everything above a page number in the top 30%. That idea fits our PP-DocLayoutV3 labels and was not tried.
+- **Fast-path columns** (off 50.9 against pymupdf4llm's 77.4). This needs XY-cut++'s spanning blocks (a pull quote across the gutter) and a way to keep heading levels when regions are converted separately.
+- **Unruled tables, two flaws found on the test split.**
+  - Lines are grouped across the whole page, so a table beside a column of prose takes in that column's lines.
+  - A caption line right above the body can be taken as the header.
+  - Restricting the lines to the table's own horizontal extent, and refusing header lines that are sentences, are the obvious fixes. Both must be judged on dev and the gauntlet.
+- **Fast-path tables** (36.9 against 55.9). Most remaining misses are two-column text tables and wrapped cells. MinerU's and marker's continuation-row rule needs row geometry that pdf_oxide's tables do not give.
+
+**Status:** Accepted.
