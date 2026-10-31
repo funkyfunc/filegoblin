@@ -1351,3 +1351,17 @@ Robustness: 54 mutated copies of six gauntlet PDFs (truncated to 25/50/90%, 60 b
 - **MinerU's standard tier passed 8 GB** on every gauntlet document over 50 pages (killed by the harness).
 
 **Status:** Accepted.
+
+## 2026-10-31: `--memory` sets the run's budget
+
+**Context.** The memory ceilings (2026-10-29) were shares of the machine's RAM, adjustable only per process through `FILEGOBLIN_MEMORY_MB` and `FILEGOBLIN_PDF_MEMORY_MB`. Someone running filegoblin on a small instance, or many runs side by side, wants to say "this run gets 2 GB"; someone on a 256 GB server wants to give it more. Environment variables are also easy for agents to miss, where `--help` is not.
+
+**Decision.**
+- **`--memory <SIZE>`** (and `FILEGOBLIN_MEMORY`, the same setting for wrappers and MCP configs that cannot pass flags) replaces the machine's RAM as the run's budget (`memory::set_run_budget`, called before the guard and before PDF workers are enabled). The split is unchanged: the CLI may hold half, the PDF workers share the other half. Sizes are binary (`512M`, `4G`, `1.5G`, `64GB`, `1T`; a plain number is MB); anything else, or less than 256 MB, is a usage error (exit 2).
+- **The budget is one setting, not one per process**: a user thinks of what the run may take, not of how filegoblin divides it. The per-process variables still win over their share.
+- **A small budget gets one worker.** When two workers would each get under 1 GB, one worker gets the whole share: two starved workers fail more PDFs than one converts slowly. Smart mode already sizes its vision batches to its worker's limit (2026-10-30).
+- **The stop message says where the limit came from** (`half of --memory`, `set by FILEGOBLIN_MEMORY_MB`, or half the machine's memory), and a PDF worker's memory error names `--memory` before the per-worker variable.
+
+**Rejected.** A `--memory` that sets only the CLI's ceiling: on its own it would leave the workers at their RAM-sized shares, so `--memory 2G` on a 4 GB machine could still take 4 GB.
+
+**Status:** Accepted.

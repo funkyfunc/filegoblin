@@ -15,21 +15,39 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// The CLI's ceiling, in MB.
 pub const MEMORY_ENV: &str = "FILEGOBLIN_MEMORY_MB";
 
+/// The run's budget from `--memory`, when it was given.
+static RUN_BUDGET: OnceLock<u64> = OnceLock::new();
+
+/// Sets what the whole run may hold, in MB (`--memory`), in place of the
+/// machine's memory. Call it before [`guard`] and before PDF workers are
+/// enabled, which size themselves from it; later calls are ignored.
+pub fn set_run_budget(mb: u64) {
+    let _ = RUN_BUDGET.set(mb);
+}
+
 /// How the CLI exits once over its ceiling.
 pub const OUT_OF_MEMORY_EXIT: i32 = 5;
 
 /// Ends this process, with a message and [`OUT_OF_MEMORY_EXIT`], once it holds
-/// more than `FILEGOBLIN_MEMORY_MB` (half the machine's RAM by default). It
+/// more than `FILEGOBLIN_MEMORY_MB` (half the run's budget by default). It
 /// measures itself every 25 ms on a thread of its own, as a PDF worker does.
 /// The CLI calls this at startup; library users are not limited unless they
 /// do. Fails on a malformed setting.
 pub fn guard() -> Result<()> {
     let limit_mb = env_number(MEMORY_ENV, half_of_ram_mb())?;
+    let source = if std::env::var_os(MEMORY_ENV).is_some() {
+        format!("set by {MEMORY_ENV}")
+    } else if RUN_BUDGET.get().is_some() {
+        "half of --memory".to_string()
+    } else {
+        "half this machine's memory; --memory sets the run's budget".to_string()
+    };
     std::thread::Builder::new()
         .name("filegoblin-memory".into())
         .spawn(move || {
@@ -38,11 +56,10 @@ pub fn guard() -> Result<()> {
                 if let Some(used) = footprint().filter(|used| *used > limit_mb << 20) {
                     eprintln!(
                         "{} filegoblin stopped: it held {} MB, more than its {} MB limit \
-                         (half this machine's memory unless {} says otherwise).",
+                         ({source}).",
                         "❌".red(),
                         used >> 20,
                         limit_mb,
-                        MEMORY_ENV
                     );
                     std::process::exit(OUT_OF_MEMORY_EXIT);
                 }
@@ -53,13 +70,17 @@ pub fn guard() -> Result<()> {
 }
 
 /// What one run may hold in all, the CLI and every PDF worker it starts
-/// together: the machine's memory (16 GiB where that cannot be told).
+/// together: `--memory`, or else the machine's memory (16 GiB where that
+/// cannot be told).
 ///
 /// Each process used to default to half of RAM on its own, so the CLI and its
 /// two workers could hold 1.5 times the machine between them before any limit
 /// fired. The defaults are now shares of this one budget.
 pub(crate) fn run_budget_mb() -> u64 {
-    physical_memory().map_or(16 * 1024, |bytes| bytes >> 20)
+    RUN_BUDGET
+        .get()
+        .copied()
+        .unwrap_or_else(|| physical_memory().map_or(16 * 1024, |bytes| bytes >> 20))
 }
 
 /// The CLI's default ceiling: half the run's budget, so half the machine's

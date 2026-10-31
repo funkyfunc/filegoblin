@@ -86,6 +86,40 @@ pub fn parse_token_budget(raw: &str) -> Result<String, String> {
     }
 }
 
+/// The smallest `--memory` accepted: the main process's half must hold the
+/// binary and its buffers.
+const MIN_RUN_BUDGET_MB: u64 = 256;
+
+/// Parses a `--memory` size: `512M`, `4G`, `1.5G`, `64GB`, `1T`, or a plain
+/// number of MB. Units are binary (1G = 1024 MB).
+pub fn parse_memory_size(raw: &str) -> Result<u64, String> {
+    let lower = raw.trim().to_ascii_lowercase();
+    let number = lower.trim_end_matches(['b', 'i']);
+    let (digits, scale) = match number.char_indices().last() {
+        Some((i, 'k')) => (&number[..i], 1.0 / 1024.0),
+        Some((i, 'm')) => (&number[..i], 1.0),
+        Some((i, 'g')) => (&number[..i], 1024.0),
+        Some((i, 't')) => (&number[..i], 1024.0 * 1024.0),
+        _ => (number, 1.0),
+    };
+    let mb = digits
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .map(|n| (n * scale) as u64)
+        .ok_or_else(|| format!("expected a size like `512M`, `4G` or `64G` — got `{raw}`"))?;
+    if mb < MIN_RUN_BUDGET_MB {
+        return Err(format!(
+            "a run needs at least {MIN_RUN_BUDGET_MB}M of memory — got `{raw}`"
+        ));
+    }
+    Ok(mb)
+}
+
+/// How the CLI exits once over its ceiling.
+pub const OUT_OF_MEMORY_EXIT: i32 = 5;
+
 /// Parses a token count like `512`, `1024`, `1k`, `2m` into a usize token limit.
 ///
 /// Zero is refused: `--chunk-size 0` (or `0.0001k`) was accepted and emitted
@@ -118,7 +152,7 @@ fn parse_token_count(raw: &str) -> Result<usize, String> {
 #[command(version, about, long_about = None)]
 #[command(name = "filegoblin")]
 #[command(
-    after_help = "EXIT CODES:\n  0  success (also a closed output pipe, e.g. `| head`)\n  1  unexpected error\n  2  bad usage / no target\n  3  --scrub-fail and something was redacted\n  4  nothing could be extracted\n\nEXAMPLES:\n  # Ingest a single file\n  filegoblin src/main.rs\n\n  # Recursively crawl a website and split into separate files\n  filegoblin https://bettercli.org --horde --split\n\n  # Parse a codebase silently and output JSON for a script\n  filegoblin ./my_project --horde -q --json\n\n  # Run as an MCP server for Claude Desktop / Claude Code\n  filegoblin --mcp\n"
+    after_help = "EXIT CODES:\n  0  success (also a closed output pipe, e.g. `| head`)\n  1  unexpected error\n  2  bad usage / no target\n  3  --scrub-fail and something was redacted\n  4  nothing could be extracted\n  5  the run went over its memory ceiling (--memory)\n\nEXAMPLES:\n  # Ingest a single file\n  filegoblin src/main.rs\n\n  # Recursively crawl a website and split into separate files\n  filegoblin https://bettercli.org --horde --split\n\n  # Parse a codebase silently and output JSON for a script\n  filegoblin ./my_project --horde -q --json\n\n  # Run as an MCP server for Claude Desktop / Claude Code\n  filegoblin --mcp\n"
 )]
 pub struct Cli {
     /// The target files, directories, or URLs to ingest. When omitted, filegoblin
@@ -351,6 +385,24 @@ pub struct Cli {
     #[arg(long, help_heading = "Developer Utilities")]
     pub models_status: bool,
 
+    /// The most memory this run may use, the main process and its PDF workers
+    /// together: e.g. `2G`, `512M`, `64G` (a plain number is MB). Default: this
+    /// machine's memory
+    ///
+    /// The main process may use half of it and the PDF workers share the other
+    /// half; a process over its share stops with a message (exit 5 for the
+    /// main process; a PDF over its worker's share fails on its own).
+    /// `FILEGOBLIN_MEMORY_MB` and `FILEGOBLIN_PDF_MEMORY_MB` still set one
+    /// process's share directly.
+    #[arg(
+        long,
+        value_name = "SIZE",
+        env = "FILEGOBLIN_MEMORY",
+        value_parser = parse_memory_size,
+        help_heading = "Developer Utilities"
+    )]
+    pub memory: Option<u64>,
+
     /// Run as an MCP (Model Context Protocol) stdio server exposing a `convert` tool
     #[arg(long, help_heading = "Developer Utilities")]
     pub mcp: bool,
@@ -374,5 +426,33 @@ impl Cli {
         } else {
             self.format
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_sizes_read_as_people_write_them() {
+        for (raw, mb) in [
+            ("512M", 512),
+            ("512", 512),
+            ("4G", 4096),
+            (" 4g ", 4096),
+            ("4GB", 4096),
+            ("4GiB", 4096),
+            ("1.5G", 1536),
+            ("1T", 1 << 20),
+            ("262144K", 256),
+        ] {
+            assert_eq!(parse_memory_size(raw), Ok(mb), "{raw}");
+        }
+        for bad in ["lots", "", "G", "-4G", "0", "4X", "nan", "inf"] {
+            let e = parse_memory_size(bad).unwrap_err();
+            assert!(e.contains("expected a size"), "{bad}: {e}");
+        }
+        let e = parse_memory_size("100M").unwrap_err();
+        assert!(e.contains("at least 256M"), "{e}");
     }
 }

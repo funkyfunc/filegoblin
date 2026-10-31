@@ -111,9 +111,22 @@ pub(crate) fn pool() -> Option<&'static Pool> {
 /// models: on 45 one-page PDFs with `--vision smart`, one worker took 140 s,
 /// two 110 s and four 102 s, peaking at 5.4, 8.5 and 9.6 GB in all.
 fn default_workers() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, |n| n.get())
-        .min(2)
+    workers_for(
+        std::thread::available_parallelism().map_or(1, |n| n.get()),
+        worker_share_mb(2),
+    )
+}
+
+/// The smallest share worth a second worker: below it (a small `--memory`)
+/// two workers would each be starved, so one gets the whole share.
+const MIN_SHARED_WORKER_MB: u64 = 1024;
+
+fn workers_for(cores: usize, share_of_two_mb: u64) -> usize {
+    if share_of_two_mb < MIN_SHARED_WORKER_MB {
+        1
+    } else {
+        cores.clamp(1, 2)
+    }
 }
 
 /// Pages converted in this process. A worker reports each change to its
@@ -389,8 +402,8 @@ fn why_lost(status: ExitStatus, crash: &str, limits: Limits) -> anyhow::Error {
     if status.code() == Some(OUT_OF_MEMORY) || crash.contains("memory allocation of") {
         anyhow::anyhow!(
             "Mischievous PDF Error: converting this PDF took more than {} MB of memory, so it \
-             was stopped (a decompression bomb or other hostile file?); {MEMORY_ENV} sets the \
-             limit",
+             was stopped (a decompression bomb or other hostile file?); --memory raises the \
+             run's budget, or {MEMORY_ENV} sets this limit",
             limits.memory_mb
         )
     } else if crash.contains("has overflowed its stack")
@@ -602,6 +615,14 @@ mod tests {
         assert_eq!(read_frame(&mut r, 1 << 20).unwrap(), None);
         // Cut short inside a frame: an error, not a clean end.
         assert!(read_frame(&mut &wire[..5], 1 << 20).is_err());
+    }
+
+    #[test]
+    fn a_small_budget_gets_one_worker_not_two_starved_ones() {
+        assert_eq!(workers_for(8, 6144), 2);
+        assert_eq!(workers_for(1, 6144), 1);
+        assert_eq!(workers_for(8, MIN_SHARED_WORKER_MB), 2);
+        assert_eq!(workers_for(8, MIN_SHARED_WORKER_MB - 1), 1);
     }
 
     #[test]

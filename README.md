@@ -276,7 +276,7 @@ filegoblin ./src/ --horde -q --json | jq '.[].path'
 **fails to parse** appears in-band as `{ "path", "format", "error" }` rather than silently
 vanishing — so an agent can trust that every input is accounted for. Exit codes: `0` success,
 `4` when nothing could be extracted (empty result vs. total failure), `3` when
-`--scrub --scrub-fail` redacted something, `5` when the run went over its memory ceiling.
+`--scrub --scrub-fail` redacted something, `5` when the run went over its memory ceiling (`--memory`).
 
 **Multi-Format Output (`--format markdown|plain|json` / `-f`):**
 ```bash
@@ -505,12 +505,15 @@ why that is off by default.
   before parsing, and a parser panic is still an ordinary error. Library users of
   `filegoblin-core` convert in-process unless they opt in
   (`parsers::pdf_worker`).
-- **No run can take the machine's memory.** The CLI process has the same
-  self-measured ceiling as a PDF worker: past half the machine's RAM
-  (`FILEGOBLIN_MEMORY_MB` sets it) it stops with a message and exit 5. The PDF
-  workers share the other half (a quarter of the RAM each with the default two;
-  `FILEGOBLIN_PDF_MEMORY_MB` sets one worker's limit instead), so together the
-  run's processes stay within the machine's memory. Input it
+- **No run can take the machine's memory.** A run's budget is the machine's
+  RAM, or what `--memory` says (`--memory 2G` on a small instance, `--memory
+  64G` on a big one; `FILEGOBLIN_MEMORY` is the same setting for wrappers that
+  cannot pass flags). The CLI process has the same self-measured ceiling as a
+  PDF worker: past half the budget (`FILEGOBLIN_MEMORY_MB` sets it directly) it
+  stops with a message and exit 5. The PDF workers share the other half (a
+  quarter of the budget each with the default two, or one worker when two would
+  get under 1 GB each; `FILEGOBLIN_PDF_MEMORY_MB` sets one worker's limit
+  instead), so together the run's processes stay within the budget. Input it
   reads as a stream is bounded too: an MCP message over 1 MB is answered with an
   error and dropped as it arrives, and piped stdin is read up to 1 GB.
 - **A damaged legacy Office file fails on its own.** `.doc`, `.ppt` and `.xls` are
