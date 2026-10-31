@@ -555,6 +555,112 @@ fn edge_candidates(p: &PageGeom, frame: Option<(f32, f32)>) -> Vec<(Edge, usize)
     out
 }
 
+/// Lines in the outermost rows of a page that read as furniture by position
+/// alone, so a head or foot set once is found without recurrence. The idea is
+/// marker's marginalia rule: a block wholly inside the top 8% or bottom 13%
+/// of the page, no taller than 3.5% of it, at most 150 characters, outside
+/// the body text. Here a row counts as its own block when a gap of at least
+/// its own height separates it from the next row inward; a row set larger
+/// than body text is a heading, and a bottom row that opens with a note mark
+/// (`1 `, `*`, `†`) is a footnote, which stays.
+fn marginal_lines(p: &PageGeom, body: f32) -> Vec<usize> {
+    let h = p.height();
+    let mut order: Vec<usize> = (0..p.lines.len()).collect();
+    order.sort_by(|&a, &b| p.lines[b].y1.total_cmp(&p.lines[a].y1));
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    for i in order {
+        let l = &p.lines[i];
+        if let Some(row) = rows.last_mut() {
+            let r = &p.lines[row[0]];
+            if overlap(l.y0, l.y1, r.y0, r.y1) > 0.5 * (l.y1 - l.y0).min(r.y1 - r.y0).max(0.1) {
+                row.push(i);
+                continue;
+            }
+        }
+        rows.push(vec![i]);
+    }
+    if rows.len() < 8 {
+        return Vec::new();
+    }
+    let span = |row: &[usize]| {
+        let y0 = row.iter().map(|&i| p.lines[i].y0).fold(f32::MAX, f32::min);
+        let y1 = row.iter().map(|&i| p.lines[i].y1).fold(f32::MIN, f32::max);
+        (y0, y1)
+    };
+    let text = |row: &[usize]| {
+        row.iter()
+            .map(|&i| p.lines[i].text.trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let note = |t: &str| {
+        let t = t.trim_start();
+        t.starts_with(['*', '†', '‡', '§'])
+            || t.split_once(' ').is_some_and(|(n, rest)| {
+                n.len() <= 2
+                    && n.chars().all(|c| c.is_ascii_digit())
+                    && rest.chars().next().is_some_and(char::is_alphabetic)
+            })
+    };
+    // Text that is the page's own: a list item, a caption, or a line of
+    // prose cut by the page edge (wide, ending in a lowercase word).
+    let width = p.bx.2 - p.bx.0;
+    let content = |row: &[usize], t: &str| {
+        let t = t.trim_start();
+        let listed = t.starts_with(['•', '◦', '▪', '–', '—', '-', '·'])
+            || t.split_once(' ').is_some_and(|(n, _)| {
+                n.len() <= 4
+                    && n.ends_with(['.', ')'])
+                    && n[..n.len() - 1].chars().all(|c| c.is_ascii_alphanumeric())
+            });
+        let caption = ["Fig", "FIG", "Table", "TABLE", "Figure", "FIGURE"]
+            .iter()
+            .any(|c| t.starts_with(c));
+        let x0 = row.iter().map(|&i| p.lines[i].x0).fold(f32::MAX, f32::min);
+        let x1 = row.iter().map(|&i| p.lines[i].x1).fold(f32::MIN, f32::max);
+        let prose = x1 - x0 > 0.5 * width
+            && t.split_whitespace().count() > 8
+            && t.chars().last().is_some_and(char::is_lowercase);
+        listed || caption || prose
+    };
+    let qualifies = |row: &[usize], inward: &[usize], top: bool, outermost: bool| {
+        let (y0, y1) = span(row);
+        let (i0, i1) = span(inward);
+        let in_band = if top {
+            y0 >= p.bx.3 - 0.08 * h
+        } else {
+            y1 <= p.bx.1 + 0.13 * h
+        };
+        let gap = if top { y0 - i1 } else { i0 - y1 };
+        let t = text(row);
+        in_band
+            && y1 - y0 <= 0.035 * h
+            && gap >= if outermost { 1.0 } else { 1.5 } * (y1 - y0)
+            && !content(row, &t)
+            && t.chars().count() <= 150
+            && row.iter().all(|&i| p.lines[i].size <= body * 1.15)
+            && (top || !note(&t))
+    };
+    let mut out = Vec::new();
+    // At most two rows per edge, the outer one first.
+    for k in 0..2 {
+        if qualifies(&rows[k], &rows[k + 1], true, k == 0) {
+            out.extend(rows[k].iter().copied());
+        } else {
+            break;
+        }
+    }
+    let n = rows.len();
+    for k in 0..2 {
+        if qualifies(&rows[n - 1 - k], &rows[n - 2 - k], false, k == 0) {
+            out.extend(rows[n - 1 - k].iter().copied());
+        } else {
+            break;
+        }
+    }
+    out
+}
+
 fn is_roman(tok: &str) -> bool {
     let t = tok.to_ascii_lowercase();
     !t.is_empty()
@@ -932,6 +1038,16 @@ pub(crate) fn detect_furniture(pages: &[Option<PageGeom>]) -> Furniture {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // ---- Marginal lines: a short, small line standing apart at the very
+    // top or bottom of a page, where only furniture is set -----------------
+    for (pi, p) in pages.iter().enumerate() {
+        if let Some(p) = p {
+            for li in marginal_lines(p, body) {
+                out[pi].push(line_rect(&p.lines[li]));
             }
         }
     }
@@ -1401,6 +1517,51 @@ mod tests {
             glued: vec![],
             table_boxes: vec![],
         })
+    }
+
+    /// A page of body lines at 10 pt every 14 pt from y = 700 down to 100.
+    fn body_page(extra: Vec<GLine>) -> PageGeom {
+        let mut lines: Vec<GLine> = (0..43)
+            .map(|k| {
+                line(
+                    "body text of the page set in lines",
+                    700.0 - 14.0 * k as f32,
+                    10.0,
+                )
+            })
+            .collect();
+        lines.extend(extra);
+        page(lines).expect("page")
+    }
+
+    #[test]
+    fn a_short_line_apart_at_the_top_or_bottom_edge_is_marginal() {
+        let p = body_page(vec![
+            line("Journal of Things 12 (2020) 3-9", 760.0, 8.0),
+            line("33", 40.0, 8.0),
+        ]);
+        let texts: Vec<&str> = marginal_lines(&p, 10.0)
+            .into_iter()
+            .map(|i| p.lines[i].text.as_str())
+            .collect();
+        assert_eq!(texts, ["Journal of Things 12 (2020) 3-9", "33"]);
+    }
+
+    #[test]
+    fn marginal_lines_spare_headings_lists_captions_and_notes() {
+        let p = body_page(vec![
+            line("A HEADING SET LARGE", 750.0, 14.0),
+            line("• the last item of a list", 40.0, 10.0),
+        ]);
+        assert!(marginal_lines(&p, 10.0).is_empty());
+        let p = body_page(vec![line(
+            "1 See the appendix for the derivation.",
+            40.0,
+            8.0,
+        )]);
+        assert!(marginal_lines(&p, 10.0).is_empty());
+        let p = body_page(vec![line("Figure 3. Results.", 40.0, 8.0)]);
+        assert!(marginal_lines(&p, 10.0).is_empty());
     }
 
     #[test]
