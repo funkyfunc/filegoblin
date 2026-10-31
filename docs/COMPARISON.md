@@ -227,3 +227,24 @@ Where filegoblin leads:
   for services), marker's weights (OpenRAIL-M with a revenue cap) and
   pymupdf4llm (AGPL) all carry conditions, and MinerU and marker rely on a
   GPU or Metal for their speed.
+
+## After this pass
+
+The next ADR entry (2026-10-30) fixed what it could of the above: smart mode
+inside a 4 GB worker, booktabs tables on the fast path, running heads that do
+not recur. Same machine, same limits, same harness:
+
+| | before | after | best other tool |
+|---|---:|---:|---|
+| olmOCR-bench dev, smart | 76.03 | **77.21** | MinerU 77.93 |
+| olmOCR-bench dev, off | 37.13 | **39.61** | pymupdf4llm 40.52 (CPU) |
+| olmOCR-bench test (1,223 PDFs), smart | 73.70 | **74.29** | not measured |
+| olmOCR-bench test, off | 39.28 | **40.08** | not measured |
+| gauntlet, graded PDF cases, smart | 58.6 (6 failed) | **89.0** (0 failed) | docling 84.7 |
+| gauntlet, graded PDF cases, off | 74.4 | **76.4** | pymupdf4llm 74.9 |
+| gauntlet, all graded cases, smart | 74.1 | **91.4** | |
+| gauntlet, all graded cases, off | 83.1 | **84.3** | |
+
+MinerU still leads olmOCR-bench's dev split by 0.7, all of it from scanned
+pages (old scans and old scans with math); filegoblin leads every other
+category but headers/footers and multi-column, where the gap is 2 or 3 tests.
