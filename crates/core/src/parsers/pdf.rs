@@ -2266,17 +2266,13 @@ fn recover_page_vector_tables(
     let Some(geom) = geom else {
         return page_md;
     };
-    if paths.is_empty() || geom.words.is_empty() {
+    if geom.words.is_empty() {
         return page_md;
     }
 
     // pdfplumber works top-down from the page's top edge.
     let page_top = geom.bx.3;
     let edges = ruling_edges(&paths, page_top);
-
-    if edges.is_empty() {
-        return page_md;
-    }
 
     let pdf_words: Vec<crate::parsers::pdf_table::PdfWord> = geom
         .words
@@ -2307,11 +2303,24 @@ fn recover_page_vector_tables(
         .filter(|p| !(p.stroke_color.is_none() && p.fill_color.as_ref().is_some_and(white)))
         .cloned()
         .collect();
-    let booktabs = crate::parsers::pdf_table::rule_bounded_tables(
+    let mut booktabs = crate::parsers::pdf_table::rule_bounded_tables(
         &ruling_edges(&seen, page_top),
         &pdf_words,
         word_gap,
     );
+    // Tables with no rules at all go with them, where no ruled one is.
+    for t in crate::parsers::pdf_table::unruled_tables(&pdf_words, word_gap) {
+        let b = &t.bbox;
+        if !booktabs.iter().any(|o| {
+            let p = &o.bbox;
+            b.x0 < p.x1 && b.x1 > p.x0 && b.top < p.bottom && b.bottom > p.top
+        }) {
+            booktabs.push(t);
+        }
+    }
+    if booktabs.is_empty() && edges.is_empty() {
+        return page_md;
+    }
     let settings = crate::parsers::pdf_table::TableSettings::default();
     let grids = crate::parsers::pdf_table::extract_tables_from_edges_and_words(
         &edges, &pdf_words, &settings,

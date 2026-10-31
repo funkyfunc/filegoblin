@@ -1242,6 +1242,97 @@ pub fn rule_bounded_tables(
     tables
 }
 
+/// Tables with no rules at all, found by their numbers. The idea is MinerU's
+/// (its unruled numeric-column detector, in docvortex): three or more consecutive lines
+/// that break into three or more cells at wide gaps, most of them numbers,
+/// set at a steady pitch, are a table's body, and the short lines just above
+/// them are its header. The table then gets the rules it does not draw (above
+/// the header, under it, below the body) and is read as a booktabs table, so
+/// every check made there (a real gutter, lines explained by their columns,
+/// no leader dots or contents lists, no prose) holds here too.
+pub fn unruled_tables(words: &[PdfWord], word_gap: f32) -> Vec<ExtractedTable> {
+    let em = {
+        let mut h: Vec<f32> = words
+            .iter()
+            .map(|w| w.bottom - w.top)
+            .filter(|h| *h > 0.0)
+            .collect();
+        h.sort_by(f32::total_cmp);
+        h.get(h.len() / 2).copied().unwrap_or(10.0)
+    };
+    let min_gutter = (2.0 * word_gap).max(0.5 * em);
+    let lines = text_lines(words.iter().collect());
+    let segments = |l: &[&PdfWord]| -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (k, w) in l.iter().enumerate() {
+            if k == 0 || w.x0 - l[k - 1].x1 >= min_gutter {
+                out.push(w.text.clone());
+            } else if let Some(s) = out.last_mut() {
+                s.push(' ');
+                s.push_str(&w.text);
+            }
+        }
+        out
+    };
+    let numeric = |s: &str| {
+        let digits = s.chars().filter(char::is_ascii_digit).count();
+        let letters = s.chars().filter(|c| c.is_alphabetic()).count();
+        digits > 0
+            && letters <= 1
+            && s.chars().all(|c| {
+                c.is_alphanumeric() || c.is_whitespace() || ".,%±()+-−–—$€£*/:<>=[]".contains(c)
+            })
+    };
+    let data = |l: &[&PdfWord]| {
+        let segs = segments(l);
+        let nums = segs.iter().skip(1).filter(|s| numeric(s)).count();
+        (3..=12).contains(&segs.len()) && nums >= 2 && nums * 3 >= (segs.len() - 1) * 2
+    };
+    let top = |l: &[&PdfWord]| l.iter().map(|w| w.top).fold(f32::MAX, f32::min);
+    let bottom = |l: &[&PdfWord]| l.iter().map(|w| w.bottom).fold(f32::MIN, f32::max);
+    let mut tables = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !data(&lines[i]) {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j + 1 < lines.len()
+            && data(&lines[j + 1])
+            && top(&lines[j + 1]) - top(&lines[j]) <= 2.5 * em
+        {
+            j += 1;
+        }
+        if j - i + 1 >= 3 {
+            // Header: up to three short lines right above the body.
+            let mut h = i;
+            while h > 0
+                && i - h < 3
+                && top(&lines[h]) - bottom(&lines[h - 1]) <= 1.5 * em
+                && !data(&lines[h - 1])
+                && segments(&lines[h - 1])
+                    .iter()
+                    .all(|s| s.split_whitespace().count() <= 8)
+            {
+                h -= 1;
+            }
+            let rows = &lines[h..=j];
+            let x0 = rows.iter().flatten().map(|w| w.x0).fold(f32::MAX, f32::min) - 1.0;
+            let x1 = rows.iter().flatten().map(|w| w.x1).fold(f32::MIN, f32::max) + 1.0;
+            let mut ys = vec![top(&lines[h]) - 1.0];
+            if h < i {
+                ys.push(0.5 * (bottom(&lines[i - 1]) + top(&lines[i])));
+            }
+            ys.push(bottom(&lines[j]) + 1.0);
+            let rules: Vec<Edge> = ys.iter().map(|&y| Edge::horizontal(x0, x1, y)).collect();
+            tables.extend(rule_bounded_tables(&rules, words, word_gap));
+        }
+        i = j + 1;
+    }
+    tables
+}
+
 /// The text between two rules of a stack: (top rule, bottom rule, lines).
 type Band<'a> = (f32, f32, Vec<Vec<&'a PdfWord>>);
 
@@ -1458,6 +1549,64 @@ fn band_table(bands: &[Band], x0: f32, x1: f32, word_gap: f32, em: f32) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_table_of_numbers_with_no_rules_is_found_with_its_header() {
+        // Top-down coordinates; 10 pt text.
+        let mut words = vec![
+            PdfWord::new(
+                "A paragraph of prose above the table runs across.",
+                50.0,
+                80.0,
+                400.0,
+                90.0,
+            ),
+            PdfWord::new("N", 50.0, 110.0, 60.0, 120.0),
+            PdfWord::new("H1", 120.0, 110.0, 135.0, 120.0),
+            PdfWord::new("L2", 190.0, 110.0, 205.0, 120.0),
+            PdfWord::new("Linf", 260.0, 110.0, 285.0, 120.0),
+        ];
+        for (k, row) in [
+            ["50", "2.80", "3.53", "3.27"],
+            ["100", "2.76", "3.50", "3.26"],
+            ["200", "2.75", "3.50", "3.25"],
+        ]
+        .iter()
+        .enumerate()
+        {
+            let top = 125.0 + 14.0 * k as f32;
+            for (c, text) in row.iter().enumerate() {
+                let x = 50.0 + 70.0 * c as f32;
+                words.push(PdfWord::new(*text, x, top, x + 22.0, top + 10.0));
+            }
+        }
+        let tables = unruled_tables(&words, 3.0);
+        assert_eq!(tables.len(), 1);
+        let rows: Vec<Vec<&str>> = tables[0]
+            .rows
+            .iter()
+            .map(|r| r.iter().map(|c| c.text.trim()).collect())
+            .collect();
+        assert_eq!(rows[0], ["N", "H1", "L2", "Linf"]);
+        assert_eq!(rows[3], ["200", "2.75", "3.50", "3.25"]);
+    }
+
+    #[test]
+    fn a_list_of_dates_is_not_an_unruled_table() {
+        let mut words = Vec::new();
+        for k in 0..4 {
+            let top = 100.0 + 14.0 * k as f32;
+            words.push(PdfWord::new(
+                "Final date for receipt of applications",
+                50.0,
+                top,
+                260.0,
+                top + 10.0,
+            ));
+            words.push(PdfWord::new("9 January", 300.0, top, 350.0, top + 10.0));
+        }
+        assert!(unruled_tables(&words, 3.0).is_empty());
+    }
 
     #[test]
     fn test_merge_and_snap_edges() {
