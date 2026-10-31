@@ -38,6 +38,7 @@ import re
 import sys
 import unicodedata
 from collections import Counter, defaultdict
+from html.parser import HTMLParser
 
 WEIGHTS = {"text": 0.40, "order": 0.15, "tables": 0.25, "headings": 0.10, "math": 0.10}
 
@@ -67,11 +68,75 @@ def _mermaid_labels(m: re.Match) -> str:
     return "\n\n".join(l.strip() for l in labels if l.strip())
 
 
+class _HtmlTable(HTMLParser):
+    """An HTML table's cells as rows of text, a spanning cell repeated over
+    the columns and rows it covers (which the scorer reads as written once)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self.spans: dict[int, list] = {}  # column -> [text, rows still covered]
+        self.cell: list[str] | None = None
+        self.attrs: dict = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.rows.append([])
+        elif tag in ("td", "th"):
+            self.cell, self.attrs = [], dict(attrs)
+        elif tag == "br" and self.cell is not None:
+            self.cell.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self.cell is not None and self.rows:
+            row = self.rows[-1]
+            self._fill_spans(row)
+            text = " ".join("".join(self.cell).split())
+            cols, rows = (max(1, int(self.attrs.get(k) or 1)) for k in ("colspan", "rowspan"))
+            for _ in range(cols):
+                if rows > 1:
+                    self.spans[len(row)] = [text, rows - 1]
+                row.append(text)
+            self.cell = None
+        elif tag == "tr" and self.rows:
+            self._fill_spans(self.rows[-1])
+
+    def _fill_spans(self, row):
+        while len(row) in self.spans:
+            span = self.spans[len(row)]
+            row.append(span[0])
+            span[1] -= 1
+            if span[1] == 0:
+                del self.spans[len(row) - 1]
+
+    def handle_data(self, data):
+        if self.cell is not None:
+            self.cell.append(data)
+
+
+def _html_table(m: re.Match) -> str:
+    parser = _HtmlTable()
+    parser.feed(m.group(0))
+    rows = [r for r in parser.rows if any(r)]
+    if not rows:
+        return " "
+    width = max(map(len, rows))
+    lines = ["| " + " | ".join(r + [""] * (width - len(r))) + " |" for r in rows]
+    lines.insert(1, "|" + "---|" * width)
+    return "\n\n" + "\n".join(lines) + "\n\n"
+
+
 def clean(text: str) -> str:
     """Output or gold → comparable text: no comments, no file banners,
-    Mermaid diagrams reduced to their labels."""
+    Mermaid diagrams reduced to their labels, HTML tables (another tool's
+    convention, which olmOCR-bench also reads) as pipe tables, inline HTML
+    tags dropped."""
     text = re.sub(r"```mermaid\n(.*?)```", _mermaid_labels, text, flags=re.S)
     text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    text = re.sub(r"<table\b.*?</table>", _html_table, text, flags=re.S | re.I)
+    text = re.sub(r"<br\s*/?>", " ", text, flags=re.I)
+    text = re.sub(r"</?(?:span|sup|sub|b|i|u|em|strong|p|div|a)"
+                  r"""(?:\s+[\w-]+(?:=(?:"[^"<>]*"|'[^'<>]*'|[\w-]+))?)*\s*/?>""", "", text, flags=re.I)
     text = re.sub(r"(?m)^// --- FILE_(START|END).*$", " ", text)
     text = unicodedata.normalize("NFKC", text).replace("\u00ad", "")
     text = text.translate(_DASHES).translate(_QUOTES)

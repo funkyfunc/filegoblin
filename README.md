@@ -107,7 +107,8 @@ did case by case. Results are in `GAUNTLET_SCORECARD.md`.
 │       └── src/main.rs       (CLI Entry & Mascot)
 │           └── walk.rs       (--walk interactive picker)
 ├── scripts/          (Dev tooling: run_gauntlet.py = graded gauntlet, olmocr_bench.py = olmOCR-bench
-│                      on a fixed dev/test split, model packaging and release helpers)
+│                      on a fixed dev/test split, engines.py = other tools graded the same way
+│                      (--engine; docs/COMPARISON.md), model packaging and release helpers)
 ├── npm/              (npx filegoblin Zero-Install Launcher)
 │   ├── package.json
 │   └── bin/filegoblin.js

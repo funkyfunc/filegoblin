@@ -18,6 +18,8 @@ Usage (run the scorer with the venv's python):
     scripts/olmocr_bench.py run NAME [--split dev|test|all] [--jobs 6] [-- extra filegoblin args]
     scripts/olmocr_bench.py score NAME [--split ...] [--save results.json]
     scripts/olmocr_bench.py compare A B [--split ...]     # per-category deltas and tests gained/lost
+    scripts/olmocr_bench.py run NAME --engine docling     # another tool (scripts/engines.py)
+    scripts/olmocr_bench.py table A B C [--split ...]     # markdown table: categories × runs, plus time
 
 Outputs go to $OLMOCR_BENCH/NAME/<category>/<stem>_pg1_repeat1.md, the layout
 the official scorer reads. The overall score is the mean of the per-category
@@ -40,6 +42,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import engines  # noqa: E402
 CATEGORIES = ["arxiv_math", "headers_footers", "long_tiny_text", "multi_column",
               "old_scans", "old_scans_math", "table_tests", "baseline"]
 
@@ -85,6 +89,9 @@ def run(args):
     out_root = os.path.join(bench, args.name)
     cmd = [binary(), "-q"] + (args.extra or ["--vision", "smart"])
     t0 = time.time()
+    external = engines.convert_all(args.engine, args.jobs, timeout=args.timeout) if args.engine else None
+    timings_path = os.path.join(out_root, "timings.json")
+    timings = json.load(open(timings_path)) if os.path.exists(timings_path) else {}
 
     def one(rel):
         out = os.path.join(out_root, os.path.splitext(rel)[0] + "_pg1_repeat1.md")
@@ -92,14 +99,24 @@ def run(args):
             return rel, 0.0, None
         os.makedirs(os.path.dirname(out), exist_ok=True)
         start = time.time()
+        if external:
+            reply = external[0](os.path.join(bench, "pdfs", rel), out)
+            if not reply["ok"] or not os.path.exists(out):
+                open(out, "w").close()
+            timings[rel] = {"elapsed": reply["elapsed"], "load": reply["load"]}
+            return rel, reply["elapsed"], None if reply["ok"] else reply["error"]
         try:
-            r = subprocess.run(cmd + [os.path.join(bench, "pdfs", rel)], capture_output=True, text=True, timeout=900)
+            r = subprocess.run(cmd + [os.path.join(bench, "pdfs", rel)], capture_output=True, text=True,
+                               timeout=args.timeout, env=engines.filegoblin_env())
             text, err = r.stdout, (None if r.returncode == 0 else f"exit {r.returncode}: {r.stderr.strip()[-200:]}")
+            if engines.over_ceiling(r.returncode, r.stderr):
+                err = "MEMORY CEILING " + err
         except subprocess.TimeoutExpired:
             text, err = "", "timeout"
         text = re.sub(r"^// --- FILE_START:.*---\n", "", text)
         with open(out, "w", encoding="utf-8") as fh:
             fh.write(text)
+        timings[rel] = {"elapsed": time.time() - start, "load": 0.0}
         return rel, time.time() - start, err
 
     errors = []
@@ -109,9 +126,16 @@ def run(args):
                 errors.append((rel, err))
             if i % 100 == 0:
                 print(f"{i}/{len(pdfs)} {time.time() - t0:.0f}s", flush=True)
+    if external:
+        external[1]()
+    with open(timings_path, "w") as fh:
+        json.dump(timings, fh)
     print(f"converted {len(pdfs)} PDFs in {time.time() - t0:.0f}s; {len(errors)} non-zero exits")
     for rel, err in errors[:20]:
         print("  ", rel, err)
+    for rel, err in errors:
+        if err.startswith("MEMORY CEILING") or err.startswith("memory limit"):
+            print("FINDING:", " ".join(cmd), rel, err)
     return 0
 
 
@@ -185,6 +209,30 @@ def compare(a, b, which):
     return 0
 
 
+def table(names, which):
+    """Per-category pass rates of several runs as a markdown table, with the
+    median seconds per PDF where the run recorded it (timings.json)."""
+    bench = bench_dir()
+    keep = set(split(all_pdfs(bench), which))
+    scored = [(n, *score(n, which, quiet=True)[:2]) for n in names]
+    print("| category | " + " | ".join(n for n, _, _ in scored) + " |")
+    print("|---|" + "---:|" * len(scored))
+    for c in CATEGORIES:
+        print(f"| {c} | " + " | ".join(f"{r[c]:.1f}" if c in r else "" for _, r, _ in scored) + " |")
+    print("| **overall** | " + " | ".join(f"**{o:.2f}**" for _, _, o in scored) + " |")
+    cells = []
+    for n in names:
+        path = os.path.join(bench, n, "timings.json")
+        t = json.load(open(path)) if os.path.exists(path) else {}
+        secs = sorted(v["elapsed"] for k, v in t.items() if k in keep)
+        legacy = os.path.join(bench, f"{n}.times.json")  # older runs: {"times": {pdf: seconds}}
+        if not secs and os.path.exists(legacy):
+            secs = sorted(v for k, v in json.load(open(legacy))["times"].items() if k in keep)
+        cells.append(f"{secs[len(secs) // 2]:.2f}" if secs else "")
+    print("| median s / PDF | " + " | ".join(cells) + " |")
+    return 0
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -193,7 +241,8 @@ if __name__ == "__main__":
     r.add_argument("--split", default="all", choices=["dev", "test", "all"])
     r.add_argument("--jobs", type=int, default=6)
     r.add_argument("--force", action="store_true", help="convert again even when an output exists")
-    r.add_argument("extra", nargs="*", help="filegoblin arguments after --, default --vision smart")
+    r.add_argument("--engine", choices=sorted(engines.ENGINES), help="convert with another tool (scripts/engines.py)")
+    r.add_argument("--timeout", type=int, default=900, help="seconds per PDF (default 900)")
     s = sub.add_parser("score")
     s.add_argument("name")
     s.add_argument("--split", default="all", choices=["dev", "test", "all"])
@@ -202,10 +251,20 @@ if __name__ == "__main__":
     c.add_argument("a")
     c.add_argument("b")
     c.add_argument("--split", default="all", choices=["dev", "test", "all"])
-    a = ap.parse_args()
+    t = sub.add_parser("table")
+    t.add_argument("names", nargs="+")
+    t.add_argument("--split", default="all", choices=["dev", "test", "all"])
+    # Everything after "--" goes to filegoblin (argparse would not give a
+    # trailing positional list what follows "--" once NAME has matched).
+    argv = sys.argv[1:]
+    extra = argv[argv.index("--") + 1:] if "--" in argv else []
+    a = ap.parse_args(argv[:argv.index("--")] if "--" in argv else argv)
     if a.cmd == "run":
+        a.extra = extra
         sys.exit(run(a))
     if a.cmd == "score":
         score(a.name, a.split, a.save)
         sys.exit(0)
+    if a.cmd == "table":
+        sys.exit(table(a.names, a.split))
     sys.exit(compare(a.a, a.b, a.split))

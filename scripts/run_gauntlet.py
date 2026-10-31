@@ -15,10 +15,19 @@ filegoblin, scored two ways.
     python3 scripts/run_gauntlet.py --jobs 4           # faster; latencies then overlap
     python3 scripts/run_gauntlet.py --regrade target/gauntlet/smart   # rescore saved outputs
     python3 scripts/run_gauntlet.py --compare target/gauntlet/off target/gauntlet/smart
+    python3 scripts/run_gauntlet.py --engine docling   # another tool, graded the same way
+    python3 scripts/run_gauntlet.py --table target/gauntlet/smart target/gauntlet/docling
 
-Outputs and results.json go to target/gauntlet/<mode>/. GAUNTLET_SCORECARD.md
-is rewritten by any run or regrade that covers every case (--no-scorecard to
-skip); the hand-written block between its <!-- notes --> markers is kept.
+Outputs and results.json go to target/gauntlet/<mode>/ (or <engine>/).
+GAUNTLET_SCORECARD.md is rewritten by any filegoblin run or regrade that
+covers every case (--no-scorecard to skip); the hand-written block between its
+<!-- notes --> markers is kept.
+
+--engine runs one of the tools in scripts/engines.py (pymupdf4llm,
+markitdown, docling, marker, mineru) from its own virtual environment. Cases
+in formats the tool does not read are skipped and listed; canaries are
+filegoblin's own expectations and are reported, but quality is the measure
+to compare.
 """
 import argparse
 import concurrent.futures
@@ -32,6 +41,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gauntlet_grade import grade_case, weakest  # noqa: E402
 import gauntlet_formats  # noqa: E402
+import engines  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GAUNTLET_DIR = os.path.join(ROOT, "test_assets", "gauntlet")
@@ -89,7 +99,7 @@ def run(args):
     if args.only:
         wanted = set(args.only.split(","))
         manifest = [m for m in manifest if m["id"] in wanted]
-    mode = args.vision or "default"
+    mode = args.engine or args.vision or "default"
     if args.regrade and not args.vision:
         # The mode the saved outputs were made with.
         try:
@@ -100,9 +110,17 @@ def run(args):
     out_dir = args.regrade or args.out or os.path.join(ROOT, "target", "gauntlet", mode)
     os.makedirs(out_dir, exist_ok=True)
     binary = binary_path()
+    external = None
+    if args.engine and not args.regrade:
+        skipped = [m["id"] for m in manifest if not engines.supports(args.engine, m["file"])]
+        manifest = [m for m in manifest if engines.supports(args.engine, m["file"])]
+        if skipped:
+            print(f"{args.engine} does not read: {', '.join(skipped)}")
+        external, close_external = engines.convert_all(args.engine, args.jobs, timeout=args.timeout)
 
     print("=" * 78)
-    print(f"  FILEGOBLIN ADVERSARIAL GAUNTLET  ·  --vision {mode}  ·  {len(manifest)} cases")
+    label = f"engine {args.engine}" if args.engine else f"--vision {mode}"
+    print(f"  FILEGOBLIN ADVERSARIAL GAUNTLET  ·  {label}  ·  {len(manifest)} cases")
     print("=" * 78)
     print(f"{'':6} {'ID':<11} {'quality':>7}  {'time':>8}  {'weakest component / first failure'}")
 
@@ -117,11 +135,26 @@ def run(args):
             meta_path = out_path + ".meta.json"
             meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
             return stdout, meta.get("stderr", ""), meta.get("exit", 0), meta.get("elapsed", 0.0), None
+        if external:
+            reply = external(os.path.join(GAUNTLET_DIR, item["file"]), out_path)
+            if not reply["ok"] or not os.path.exists(out_path):
+                with open(out_path, "w", encoding="utf-8") as fh:
+                    fh.write("")
+            with open(out_path + ".meta.json", "w") as fh:
+                json.dump({"exit": 0 if reply["ok"] else 1, "stderr": reply["error"],
+                           "elapsed": reply["elapsed"], "load": reply["load"]}, fh)
+            stdout = open(out_path, encoding="utf-8").read()
+            return stdout, reply["error"], 0 if reply["ok"] else 1, reply["elapsed"], None
         cmd = [binary, os.path.join(GAUNTLET_DIR, item["file"]), "-q"]
         if args.vision:
             cmd += ["--vision", args.vision]
         start = time.time()
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, env=engines.filegoblin_env(),
+                                 timeout=args.timeout)
+        except subprocess.TimeoutExpired as e:
+            res = subprocess.CompletedProcess(cmd, 124, e.stdout or "", f"timeout after {args.timeout}s")
+            res.stdout = res.stdout.decode() if isinstance(res.stdout, bytes) else res.stdout
         elapsed = time.time() - start
         with open(out_path, "w", encoding="utf-8") as fh:
             fh.write(res.stdout)
@@ -135,13 +168,19 @@ def run(args):
     pool = concurrent.futures.ThreadPoolExecutor(max(1, args.jobs))
     converted = pool.map(convert, manifest)  # in order, as each case finishes
 
-    results = []
+    results, findings = [], []
+
+    def cmd_for(item):
+        return [binary, os.path.join(GAUNTLET_DIR, item["file"]), "-q"] + (["--vision", args.vision] if args.vision else [])
+
     for item, done in zip(manifest, converted):
         if done is None:
             continue
         case_id = item["id"]
         stdout, stderr, exit_code, elapsed, fmt = done
         errors = canary_errors(item, stdout, exit_code, stderr)
+        if not external and engines.over_ceiling(exit_code, stderr):
+            findings.append(f"{case_id}: {' '.join(cmd_for(item))} -> exit {exit_code}: {stderr.strip()[-200:]}")
         grade = grade_case(stdout, os.path.join(GOLD_DIR, case_id))
         quality = None if grade is None else grade["score"]
         passed = not errors
@@ -164,6 +203,8 @@ def run(args):
         })
 
     pool.shutdown()
+    if external:
+        close_external()
     passed, quality, n_graded = summarize(results)
     fmts = [r["formats"] for r in results if r.get("formats")]
     print("=" * 78)
@@ -173,12 +214,14 @@ def run(args):
     print(f"CANARIES: {passed}/{len(results)} ({100 * passed / max(1, len(results)):.1f}%)   "
           f"QUALITY: {fmt_q(quality).strip()} (mean of {n_graded} graded cases)")
     print("=" * 78)
+    for f in findings:
+        print("MEMORY CEILING:", f)
 
     with open(os.path.join(out_dir, "results.json"), "w") as fh:
         json.dump({"mode": mode, "cases": results}, fh, indent=1)
 
     full_run = not args.only and len(results) == len(json.load(open(MANIFEST_PATH)))
-    if full_run and not args.no_scorecard:
+    if full_run and not args.no_scorecard and not args.engine and mode not in engines.ENGINES:
         write_scorecard(results, mode)
     return 0 if passed == len(results) else 1
 
@@ -189,10 +232,11 @@ def check_formats(binary, item, markdown, size, out_dir):
     and the markdown it is compared with must come from the same engine)."""
     src = os.path.join(GAUNTLET_DIR, item["file"])
     base = [binary, src, "-q", "--vision", "off"]
-    md = subprocess.run(base, capture_output=True, text=True).stdout
-    plain = subprocess.run(base + ["--format", "plain"], capture_output=True, text=True).stdout
+    env = engines.filegoblin_env()
+    md = subprocess.run(base, capture_output=True, text=True, env=env).stdout
+    plain = subprocess.run(base + ["--format", "plain"], capture_output=True, text=True, env=env).stdout
     chunks = subprocess.run(base + ["--chunk-size", str(size), "--format", "json"],
-                            capture_output=True, text=True).stdout
+                            capture_output=True, text=True, env=env).stdout
     with open(os.path.join(out_dir, f"{item['id']}.chunks.json"), "w", encoding="utf-8") as fh:
         fh.write(chunks)
     p = gauntlet_formats.check_plain(md, plain)
@@ -262,9 +306,56 @@ def compare(a_dir, b_dir):
     return 0
 
 
+def table(dirs):
+    """A markdown table of quality per case, one column per saved run. A
+    conversion that failed (non-zero exit: an error, a timeout, a memory
+    limit) shows as "fail" and counts as 0, since it gave the reader nothing
+    (an empty output would otherwise pass a checks-only case); "n/a" is a
+    format the tool does not read. Means are over the graded PDF cases, which
+    every tool reads, and over the graded cases each tool reads."""
+    runs = []
+    for d in dirs:
+        data = json.load(open(os.path.join(d, "results.json")))
+        runs.append((data.get("mode") or os.path.basename(d.rstrip("/")),
+                     {r["id"]: r for r in data["cases"]}))
+    with open(MANIFEST_PATH) as f:
+        manifest = json.load(f)
+
+    def failed(r):
+        return bool(r["errors"]) and r["errors"][0].startswith("Non-zero")
+
+    def value(r):
+        return 0.0 if failed(r) else r["quality"]
+
+    print("| case | kind | " + " | ".join(name for name, _ in runs) + " |")
+    print("|---|---|" + "---:|" * len(runs))
+    for m in manifest:
+        cells = []
+        for _, cases in runs:
+            r = cases.get(m["id"])
+            cells.append("n/a" if r is None else "fail" if failed(r) else
+                         "—" if r["quality"] is None else f"{r['quality']:.1f}")
+        print(f"| {m['id']} | {m['category']} | " + " | ".join(cells) + " |")
+    graded = {m["id"] for m in manifest if os.path.isdir(os.path.join(GOLD_DIR, m["id"]))}
+    for label, pick in (("mean, graded PDF cases", lambda m: m["file"].endswith(".pdf")),
+                        ("mean, graded cases it reads", lambda m: True)):
+        cells = []
+        for _, cases in runs:
+            vals = [value(cases[m["id"]]) for m in manifest
+                    if pick(m) and m["id"] in cases and m["id"] in graded]
+            cells.append(f"**{sum(vals) / max(1, len(vals)):.1f}** ({len(vals)})")
+        print(f"| **{label}** | | " + " | ".join(cells) + " |")
+    print("| failed conversions | | " + " | ".join(
+        str(sum(failed(r) for r in cases.values())) for _, cases in runs) + " |")
+    return 0
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--vision", choices=["off", "smart", "all"], help="passed to filegoblin")
+    ap.add_argument("--engine", choices=sorted(engines.ENGINES), help="grade another tool instead (scripts/engines.py)")
+    ap.add_argument("--timeout", type=int, default=3600, help="seconds per case (default 3600)")
+    ap.add_argument("--table", nargs="+", metavar="DIR", help="markdown table of quality per case across saved runs")
     ap.add_argument("--only", help="comma-separated case IDs")
     ap.add_argument("--out", help="where outputs and results.json go")
     ap.add_argument("--regrade", metavar="DIR", help="rescore outputs saved in DIR instead of running")
@@ -275,4 +366,6 @@ if __name__ == "__main__":
     ap.add_argument("--jobs", type=int, default=1,
                     help="cases converted at once (default 1, which keeps latencies comparable)")
     a = ap.parse_args()
+    if a.table:
+        sys.exit(table(a.table))
     sys.exit(compare(*a.compare) if a.compare else run(a))
