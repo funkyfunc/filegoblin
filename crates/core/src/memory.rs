@@ -52,12 +52,29 @@ pub fn guard() -> Result<()> {
     Ok(())
 }
 
-/// Half the machine's memory (8 GiB where that cannot be told): the default
-/// for the CLI and for each PDF worker. Above what real PDFs take (with the
-/// vision models, the PDFs in `test_assets` peak at 1.7 GB in the median and
-/// 6.4 GB at most), while a bomb is stopped with half the memory still free.
+/// What one run may hold in all, the CLI and every PDF worker it starts
+/// together: the machine's memory (16 GiB where that cannot be told).
+///
+/// Each process used to default to half of RAM on its own, so the CLI and its
+/// two workers could hold 1.5 times the machine between them before any limit
+/// fired. The defaults are now shares of this one budget.
+pub(crate) fn run_budget_mb() -> u64 {
+    physical_memory().map_or(16 * 1024, |bytes| bytes >> 20)
+}
+
+/// The CLI's default ceiling: half the run's budget, so half the machine's
+/// memory (8 GiB where that cannot be told).
 pub(crate) fn half_of_ram_mb() -> u64 {
-    physical_memory().map_or(8192, |bytes| (bytes >> 20) / 2)
+    run_budget_mb() / 2
+}
+
+/// A PDF worker's default ceiling: the other half of the run's budget, shared
+/// by the `workers` that may run at once. With two workers on a 24 GB machine
+/// that is 6 GB each: above what real PDFs take (with the vision models, the
+/// PDFs in `test_assets` peak at 1.7 GB in the median and 6.4 GB at most),
+/// while a bomb is stopped. `FILEGOBLIN_PDF_MEMORY_MB` still overrides it.
+pub(crate) fn worker_share_mb(workers: usize) -> u64 {
+    (run_budget_mb() - half_of_ram_mb()) / workers.max(1) as u64
 }
 
 pub(crate) fn env_number(name: &str, default: u64) -> Result<u64> {
@@ -165,6 +182,24 @@ mod tests {
             assert!(0 < used && used < installed, "{used} of {installed}");
             assert_eq!(half_of_ram_mb(), (installed >> 20) / 2);
         }
+    }
+
+    /// The CLI's default ceiling plus every worker's must fit in the run's
+    /// budget, whatever the worker count. Each used to be half of RAM on its
+    /// own: 1.5 times the machine with the default two workers.
+    #[test]
+    fn the_cli_and_its_workers_share_one_budget() {
+        let budget = run_budget_mb();
+        for workers in 1..=64usize {
+            let share = worker_share_mb(workers);
+            assert!(share > 0, "{workers} workers");
+            assert!(
+                half_of_ram_mb() + workers as u64 * share <= budget,
+                "{workers} workers: {} + {workers} x {share} MB > {budget} MB",
+                half_of_ram_mb()
+            );
+        }
+        assert_eq!(worker_share_mb(2), (budget - budget / 2) / 2);
     }
 
     #[test]

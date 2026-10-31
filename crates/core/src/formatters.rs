@@ -26,6 +26,25 @@ pub(crate) fn render_block(doc: &GobbleDocument) -> String {
     }
 }
 
+/// Writes exactly what [`render_block`] returns, without first building it:
+/// on the streaming path a large document was held twice (its content and its
+/// rendered copy), so a 1.5 GB text file peaked at 3 GB.
+fn write_block(w: &mut dyn std::io::Write, doc: &GobbleDocument) -> std::io::Result<()> {
+    if doc.path == "_tree.md" {
+        return w.write_all(doc.content.as_bytes());
+    }
+    match doc.relevance_score {
+        Some(score) => writeln!(
+            w,
+            "// --- FILE_START: {} --- (relevance: {:.2})",
+            doc.path, score
+        )?,
+        None => writeln!(w, "// --- FILE_START: {} ---", doc.path)?,
+    }
+    w.write_all(doc.content.as_bytes())?;
+    w.write_all(b"\n\n")
+}
+
 /// The format label for a document in the `--json` contract: the format detected
 /// at extraction time, or a magic/extension re-detection as a fallback.
 fn format_label(doc: &GobbleDocument) -> String {
@@ -105,6 +124,23 @@ fn sanitize_split_path(path: &str) -> String {
     } else {
         format!("{}.md", joined)
     }
+}
+
+/// `name`, or `name` with a counter before `.md` when an earlier document of
+/// this run already took it. Different sources map to one file name more
+/// often than it seems — `notes` and `notes.md` both become `notes.md`, and
+/// `A.txt`/`a.txt` are one file on macOS and Windows — and the second write
+/// used to replace the first without a word. Compared case-insensitively for
+/// exactly that reason.
+fn unique_split_name(name: String, taken: &mut std::collections::HashSet<String>) -> String {
+    if taken.insert(name.to_lowercase()) {
+        return name;
+    }
+    let stem = name.strip_suffix(".md").unwrap_or(&name).to_string();
+    (2..)
+        .map(|n| format!("{stem}.{n}.md"))
+        .find(|candidate| taken.insert(candidate.to_lowercase()))
+        .expect("an unused name exists")
 }
 
 /// The root directory name for `--split`, derived from the display name.
@@ -490,9 +526,10 @@ pub fn format_and_output(
         let mut post_compression_tokens = 0;
         let mut total_chars = 0;
 
+        let mut taken = std::collections::HashSet::new();
         for doc in compressed_docs.iter() {
             // Safe pathing logic for urls and relative filepaths
-            let file_name = sanitize_split_path(&doc.path);
+            let file_name = unique_split_name(sanitize_split_path(&doc.path), &mut taken);
             let file_path = std::path::Path::new(&root_dir).join(file_name);
 
             if let Some(parent) = file_path.parent() {
@@ -841,9 +878,10 @@ pub fn stream_and_output(
         let mut total_chars = 0;
         let mut file_count = 0;
 
+        let mut taken = std::collections::HashSet::new();
         for doc in rx {
             file_count += 1;
-            let file_name = sanitize_split_path(&doc.path);
+            let file_name = unique_split_name(sanitize_split_path(&doc.path), &mut taken);
             let file_path = std::path::Path::new(&root_dir).join(file_name);
 
             if let Some(parent) = file_path.parent() {
@@ -928,7 +966,7 @@ pub fn stream_and_output(
                 current_combined.push_str(&render_block(&doc));
             } else if let Some(writer) = &mut stream_writer {
                 // Streaming immediately
-                write!(writer, "{}", render_block(&doc))?;
+                write_block(writer.as_mut(), &doc)?;
             }
         }
 
@@ -964,5 +1002,26 @@ pub fn stream_and_output(
         }
 
         Ok(produced.get())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The streaming writer must emit byte-for-byte what `render_block` builds.
+    #[test]
+    fn write_block_matches_render_block() {
+        let mut scored = GobbleDocument::new("a/b.md".to_string(), "# Title\n\nbody".to_string());
+        scored.relevance_score = Some(0.4567);
+        for doc in [
+            GobbleDocument::new("a/b.md".to_string(), "# Title\n\nbody".to_string()),
+            GobbleDocument::new("_tree.md".to_string(), "```tree\n.\n```\n\n".to_string()),
+            scored,
+        ] {
+            let mut out = Vec::new();
+            write_block(&mut out, &doc).unwrap();
+            assert_eq!(String::from_utf8(out).unwrap(), render_block(&doc));
+        }
     }
 }

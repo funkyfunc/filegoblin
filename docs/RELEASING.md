@@ -14,21 +14,25 @@ permanent.
 | [PyPI](https://pypi.org/project/filegoblin/) | `filegoblin`, one wheel per platform. The nine model projects aren't on PyPI yet ([Model packages on PyPI](#model-packages-on-pypi)) | `publish.yml`, environment `pypi` |
 | [npm](https://www.npmjs.com/package/filegoblin) | `filegoblin` (launcher), five `@filegoblin/<os>-<cpu>`, `@filegoblin/models` and eight `@filegoblin/model-*` | `publish.yml`, environment `npm` |
 
-State as of v1.15.0 (2026-10-17): every npm name exists and trusts `publish.yml`; PyPI has `filegoblin` only.
+State as of v1.16.0 (2026-10-29): every npm name exists and trusts `publish.yml`; PyPI has `filegoblin` only. The PyPI names `filegoblin-models` and `filegoblin-model-*` are **not registered**, and the v1.16.0 wheels still declare a `models` extra that depends on `filegoblin-models`: until those projects exist under our account, whoever registers the name first is installed by `pip install "filegoblin[models]"`. Register them (see [Model packages on PyPI](#model-packages-on-pypi)). Later wheels leave the extra out (`PYPI_MODELS_EXTRA` in `scripts/package_registries.py`).
 
 **Files that pin the version** (all must equal the tag):
 - `crates/core/Cargo.toml`: `version`
 - `crates/cli/Cargo.toml`: `version`, and `version` on the `filegoblin-core` path dependency
 - `Cargo.lock`: the `filegoblin` and `filegoblin-core` entries (`cargo check` updates them)
 - `npm/package.json`: `version` and the five `@filegoblin/*` optionalDependencies (the build overwrites these, but keep them in sync)
+- `README.md`: the `## ⚡ Current Capabilities (vX.Y.Z)` heading
 
 ```bash
 # after bumping every file above
 dist plan --tag=vX.Y.Z        # cargo-dist 0.31.0; fails if the tag and versions disagree
-git commit -m "release: vX.Y.Z" crates/cli/Cargo.toml crates/core/Cargo.toml Cargo.lock npm/package.json
+git commit -m "release: vX.Y.Z" crates/cli/Cargo.toml crates/core/Cargo.toml Cargo.lock npm/package.json README.md
 git push origin main
+# wait for Horde Check on that commit to pass, then:
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
+
+Release runs no tests of its own. Publish waits for Horde Check on the tagged commit and refuses to publish unless it passed (its `check` job), but the GitHub release itself goes out as soon as Release finishes, so tag only a green commit.
 
 Release takes about 80 minutes; Publish starts when it succeeds.
 
@@ -119,7 +123,7 @@ Re-running `publish.yml` is safe: versions that are already on a registry are sk
    TWINE_USERNAME=__token__ uvx twine upload wheels/filegoblin_model*   # paste the token when asked
    ```
 4. On each of the nine new projects (Manage → Publishing), add a trusted publisher with the four values above.
-5. Delete the token, and delete the "Base package only" step from `publish.yml`.
+5. Delete the token, delete the "Base package only" step from `publish.yml`, and set `PYPI_MODELS_EXTRA = True` in `scripts/package_registries.py` so the base wheel declares the `models` extra again.
 
 Until then, `pip install "filegoblin[models]"` doesn't resolve. `filegoblin --install-models` gets the models from the GitHub release instead.
 
@@ -128,7 +132,8 @@ Until then, `pip install "filegoblin[models]"` doesn't resolve. `filegoblin --in
 | Symptom | Cause and fix |
 |---|---|
 | Release fails at `plan` (exit 255), suggesting `--tag=v<other>` | The tag doesn't match the Cargo versions. Delete the tag (`git push origin :refs/tags/vX.Y.Z` and `git tag -d vX.Y.Z`), bump every file listed above, tag again. |
-| Publish didn't start | It only runs after a successful Release for a non-prerelease tag. Start it by hand: Actions → Publish → Run workflow, or `gh workflow run publish.yml --ref main -f run-id=<release run id>`. |
+| Publish didn't start | It only runs after a successful Release for a non-prerelease tag. Start it by hand: Actions → Publish → Run workflow, or `gh workflow run publish.yml --ref main -f run-id=<release run id>`. The run ID must be a successful Release run. |
+| Publish fails at "Horde Check passed on this commit" | Horde Check failed (or never ran) on the tagged commit. Fix it on `main`; publishing an untested commit is what the step exists to stop. |
 | A fix to `publish.yml` doesn't apply on "Re-run jobs" | Reruns use the workflow file from the tagged commit. Use Run workflow (above), which uses `main`'s. |
 | npm `E409 Cannot publish over previously staged version` | An earlier run already uploaded it and npm is still processing it. `publish.yml` treats this as done. |
 | npm `TLOG_CREATE_ENTRY_ERROR` (409) | A transient Sigstore conflict before the upload. `publish.yml` retries it. |

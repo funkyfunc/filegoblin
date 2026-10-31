@@ -54,16 +54,33 @@ function modelEnvironment() {
   return env;
 }
 
+// Set for the binary we start, so a PATH lookup that finds this launcher
+// again (npm's global shim is a symlink to this file) can never recurse.
+const LAUNCHER_ENV = 'FILEGOBLIN_NPM_LAUNCHER';
+
+function isThisLauncher(candidate) {
+  try {
+    return fs.realpathSync(candidate) === fs.realpathSync(__filename);
+  } catch (_) {
+    return false;
+  }
+}
+
 function findBinary() {
   const binaryName = getBinaryName();
 
-  // 1. Check local Cargo build directories (for repository development)
-  const candidateLocalPaths = [
-    path.resolve(__dirname, '../../target/release', binaryName),
-    path.resolve(__dirname, '../../target/debug', binaryName),
-    path.resolve(__dirname, '..', binaryName),
-    path.resolve(__dirname, binaryName)
-  ];
+  // 1. Check local Cargo build directories (for repository development).
+  // Only in a checkout: installed, `../../target` is `node_modules/target`,
+  // which any dependency named `target` could fill.
+  const inCheckout = !__dirname.split(path.sep).includes('node_modules');
+  const candidateLocalPaths = inCheckout
+    ? [
+      path.resolve(__dirname, '../../target/release', binaryName),
+      path.resolve(__dirname, '../../target/debug', binaryName),
+      path.resolve(__dirname, '..', binaryName),
+      path.resolve(__dirname, binaryName)
+    ]
+    : [];
 
   for (const candidate of candidateLocalPaths) {
     if (fs.existsSync(candidate)) {
@@ -92,11 +109,19 @@ function findBinary() {
     }
   }
 
-  // 3. Fallback: check system PATH
+  // 3. Fallback: check system PATH. Without the platform package (installed
+  // with --omit=optional, or a lockfile from another OS), `which filegoblin`
+  // finds npm's own shim for this launcher, which then ran itself until the
+  // machine ran out of processes.
+  if (process.env[LAUNCHER_ENV]) return null;
   try {
     const whichCmd = process.platform === 'win32' ? 'where' : 'which';
-    const systemPath = child_process.execSync(`${whichCmd} ${binaryName}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim().split(/\r?\n/)[0];
-    if (systemPath && fs.existsSync(systemPath)) {
+    const found = child_process.execSync(`${whichCmd} ${binaryName}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] })
+      .trim()
+      .split(/\r?\n/);
+    const systemPath = found.find((p) => p && fs.existsSync(p) && !isThisLauncher(p));
+    if (systemPath) {
+      console.error(`[filegoblin] The ${pkgName || 'platform'} package is not installed; using ${systemPath} from PATH.`);
       return systemPath;
     }
   } catch (_) {
@@ -121,17 +146,35 @@ function main() {
   }
 
   const args = process.argv.slice(2);
-  const result = child_process.spawnSync(binaryPath, args, {
-    stdio: 'inherit',
-    env: modelEnvironment()
-  });
+  const env = modelEnvironment();
+  env[LAUNCHER_ENV] = '1';
+  // Asynchronous, so signals sent to this launcher (a supervisor's SIGTERM,
+  // a timeout's SIGINT) reach the binary instead of leaving it running
+  // orphaned after node exits.
+  const child = child_process.spawn(binaryPath, args, { stdio: 'inherit', env });
+  const forward = (signal) => () => {
+    try {
+      child.kill(signal);
+    } catch (_) {
+      // Already gone.
+    }
+  };
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  for (const signal of signals) process.on(signal, forward(signal));
 
-  if (result.error) {
-    console.error(`[filegoblin] Error executing binary at ${binaryPath}:`, result.error.message);
+  child.on('error', (err) => {
+    console.error(`[filegoblin] Error executing binary at ${binaryPath}:`, err.message);
     process.exit(1);
-  }
-
-  process.exit(result.status ?? (result.signal ? 1 : 0));
+  });
+  child.on('exit', (code, signal) => {
+    if (signal) {
+      // Exit the way the binary did (128 + signal number), not as a plain 1,
+      // which is also the binary's own "unexpected error" code.
+      const number = os.constants.signals[signal];
+      process.exit(number ? 128 + number : 1);
+    }
+    process.exit(code ?? 0);
+  });
 }
 
 main();

@@ -129,9 +129,9 @@ fn route_url_target(
         #[cfg(feature = "web")]
         {
             match crate::parsers::crawler::crawl_web(url, args) {
-                Ok(pairs) => {
-                    for (p, c) in pairs {
-                        let _ = tx.send(crate::pipeline::GobbleDocument::new(p, c));
+                Ok(docs) => {
+                    for doc in docs {
+                        let _ = tx.send(doc);
                     }
                 }
                 // In-band, not just stderr: a failure that produces no document
@@ -449,7 +449,8 @@ fn route_fetched_body(
     let staged_path = staged.path();
     let header = crate::format::read_header(staged_path, crate::format::SNIFF_BYTES);
     if crate::format::detect(staged_path, &header) == crate::format::Format::Archive {
-        match crate::parsers::archive::ArchiveGobbler.extract_archive(staged_path, args) {
+        match crate::parsers::archive::ArchiveGobbler.extract_archive_as(staged_path, target, args)
+        {
             Ok(docs) => {
                 for doc in docs {
                     let _ = tx.send(doc);

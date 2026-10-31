@@ -26,7 +26,7 @@
 //! The wire format, both ways: frames of a tag byte, a little-endian u64
 //! length and that many bytes.
 
-use crate::memory::{env_number, footprint, half_of_ram_mb, parse_number};
+use crate::memory::{env_number, footprint, half_of_ram_mb, parse_number, worker_share_mb};
 use crate::parsers::gobble::ParseOptions;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -69,10 +69,12 @@ struct Limits {
 }
 
 impl Limits {
-    fn from_env() -> Result<Self> {
+    /// `workers` is how many may run at once: they share one part of the
+    /// run's memory budget (`memory::worker_share_mb`).
+    fn from_env(workers: usize) -> Result<Self> {
         Ok(Self {
             stall: Duration::from_secs(env_number(TIMEOUT_ENV, DEFAULT_STALL_SECS)?),
-            memory_mb: env_number(MEMORY_ENV, half_of_ram_mb())?,
+            memory_mb: env_number(MEMORY_ENV, worker_share_mb(workers))?,
         })
     }
 }
@@ -88,11 +90,11 @@ pub fn enable() -> Result<()> {
     {
         return Ok(());
     }
-    let limits = Limits::from_env()?;
     let max = match std::env::var(WORKERS_ENV) {
         Ok(v) => parse_number(WORKERS_ENV, Some(&v), 1)? as usize,
         Err(_) => default_workers(),
     };
+    let limits = Limits::from_env(max)?;
     // Without a path to this binary there is nothing to start: an error at
     // the first PDF (which then converts in-process) says so.
     let exe = std::env::current_exe().unwrap_or_default();

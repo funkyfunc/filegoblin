@@ -55,7 +55,19 @@ impl Gobble for OfficeGobbler {
                 }
             }
 
-            let docx_res = docx_rs::read_docx(&buf);
+            // docx-rs only gets packages whose XML is well-formed. On a damaged
+            // part it can loop forever (a truncated `numbering.xml` spins in
+            // its numbering reader at full CPU, where no memory limit sees
+            // it) or panic. The streaming reader below handles the rest.
+            // A panic inside docx-rs (it unwraps on values from the file) also
+            // falls back rather than failing the document.
+            let docx_res = if crate::parsers::check_package_xml(&buf).is_ok() {
+                std::panic::catch_unwind(|| docx_rs::read_docx(&buf))
+                    .map_err(|_| "docx-rs crashed on this package".to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()))
+            } else {
+                Err("the package has malformed XML".to_string())
+            };
             let mut extracted = String::new();
 
             if let Ok(docx) = docx_res {
@@ -1273,6 +1285,43 @@ mod tests {
         assert!(md.contains("The angle is $θ="));
         assert!(md.contains("From Eq. 36.1.3,"));
         assert!(md.contains(r"$$\frac{a}{λ}"));
+    }
+
+    /// Regression: docx-rs's numbering reader loops forever on a truncated
+    /// `numbering.xml` (xml-rs keeps returning the same error and the loop
+    /// ignores it). The run spun at full CPU with flat memory, so no memory
+    /// limit stopped it. Damaged packages now skip docx-rs.
+    #[test]
+    fn a_truncated_numbering_part_does_not_hang() {
+        use std::io::Write;
+        const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncated_numbering.docx");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        let parts = [
+            ("[Content_Types].xml", r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>"#.to_string()),
+            ("_rels/.rels", r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_string()),
+            ("word/document.xml", format!("<w:document {W}><w:body><w:p><w:r><w:t>hello goblin</w:t></w:r></w:p></w:body></w:document>")),
+            ("word/_rels/document.xml.rels", r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#.to_string()),
+            ("word/numbering.xml", format!(r#"<w:numbering {W}><w:abstractNum w:abstractNumId="0">"#)),
+            ("word/styles.xml", format!("<w:styles {W}/>")),
+        ];
+        for (name, body) in parts {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(OfficeGobbler.gobble(&path, &ParseOptions::default()));
+        });
+        let md = rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the conversion hung")
+            .unwrap();
+        assert!(md.contains("hello goblin"), "{md}");
     }
 
     #[test]

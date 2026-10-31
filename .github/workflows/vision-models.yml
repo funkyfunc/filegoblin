@@ -172,7 +172,11 @@ jobs:
       - name: Check the Linux wheel installs and finds its models
         run: |
           python -m venv /tmp/venv
-          /tmp/venv/bin/pip install --no-index --find-links wheels "filegoblin[models]==${{ steps.version.outputs.version }}"
+          # By name, not through the `models` extra: the extra is left out of
+          # the metadata until the model projects exist on PyPI
+          # (PYPI_MODELS_EXTRA in package_registries.py).
+          /tmp/venv/bin/pip install --no-index --find-links wheels \
+            "filegoblin==${{ steps.version.outputs.version }}" "filegoblin-models==${{ steps.version.outputs.version }}"
           /tmp/venv/bin/filegoblin --models-status | tee status.txt
           grep -q "All release models found" status.txt
       - uses: actions/upload-artifact@v4

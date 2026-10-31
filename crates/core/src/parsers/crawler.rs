@@ -1,5 +1,6 @@
 use crate::parsers::gobble::Gobble;
 use crate::parsers::html::HtmlGobbler;
+use crate::pipeline::GobbleDocument;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use dashmap::DashSet;
@@ -166,7 +167,7 @@ impl GoblinCrawler {
         &self,
         seed_url: Url,
         args: &crate::cli::Cli,
-    ) -> Result<Vec<(String, String)>> {
+    ) -> Result<Vec<GobbleDocument>> {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut results = Vec::new();
 
@@ -174,7 +175,12 @@ impl GoblinCrawler {
         tree_out.push_str("```tree\n🌐 ");
         tree_out.push_str(seed_url.host_str().unwrap_or("unknown"));
         tree_out.push_str("\n```\n\n");
-        results.push(("_tree.md".to_string(), tree_out));
+        results.push(GobbleDocument::extracted(
+            "_tree.md".to_string(),
+            tree_out,
+            "tree",
+            None,
+        ));
 
         self.visited.insert(seed_url.to_string());
         // The frontier carries depth, so `--depth` can bound how far from the
@@ -234,102 +240,156 @@ impl GoblinCrawler {
                         let permit = active_tasks.acquire_owned().await.unwrap();
 
                         let display_url = current_url.to_string();
-                        // Every hop is guarded, not just the seed: a crawl can
-                        // follow a link to any host-shaped target.
-                        let guarded = crate::net::guard_url(&current_url);
-                        let output_chunk = match guarded.map(|_| client.get(current_url.clone()).send()) {
-                            Ok(pending) => match pending.await {
-                            Ok(resp) => {
-                                let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE)
-                                    .and_then(|v| v.to_str().ok())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let too_large = resp.content_length()
-                                    .map(|l| l > crate::net::MAX_RESPONSE_BYTES)
-                                    .unwrap_or(false);
+                        let outcome = fetch_page(&client, &current_url).await;
 
-                                if too_large {
-                                    "".to_string()
-                                } else if content_type.starts_with("text/html") || content_type.starts_with("text/plain") {
-                                    // Capped read: `content_length()` is None
-                                    // for chunked responses, so the check above
-                                    // is not on its own a bound.
-                                    if let Ok(html) = crate::net::read_body_capped(resp, crate::net::MAX_RESPONSE_BYTES)
-                                        .await
-                                        .map(|b| String::from_utf8_lossy(&b).into_owned()) {
-                                        // Run the HTML→markdown engine on this page
-                                        let gobbler = HtmlGobbler {
-                                            extract_full,
-                                            source_url: Some(display_url.clone()),
-                                            ..Default::default()
-                                        };
-
-                                        // Find links for BFS frontier expansion
-                                        let mut new_links = Vec::new();
-                                        {
-                                            let document = scraper::Html::parse_document(&html);
-                                            let selector = scraper::Selector::parse("a").unwrap();
-                                            for element in document.select(&selector) {
-                                                if let Some(href) = element.value().attr("href")
-                                                    && let Some(clean_url) = normalize_link(&current_url, href, &target_domain_clone, seed_port)
-                                                    // Out-of-scope links are dropped here, so a
-                                                    // pruned section is never fetched at all.
-                                                    && scope.allows(&clean_url, depth + 1)
-                                                    && visited_clone.insert(clean_url.to_string())
-                                                {
-                                                    new_links.push(clean_url);
-                                                }
-                                            }
-                                        }
-
-                                        // Send links
-                                        for link in new_links {
-                                            if tx_clone.send((link, depth + 1)).is_ok() {
-                                                in_flight_clone.fetch_add(1, Ordering::SeqCst);
-                                            }
-                                        }
-
-                                        let opts = crate::parsers::gobble::ParseOptions::from(flags_clone.as_ref());
-                                        if let Ok(markdown) = gobbler.gobble_str(&html, &opts) {
-                                            markdown
-                                        } else { "".to_string() }
-                                    } else { "".to_string() }
-                                } else {
-                                    "".to_string() // Skip non-text content (images, PDFs, binaries, etc)
+                        // Find links for BFS frontier expansion
+                        if let Ok(Some(html)) = &outcome {
+                            let mut new_links = Vec::new();
+                            {
+                                let document = scraper::Html::parse_document(html);
+                                let selector = scraper::Selector::parse("a").unwrap();
+                                for element in document.select(&selector) {
+                                    if let Some(href) = element.value().attr("href")
+                                        && let Some(clean_url) = normalize_link(&current_url, href, &target_domain_clone, seed_port)
+                                        // Out-of-scope links are dropped here, so a
+                                        // pruned section is never fetched at all.
+                                        && scope.allows(&clean_url, depth + 1)
+                                        && visited_clone.insert(clean_url.to_string())
+                                    {
+                                        new_links.push(clean_url);
+                                    }
                                 }
-                            },
-                            Err(_) => "".to_string()
-                            },
-                            Err(_) => "".to_string()
+                            }
+
+                            // Count the links in before they are sent: the main loop
+                            // can receive one and finish with it (budget spent,
+                            // robots.txt) before this task decrements, and counting
+                            // after the send let `in_flight` touch 0 with this page's
+                            // links still queued, ending the crawl early.
+                            in_flight_clone.fetch_add(new_links.len(), Ordering::SeqCst);
+                            for link in new_links {
+                                if tx_clone.send((link, depth + 1)).is_err() {
+                                    in_flight_clone.fetch_sub(1, Ordering::SeqCst);
+                                }
+                            }
+                        }
+
+                        // Run the HTML→markdown engine on this page
+                        let document = match outcome {
+                            Ok(Some(html)) => {
+                                let gobbler = HtmlGobbler {
+                                    extract_full,
+                                    source_url: Some(display_url.clone()),
+                                    ..Default::default()
+                                };
+                                let opts = crate::parsers::gobble::ParseOptions::from(flags_clone.as_ref());
+                                match gobbler.gobble_str(&html, &opts) {
+                                    Ok(markdown) => Some(GobbleDocument::extracted(display_url, markdown, "html", None)),
+                                    Err(e) => Some(GobbleDocument::failed(display_url, "html", format!("{:#}", e))),
+                                }
+                            }
+                            // Not a page (an image, a PDF, …): the crawler reads HTML only.
+                            Ok(None) => None,
+                            Err(e) => {
+                                if !flags_clone.quiet {
+                                    eprintln!("{} {}: {}", "⚠️".yellow(), display_url, e);
+                                }
+                                Some(GobbleDocument::failed(display_url, "web", e))
+                            }
                         };
 
                         in_flight_clone.fetch_sub(1, Ordering::SeqCst);
                         drop(permit);
-                        (display_url, output_chunk)
+                        document
                     });
                 }
                 Some(res) = join_set.join_next(), if !join_set.is_empty() => {
-                    if let Ok(chunk_pair) = res
-                        && !chunk_pair.1.is_empty() {
-                        results.push(chunk_pair);
+                    if let Ok(Some(doc)) = res {
+                        results.push(doc);
                     }
                 }
             }
         }
 
         while let Some(res) = join_set.join_next().await {
-            if let Ok(chunk_pair) = res
-                && !chunk_pair.1.is_empty()
-            {
-                results.push(chunk_pair);
+            if let Ok(Some(doc)) = res {
+                results.push(doc);
             }
         }
+        // Pages finish in whatever order the network allows; sort (the tree
+        // map stays first) so the same site gives the same output every run.
+        results[1..].sort_by(|a, b| a.path.cmp(&b.path));
 
         Ok(results)
     }
 }
 
-pub fn crawl_web(url: &Url, args: &crate::cli::Cli) -> Result<Vec<(String, String)>> {
+/// Fetches one crawled page. `Ok(None)` is a response that is not a page (the
+/// crawler reads HTML and plain text only); every way of not getting the page
+/// is an `Err` carrying the reason.
+///
+/// Errors used to become an empty string that was then dropped, so a crawl
+/// whose pages answered 404 or 500 converted the server's error pages as
+/// content, and pages that could not be fetched vanished without a trace.
+async fn fetch_page(client: &reqwest::Client, url: &Url) -> Result<Option<String>, String> {
+    // Every hop is guarded, not just the seed: a crawl can follow a link to
+    // any host-shaped target.
+    crate::net::guard_url(url).map_err(|e| format!("{:#}", e))?;
+    let resp = client
+        .get(url.clone())
+        .send()
+        .await
+        .map_err(|e| format!("could not fetch the page: {}", crate::net::error_chain(&e)))?;
+    crate::net::check_status(resp.status()).map_err(|e| format!("{:#}", e))?;
+
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let media_type = content_type
+        .as_deref()
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(
+        media_type.as_str(),
+        "text/html" | "application/xhtml+xml" | "text/plain"
+    ) {
+        return Ok(None);
+    }
+    if resp
+        .content_length()
+        .is_some_and(|l| l > crate::net::MAX_RESPONSE_BYTES)
+    {
+        return Err(format!(
+            "the page is larger than the {} MiB cap",
+            crate::net::MAX_RESPONSE_BYTES / (1024 * 1024)
+        ));
+    }
+    // Capped read: `content_length()` is None for chunked responses, so the
+    // check above is not on its own a bound.
+    let bytes = crate::net::read_body_capped(resp, crate::net::MAX_RESPONSE_BYTES)
+        .await
+        .map_err(|e| format!("{:#}", e))?;
+    // The declared (or `<meta>`) charset, as for a single URL: a Latin-1 page
+    // was read as UTF-8 and every accented letter became U+FFFD.
+    let body = crate::FetchedBody {
+        bytes,
+        media_type: Some(media_type),
+        content_type,
+    };
+    let html = body.decode_text();
+    // Checked here because link discovery parses the page before the HTML
+    // extractor (which checks too) ever sees it.
+    crate::parsers::html::refuse_deep_nesting(&html).map_err(|e| e.to_string())?;
+    Ok(Some(html))
+}
+
+pub fn crawl_web(url: &Url, args: &crate::cli::Cli) -> Result<Vec<GobbleDocument>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -408,6 +468,99 @@ mod tests {
 
         assert!(follow("next").is_some());
         assert!(follow("http://example.com/elsewhere").is_none());
+    }
+
+    /// Serves `pages` (path, status line, content type, body) on loopback,
+    /// one thread per connection, until the test process ends.
+    fn serve(pages: Vec<(&'static str, &'static str, &'static str, Vec<u8>)>) -> Url {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pages = std::sync::Arc::new(pages);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let pages = pages.clone();
+                std::thread::spawn(move || {
+                    let mut s = stream;
+                    let mut buf = [0u8; 4096];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let (status, ctype, body) = pages
+                        .iter()
+                        .find(|p| p.0 == path)
+                        .map(|p| (p.1, p.2, p.3.clone()))
+                        .unwrap_or(("404 Not Found", "text/html", b"<html><body><h1>Error response</h1><p>Error code: 404</p></body></html>".to_vec()));
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = s.write_all(head.as_bytes());
+                    let _ = s.write_all(&body);
+                });
+            }
+        });
+        Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap()
+    }
+
+    /// Regression: every failure became an empty string that was dropped, so
+    /// a 404 or 500 page was converted as content and a page that could not
+    /// be fetched vanished. And bodies were read as UTF-8 whatever the page
+    /// declared, so a Latin-1 page came out as U+FFFD soup.
+    #[test]
+    fn errors_are_reported_and_charsets_honoured() {
+        use clap::Parser;
+        let index = b"<html><head><meta charset=\"iso-8859-1\"></head><body><main><h1>Index</h1>\
+            <p>Caf\xe9 cr\xe8me br\xfbl\xe9e, lorem ipsum dolor sit amet consectetur.</p>\
+            <a href=\"/good\">good</a> <a href=\"/missing\">missing</a> <a href=\"/broken\">broken</a>\
+            </main></body></html>"
+            .to_vec();
+        let good = b"<html><body><main><h1>Good</h1><p>Good page content, lorem ipsum dolor sit amet.</p></main></body></html>".to_vec();
+        let seed = serve(vec![
+            ("/", "200 OK", "text/html", index),
+            ("/good", "200 OK", "text/html; charset=utf-8", good),
+            (
+                "/broken",
+                "500 Internal Server Error",
+                "text/html",
+                b"<html><body>oops</body></html>".to_vec(),
+            ),
+        ]);
+
+        let _lock = crate::net::LOCAL_URL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::net::set_allow_local_urls(true);
+        let args = crate::cli::Cli::parse_from(["filegoblin", "-q", "--horde", "dummy"]);
+        let docs = crawl_web(&seed, &args);
+        crate::net::set_allow_local_urls(false);
+        let docs = docs.unwrap();
+
+        let find = |suffix: &str| {
+            docs.iter()
+                .find(|d| d.path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no {suffix} in {docs:?}"))
+        };
+        let root = find(&format!("{}/", seed.port().unwrap()));
+        assert!(
+            root.content.contains("Café crème brûlée"),
+            "{}",
+            root.content
+        );
+        assert!(find("/good").error.is_none());
+        let missing = find("/missing");
+        assert!(
+            missing.error.as_deref().unwrap_or("").contains("404"),
+            "{missing:?}"
+        );
+        assert!(!missing.content.contains("Error response"));
+        assert!(
+            find("/broken")
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("500")
+        );
     }
 
     #[test]

@@ -59,6 +59,15 @@ impl SheetGobbler {
     }
 
     fn parse_workbook(&self, path: &Path) -> Result<String> {
+        // calamine loops forever on some damaged XML (an unclosed table in an
+        // `.ods` spun at full CPU until killed), so a zip workbook must parse
+        // first. `.xlsb` parts are binary and are not checked.
+        let bytes = std::fs::read(path).context("Failed to read the workbook")?;
+        if bytes.starts_with(b"PK") {
+            crate::parsers::check_package_xml(&bytes)
+                .context("The goblin won't open this workbook")?;
+        }
+        drop(bytes);
         let mut workbook = open_workbook_auto(path).context("Failed to open WorkBook")?;
         let sheet_names = workbook.sheet_names().to_owned();
 
@@ -514,6 +523,36 @@ mod tests {
     use super::*;
     use clap::Parser;
     use std::io::Write;
+
+    /// Regression: calamine's ODS reader spins forever on an unclosed table
+    /// (full CPU, flat memory: no memory limit ever fires). Damaged XML is
+    /// now refused before calamine sees it.
+    #[test]
+    fn a_damaged_ods_fails_instead_of_hanging() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unclosed.ods");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/vnd.oasis.opendocument.spreadsheet")
+            .unwrap();
+        zip.start_file("META-INF/manifest.xml", stored).unwrap();
+        zip.write_all(br#"<?xml version="1.0"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>"#).unwrap();
+        zip.start_file("content.xml", stored).unwrap();
+        zip.write_all(br#"<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" office:version="1.2"><office:body><office:spreadsheet><table:table table:name="S1"></office:spreadsheet></office:body></office:document-content>"#).unwrap();
+        zip.finish().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(SheetGobbler.gobble(&path, &ParseOptions::default()));
+        });
+        let err = rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the conversion hung")
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("content.xml"), "{err:#}");
+    }
 
     #[test]
     fn csv_uses_first_row_as_headers() {
