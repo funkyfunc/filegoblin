@@ -1460,3 +1460,28 @@ Measured: six `--vision smart` runs on old scans started together with 2 slots. 
 **Not covered.** Arbitrary Python or other tools a session runs itself. Agents running benchmarks should still keep concurrent heavy jobs low.
 
 **Status:** Accepted.
+
+## 2026-11-01: Comparisons are ranked on the test split and fresh documents, not on dev or the gauntlet
+
+**Context.** Before the README led with "within a point of MinerU", an audit checked the comparison claims
+(`docs/reviews/2026-11-01-claims-audit.md`). Every saved number reproduced. Two things did not hold:
+- **The dev split was being read as a ranking.** It is 180 PDFs, with ±5-point intervals.
+- **The gauntlet is filegoblin's own acceptance suite**, tuned against for three weeks. The other tools ran on
+  it once.
+
+MinerU, marker, docling and pymupdf4llm were then run on the 1,223-PDF test split. MinerU scores 79.01 there
+against filegoblin smart's 74.31 (interval +2.6 to +6.5); on dev the two had been 0.7 apart. On a frozen
+133-page held-out set and 11 fresh gauntlet cases, filegoblin smart is in the top group but not first, and
+the fast path trails pymupdf4llm by about 10.
+
+**Decision.**
+- Head-to-head claims come from the test split, with the test-informed fixes stated: about +0.6 smart and
+  +0.5 off.
+- They are checked against the frozen held-out set.
+- Every comparison is "default against default": marker fast, docling without formula enrichment, MinerU
+  standard.
+- The dev split and the gauntlet stay tuning and regression tools; their numbers are not used to rank
+  filegoblin against other tools.
+- `docs/COMPARISON.md`, `README.md` and `GAUNTLET_SCORECARD.md` were corrected to match.
+
+**Status:** Accepted.
