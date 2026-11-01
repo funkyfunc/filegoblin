@@ -45,6 +45,29 @@ whitespace. These rules decide everything else:
 8. **Text exactly as printed:** spelling, numbers, symbols. Do not fix the
    source.
 
-Pick excerpts that discriminate. Aim for 1–3 per case. In long documents,
-choose the hard pages (dense tables, multi-column text, math, footnotes,
-forms) plus one ordinary page.
+Pick excerpts that discriminate. Aim for 1–3 per case; a page of many
+separate articles, like a newspaper front page, can take one per article. In
+long documents, choose the hard pages (dense tables, multi-column text, math,
+footnotes, forms) plus one ordinary page.
+
+## Gold drafted by a model
+
+A scan with no text layer can be drafted by a vision model and then checked,
+never taken as it comes. Two models' transcriptions of NEWS_1 (2026-11-01) show
+why. One matched the page at all twelve places spot-checked. The other filled gaps with
+plausible names and phrases that are not on the page ("Golden Hotel" for "the
+Riverside Hotel"). Even the good one modernized two period spellings
+("textural" became "textual", "controller" became "comptroller").
+
+So a drafted excerpt is accepted only after:
+
+- every word that no OCR tool also read has been read on the page image (an
+  invented or "corrected" word is one no OCR engine produces);
+- places where a second, independent transcription disagrees have been read
+  on the image;
+- anything that cannot be read with certainty is left out of the excerpt
+  rather than guessed.
+
+The provenance comment says that the excerpt was drafted and how it was
+checked. Born-digital pages take their text from the text layer, not from a
+model, which tidies what is printed.

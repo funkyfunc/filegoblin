@@ -230,7 +230,8 @@ What the gauntlet can and cannot show against other tools:
   is behind it, neither significantly.
 - **The gauntlet:** it leads on the PDF cases each tool finished (89.8 vs
   MinerU 88.7), on its own tuning suite. On 11 fresh cases docling leads
-  (86.8) and filegoblin is second (79.4).
+  (84.7) and filegoblin is second (80.8); without the two right-to-left cases
+  filegoblin is first (89.1 against docling's 86.5).
 - **`--vision off`:** trails pymupdf4llm everywhere except the dev split.
 
 The rest of this section was written from the dev split and the gauntlet on
@@ -367,12 +368,12 @@ Quality is graded as above.
 
 | | mean (11) | without Arabic/Hebrew (9) |
 |---|---:|---:|
-| docling | **86.8** | **89.1** |
-| filegoblin smart | 79.4 | 87.3 |
-| pymupdf4llm | 78.7 | 79.2 |
-| marker | 77.7 | 80.4 |
-| MinerU | 76.7 | 80.5 |
-| filegoblin off | 68.1 | 75.7 |
+| docling | **84.7** | 86.5 |
+| filegoblin smart | 80.8 | **89.1** |
+| MinerU | 79.4 | 83.7 |
+| marker | 79.0 | 81.9 |
+| pymupdf4llm | 78.1 | 78.5 |
+| filegoblin off | 68.6 | 76.3 |
 | markitdown | 48.2 | 53.5 |
 
 Both sets put filegoblin smart in the top group, not on its own at the top,
@@ -497,6 +498,13 @@ in `gauntlet_manifest.json`:
 - **NEWS_2:** NASA Stennis's *Lagniappe* newsletter.
 - **SLIDES_2:** a NASA NEPP slide deck exported to PDF.
 
+NEWS_1's gold was widened on 2026-11-01 from 2 of the page's articles to 16
+(the method is in `test_assets/gauntlet/gold/README.md`). The two first
+excerpts had favoured docling, which reads those two articles well and much
+of the rest of the page badly. The table uses the 16-article gold; with the
+first two alone the row read filegoblin smart 71.5, off 22.5, MinerU 57.0,
+marker 34.8, docling 67.6, pymupdf4llm 34.4.
+
 The grader now counts each Chinese or Japanese ideograph or kana as a word. A
 clause written without spaces was otherwise one token, so a single line break
 cost the whole clause. No earlier case contains CJK, so no earlier score moved.
@@ -511,10 +519,10 @@ cost the whole clause. No earlier case contains CJK, so no earlier score moved.
 | RECEIPT_1 | 94.5 | 83.4 | **95.2** | 93.7 | 85.2 | 94.3 | 0.0 |
 | INVOICE_1 | 95.0 | 93.7 | 92.7 | **96.8** | 95.2 | 86.0 | 68.6 |
 | FORM_FILLED | 84.1 | 84.2 | 77.1 | 85.2 | **91.9** | 78.6 | 71.1 |
-| NEWS_1 | **71.5** | 22.5 | 57.0 | 34.8 | 67.6 | 34.4 | 0.0 |
+| NEWS_1 | **87.1** | 27.5 | 85.9 | 48.3 | 44.3 | 28.0 | 0.0 |
 | NEWS_2 | 95.7 | 81.5 | 68.7 | 89.1 | **96.5** | 75.4 | 71.2 |
 | SLIDES_2 | 87.0 | 82.4 | 73.3 | 82.3 | **98.9** | 84.4 | 61.4 |
-| **mean** | 79.4 | 68.1 | 76.7 | 77.7 | **86.8** | 78.7 | 48.2 |
+| **mean** | 80.8 | 68.6 | 79.4 | 79.0 | **84.7** | 78.1 | 48.2 |
 
 No tool failed a conversion. On macOS, filegoblin's off mode OCRs image-only
 pages with Apple Vision, which is why it reads the receipt.
@@ -538,6 +546,6 @@ Where filegoblin is weakest here:
 - **Slides lose headings and keep furniture.** SLIDES_2 keeps "To be presented
   by" and the "Unclassified / Open Access" banner, and promotes fewer slide
   titles to headings. docling scores 98.9.
-- **filegoblin leads on the 1922 newspaper scan:** 71.5, against docling's 67.6
-  and 57 or less for the rest. It is level with the leaders on CJK, receipts and
+- **filegoblin leads on the 1922 newspaper scan:** 87.1, against MinerU's 85.9
+  and 48 or less for the rest. It is level with the leaders on CJK, receipts and
   invoices.
