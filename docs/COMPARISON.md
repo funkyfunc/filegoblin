@@ -30,7 +30,8 @@ tools on olmOCR-bench's 1,223-PDF test split and read two fresh sets written aft
 - **Every number below reproduces.** But the dev split and the gauntlet are where filegoblin was tuned, and
   the other tools never saw them.
 - **On documents nobody tuned on, the order changes.**
-  - The test split puts MinerU 4.7 points ahead of filegoblin smart.
+  - The test split put MinerU 4.7 points ahead of filegoblin smart. With the page reader (9db61d6) the gap
+    is 0.7, inside the noise.
   - The fresh held-out pages put marker's fast mode narrowly ahead.
   - docling leads the fresh gauntlet cases.
   - The fast path trails pymupdf4llm everywhere but dev.
@@ -113,8 +114,9 @@ MinerU 4.1 scores 79.0, above MinerU 2.5's published 75.2.
 
 Measured 2026-11-01 (`docs/reviews/2026-11-01-claims-audit.md`), one tool at a
 time, same harness and scorer. The other tools ran in the default
-configurations of the table above. The two filegoblin rows are main at
-`75355f5`. filegoblin was never tuned on this split, but it is not fully held
+configurations of the table above. The filegoblin smart column is main at
+`9db61d6`, with the page reader (LightOnOCR-2-1B) for handwritten and math
+scans; `75355f5`, before it, scored 74.31. The off column is `75355f5`. filegoblin was never tuned on this split, but it is not fully held
 out for filegoblin either: fixes found by reading failures here are worth
 about 0.6 (smart) and 0.5 (off) of its scores. The other tools carry none of
 that.
@@ -122,21 +124,28 @@ that.
 | category | filegoblin smart | filegoblin off | MinerU | marker (fast) | docling | pymupdf4llm |
 |---|---:|---:|---:|---:|---:|---:|
 | arXiv math | **87.1** | 0.0 | 77.7 | 23.1 | 0.0 | 0.0 |
-| headers/footers | 91.6 | 74.0 | **95.7** | 93.9 | 90.1 | 32.4 |
-| long tiny text | **88.1** | 54.1 | 83.9 | 63.2 | 77.7 | 59.6 |
-| multi-column | 72.0 | 49.5 | **79.7** | 74.4 | 73.5 | 66.1 |
-| old scans | 28.9 | 17.3 | 38.3 | **43.9** | 24.0 | 19.7 |
-| old scans math | 47.6 | 0.0 | **76.7** | 60.8 | 0.0 | 0.0 |
-| tables | 80.0 | 35.2 | **82.0** | 65.8 | 73.4 | 64.4 |
-| baseline | 99.2 | 98.9 | 98.0 | **99.3** | 97.9 | 95.9 |
-| **overall** | 74.31 | 41.13 | **79.01** | 65.55 | 54.58 | 42.27 |
-| 95 % interval | 72.3–76.3 | 39.0–43.0 | 77.3–80.6 | 63.3–68.1 | 52.8–56.3 | 40.6–44.2 |
+| headers/footers | 92.7 | 74.0 | **95.7** | 93.9 | 90.1 | 32.4 |
+| long tiny text | **87.8** | 54.1 | 83.9 | 63.2 | 77.7 | 59.6 |
+| multi-column | 72.1 | 49.5 | **79.7** | 74.4 | 73.5 | 66.1 |
+| old scans | 39.9 | 17.3 | 38.3 | **43.9** | 24.0 | 19.7 |
+| old scans math | 67.2 | 0.0 | **76.7** | 60.8 | 0.0 | 0.0 |
+| tables | 80.6 | 35.2 | **82.0** | 65.8 | 73.4 | 64.4 |
+| baseline | 99.3 | 98.9 | 98.0 | **99.3** | 97.9 | 95.9 |
+| **overall** | 78.33 | 41.13 | **79.01** | 65.55 | 54.58 | 42.27 |
+| 95 % interval | 76.4–80.2 | 39.0–43.0 | 77.3–80.6 | 63.3–68.1 | 52.8–56.3 | 40.6–44.2 |
 
-- **MinerU leads filegoblin smart by 4.7** (interval 2.6–6.5), about 5.3 once
-  filegoblin's test-informed fixes are discounted. Its lead comes from scanned
-  math (+29), scans (+9), multi-column (+8), headers/footers and tables.
-- **filegoblin leads marker's fast mode by 8.8** (5.9–11.4), docling by 19.7
-  and pymupdf4llm by 32.
+- **MinerU and filegoblin smart cannot be told apart.** MinerU is 0.7
+  ahead (interval −1.2 to +2.5), about 1.3 once filegoblin's test-informed
+  fixes are discounted. Before the page reader the gap was 4.7 (2.6–6.5); the
+  reader took old scans from 28.9 to 39.9 and old scans math from 47.6 to
+  67.2. MinerU still leads scanned math (+10), multi-column (+8),
+  headers/footers and tables; filegoblin leads arXiv math, long tiny text
+  and old scans.
+- **The page reader is slow.** The run took 2 hours on 3 jobs (M4 Pro, CPU
+  only), against about an hour on 6–7 jobs before it; a page it reads takes
+  half a minute to two minutes.
+- **filegoblin leads marker's fast mode by 12.8** (9.9–15.7), docling by 23.8
+  and pymupdf4llm by 36.
 - **The fast path trails pymupdf4llm by 1.1.** The interval is −1.5 to +3.9,
   so not significant.
 - **The test split moves the tools differently from dev:** MinerU +1.1,
@@ -222,8 +231,9 @@ What the gauntlet can and cannot show against other tools:
 ## Where each tool beats filegoblin, and why
 
 **Short answer** (corrected 2026-11-01).
-- **olmOCR-bench test split:** MinerU 4.1 leads filegoblin smart by 4.7
-  points. filegoblin is clearly ahead of marker's fast mode, docling and
+- **olmOCR-bench test split:** MinerU 4.1 and filegoblin smart cannot be
+  told apart (79.01 against 78.33; MinerU led by 4.7 before the page reader).
+  filegoblin is clearly ahead of marker's fast mode, docling and
   pymupdf4llm.
 - **Dev split:** filegoblin and MinerU cannot be told apart (0.7 apart, ±5).
 - **133 fresh pages:** marker's fast mode is ahead of filegoblin and MinerU
@@ -322,7 +332,7 @@ not recur. Same machine, same limits, same harness:
 |---|---:|---:|---|
 | olmOCR-bench dev, smart | 76.03 | **77.21** | MinerU 77.93 |
 | olmOCR-bench dev, off | 37.13 | **39.61** | pymupdf4llm 40.52 (CPU) |
-| olmOCR-bench test (1,223 PDFs), smart | 73.70 | **74.29** | MinerU 79.01 (measured 2026-11-01) |
+| olmOCR-bench test (1,223 PDFs), smart | 73.70 | **74.29** (78.33 with the page reader) | MinerU 79.01 (measured 2026-11-01) |
 | olmOCR-bench test, off | 39.28 | **40.08** | pymupdf4llm 42.27 (CPU; measured 2026-11-01) |
 | gauntlet, graded PDF cases, smart | 58.6 (6 failed) | **89.0** (0 failed) | docling 84.7 |
 | gauntlet, graded PDF cases, off | 74.4 | **76.4** | pymupdf4llm 74.9 |
@@ -339,7 +349,7 @@ olmOCR-bench score did not move (dev 77.21, test 74.31).
 MinerU still leads olmOCR-bench's dev split by 0.7. It is 10 and 11 points
 ahead on the two scanned categories, and 2–3 tests ahead on headers/footers
 and multi-column; filegoblin leads arXiv math, long tiny text, tables and
-baseline. On the test split MinerU's lead is 4.7 (above).
+baseline. On the test split MinerU's lead was 4.7; with the page reader it is 0.7 (above).
 
 ## Off the tuning sets
 
