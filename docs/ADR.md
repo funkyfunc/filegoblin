@@ -1579,3 +1579,29 @@ the fast path trails pymupdf4llm by about 10.
 - `docs/COMPARISON.md`, `README.md` and `GAUNTLET_SCORECARD.md` were corrected to match.
 
 **Status:** Accepted.
+
+## 2026-11-01: The gauntlet gold is checked against two models and the page; four grader fixes
+
+**Context:** every gauntlet gold excerpt was drafted by a model, and "hand-checked" meant checked by that
+model. Widening NEWS_1's gold from 2 articles to 16 reordered the rankings on that case, so the gold, which
+every benchmark decision rests on, needed an independent check.
+
+**Decision:**
+- All 55 PDF gold pages (NEWS_1 already checked) were transcribed by Gemini 4 Argon and Claude Opus 5.5 at
+  high effort, with the gold conventions in the prompt. Agents compared each page's gold with both
+  transcriptions and settled every difference on the page: words against the text layer or a scan crop,
+  tables, headings and order against a 200–300 dpi render.
+- The words held up everywhere. 15 structural fixes went in, one per file (headings, form footers, split
+  titles, marker spacing, one Arabic mark order), and `test_assets/gauntlet/gold/README.md` gained rulings
+  for each judgement call and a "Checking gold" procedure for new gold.
+- `scripts/gauntlet_grade.py`: Hebrew points and Arabic vowel marks are stripped before tokenizing (they
+  split words); numeric superscript markers are dropped however written (they glued onto words); LaTeX
+  font commands are unwrapped in math (`\mathbf{A}` = `A`; `\mathbb`, `\mathcal` still count); an
+  excerpt's span is the run of matches with the best F1, not first-to-last (one repeated phrase far away
+  stretched FORM_1's span and cut MinerU's precision from 0.92 to 0.63 with no change to its output).
+
+**Consequences:** means moved by under a point on the old cases. On the 11 new cases docling still leads
+(84.9), and marker (81.2), MinerU (81.0) and filegoblin smart (80.7) are now level behind it, where
+filegoblin was second before. `docs/COMPARISON.md` has the before and after.
+
+**Status:** Accepted.

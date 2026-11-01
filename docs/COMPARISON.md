@@ -170,32 +170,32 @@ scores high there.
 | P3 | PPTX Chart Gaps | 98.5 | 98.5 | 79.2 | n/a | fail | n/a | fail |
 | D1 | DOCX Tables | 100.0 | 100.0 | 100.0 | n/a | 0.0 | n/a | 100.0 |
 | D3 | DOCX Floating Text Boxes | 100.0 | 100.0 | 100.0 | n/a | 100.0 | n/a | 85.5 |
-| D4 | DOCX Equations | 92.1 | 92.1 | 92.0 | n/a | 92.0 | n/a | 90.9 |
-| R1 | PDF Layout | fail | 61.4 | 85.4 | 97.6 | 85.4 | 81.0 | 0.0 |
-| R2 | PDF Math | fail | 70.3 | 93.6 | 91.1 | 72.1 | 74.0 | 57.7 |
-| SCI_1 | Scientific Paper (arXiv) | 90.8 | 74.1 | 86.5 | 79.4 | 78.1 | 79.2 | 32.9 |
-| SCI_2 | Scientific Paper (arXiv) | 96.6 | 64.8 | 89.6 | 76.5 | 90.5 | 86.2 | 54.1 |
+| D4 | DOCX Equations | 92.8 | 92.8 | 92.6 | n/a | 92.6 | n/a | 91.6 |
+| R1 | PDF Layout | fail | 61.8 | 87.3 | 97.4 | 85.2 | 80.6 | 0.0 |
+| R2 | PDF Math | fail | 70.9 | 93.6 | 90.8 | 72.1 | 75.6 | 58.1 |
+| SCI_1 | Scientific Paper (arXiv) | 92.0 | 74.4 | 88.9 | 79.7 | 78.4 | 79.8 | 37.6 |
+| SCI_2 | Scientific Paper (arXiv) | 96.8 | 65.8 | 90.9 | 76.8 | 90.7 | 86.8 | 55.2 |
 | BOOK_1 | Full Book (300pp) | 75.0 | 75.0 | fail | 100.0 | 100.0 | 50.0 | 50.0 |
 | BOOK_2 | Full Book (Scan) | fail | — | — | — | — | — | — |
 | TBL_1 | PDF Tables | 100.0 | 98.7 | 100.0 | 74.6 | 86.7 | 93.8 | 56.7 |
 | WEB_1 | HTML Web Articles | 99.6 | 99.6 | 99.9 | n/a | 29.9 | n/a | 0.0 |
-| FIN_1 | Corporate Financial 10-K | fail | 77.8 | fail | 92.5 | 81.3 | 83.0 | 54.7 |
+| FIN_1 | Corporate Financial 10-K | fail | 77.8 | fail | 92.5 | 85.8 | 87.5 | 54.7 |
 | FIN_2 | SEC EDGAR iXBRL HTML | 88.2 | 88.2 | 69.2 | n/a | 69.2 | n/a | 69.2 |
-| FORM_1 | Government Tax Forms | 70.6 | 70.6 | 61.0 | 36.8 | 62.0 | 46.5 | 50.9 |
-| TECH_1 | Hardware Datasheets | 89.9 | 63.8 | fail | 81.9 | 91.7 | 79.4 | 54.2 |
-| SLIDE_1 | Corporate Investor Relations Deck | 86.7 | 72.6 | 90.0 | 74.9 | 91.2 | 91.6 | 76.7 |
+| FORM_1 | Government Tax Forms | 71.3 | 71.3 | 61.7 | 37.0 | 62.2 | 46.5 | 50.8 |
+| TECH_1 | Hardware Datasheets | 90.1 | 65.7 | fail | 84.4 | 91.7 | 79.4 | 54.3 |
+| SLIDE_1 | Corporate Investor Relations Deck | 86.8 | 75.9 | 90.0 | 75.6 | 91.3 | 91.6 | 76.6 |
 | SEC_S1 | SEC S-1 Registration | 85.8 | 85.8 | 70.0 | n/a | 62.9 | n/a | 74.9 |
 | SEC_CREDIT | Debt Credit Agreements | 85.1 | 85.1 | 74.9 | n/a | 79.9 | n/a | 79.9 |
 | SEC_PROXY | SEC DEF 14A Proxy | 94.4 | 94.4 | 77.8 | n/a | 82.8 | n/a | 72.7 |
 | LEGAL_VIE | Cross-Border VIE Contracts | 93.5 | 93.5 | 74.5 | n/a | 79.5 | n/a | 79.5 |
-| SCOTUS_1 | Supreme Court Slip Opinion | 78.4 | 78.4 | 94.2 | 94.8 | 94.6 | 79.9 | 64.8 |
-| PATENT_1 | USPTO Patents | 78.5 | 64.2 | 86.0 | 77.0 | 80.9 | 43.7 | 64.0 |
-| CLIN_1 | Clinical Study Protocols | fail | 78.0 | fail | 62.5 | 80.3 | 89.1 | 64.9 |
-| FDA_1 | FDA Drug Safety Labels | fail | 75.9 | fail | 76.2 | 70.2 | 81.1 | 71.2 |
-| TI_REG | Hardware Register Maps | 94.4 | 88.6 | 94.6 | 76.7 | 93.2 | 75.9 | 57.4 |
+| SCOTUS_1 | Supreme Court Slip Opinion | 77.2 | 77.2 | 94.9 | 95.6 | 93.9 | 79.5 | 64.9 |
+| PATENT_1 | USPTO Patents | 79.5 | 65.5 | 87.3 | 77.4 | 82.1 | 54.2 | 64.0 |
+| CLIN_1 | Clinical Study Protocols | fail | 80.3 | fail | 68.4 | 80.3 | 89.5 | 64.9 |
+| FDA_1 | FDA Drug Safety Labels | fail | 77.6 | fail | 78.3 | 70.6 | 81.0 | 71.2 |
+| TI_REG | Hardware Register Maps | 94.4 | 88.6 | 94.6 | 78.9 | 93.2 | 75.9 | 57.4 |
 | CSI_SPEC | CSI MasterFormat Specs | 76.2 | 76.2 | 95.0 | 94.6 | 96.2 | 63.9 | 61.1 |
-| **mean, graded PDF cases** | | **58.6** (16) | **74.4** (16) | **61.0** (16) | **80.4** (16) | **84.7** (16) | **74.9** (16) | **54.5** (16) |
-| **mean, graded cases it reads** | | **74.1** (28) | **83.1** (28) | **64.8** (28) | **80.4** (16) | **69.7** (28) | **74.9** (16) | **54.4** (28) |
+| **mean, graded PDF cases** | | **58.7** (16) | **75.2** (16) | **61.5** (16) | **81.4** (16) | **85.0** (16) | **76.0** (16) | **54.8** (16) |
+| **mean, graded cases it reads** | | **74.2** (28) | **83.6** (28) | **65.1** (28) | **81.4** (16) | **69.9** (28) | **76.0** (16) | **54.7** (28) |
 | failed conversions | | 6 | 0 | 7 | 0 | 3 | 0 | 3 |
 
 PDF wall time for the 17 PDF cases (1,118 pages), one case at a time: filegoblin
@@ -238,10 +238,11 @@ What the gauntlet can and cannot show against other tools:
 - **Dev split:** filegoblin and MinerU cannot be told apart (0.7 apart, ±5).
 - **133 fresh pages:** marker's fast mode is ahead of filegoblin and MinerU
   is behind it, neither significantly.
-- **The gauntlet:** it leads on the PDF cases each tool finished (89.8 vs
-  MinerU 88.7), on its own tuning suite. On 11 fresh cases docling leads
-  (84.7) and filegoblin is second (80.8); without the two right-to-left cases
-  filegoblin is first (89.1 against docling's 86.5).
+- **The gauntlet:** it leads on the PDF cases each tool finished (90.1 vs
+  MinerU 89.5), on its own tuning suite. On 11 fresh cases docling leads
+  (84.9), and marker (81.2), MinerU (81.0) and filegoblin (80.7) are level
+  behind it; without the two right-to-left cases filegoblin is first (89.1
+  against docling's 86.1 and MinerU's 85.8).
 - **`--vision off`:** trails pymupdf4llm everywhere except the dev split.
 
 The rest of this section was written from the dev split and the gauntlet on
@@ -292,7 +293,7 @@ against 102, 284, 425 and 513 the other way):
   design, and its tables came only from fully drawn grids and pdf_oxide's own
   detection, so booktabs-style tables (rules above and below, none down)
   scored 0 of 38 dev tests. The next ADR entry adds them (tables 16.2 → 36.0).
-  On the gauntlet the two are level (PDF means 74.4 and 74.9).
+  On the gauntlet the two are close (PDF means 75.2 and 76.0).
   After the 2026-10-30/31 passes the fast path matched pymupdf4llm on dev
   (40.54 vs 40.52), but about 1.5 points of that are specific to dev. On the
   test split pymupdf4llm leads 42.3 to 41.1, and on the held-out pages and the
@@ -334,16 +335,16 @@ not recur. Same machine, same limits, same harness:
 | olmOCR-bench dev, off | 37.13 | **39.61** | pymupdf4llm 40.52 (CPU) |
 | olmOCR-bench test (1,223 PDFs), smart | 73.70 | **74.29** (78.33 with the page reader) | MinerU 79.01 (measured 2026-11-01) |
 | olmOCR-bench test, off | 39.28 | **40.08** | pymupdf4llm 42.27 (CPU; measured 2026-11-01) |
-| gauntlet, graded PDF cases, smart | 58.6 (6 failed) | **89.0** (0 failed) | docling 84.7 |
-| gauntlet, graded PDF cases, off | 74.4 | **76.4** | pymupdf4llm 74.9 |
-| gauntlet, all graded cases, smart | 74.1 | **91.4** | |
-| gauntlet, all graded cases, off | 83.1 | **84.3** | |
+| gauntlet, graded PDF cases, smart | 58.7 (6 failed) | **89.2** (0 failed) | docling 85.0 |
+| gauntlet, graded PDF cases, off | 75.2 | **77.1** | pymupdf4llm 76.0 |
+| gauntlet, all graded cases, smart | 74.2 | **91.6** | |
+| gauntlet, all graded cases, off | 83.6 | **84.7** | |
 
 The 2026-10-31 ADR entry read the other tools' source for the ideas behind
 these leads (`docs/reviews/2026-10-31-competitor-source.md`). Two carried over
 to the fast path: position-only furniture after marker, and unruled numeric
 tables after MinerU. With them, `--vision off` scores 40.54 on dev (pymupdf4llm: 40.52) and
-41.13 on test, and the gauntlet scores 84.4 (off) and 91.5 (smart). Smart mode's
+41.13 on test, and the gauntlet scores 84.8 (off) and 91.6 (smart). Smart mode's
 olmOCR-bench score did not move (dev 77.21, test 74.31).
 
 MinerU still leads olmOCR-bench's dev split by 0.7. It is 10 and 11 points
@@ -378,13 +379,13 @@ Quality is graded as above.
 
 | | mean (11) | without Arabic/Hebrew (9) |
 |---|---:|---:|
-| docling | **84.7** | 86.5 |
-| filegoblin smart | 80.8 | **89.1** |
-| MinerU | 79.4 | 83.7 |
-| marker | 79.0 | 81.9 |
-| pymupdf4llm | 78.1 | 78.5 |
-| filegoblin off | 68.6 | 76.3 |
-| markitdown | 48.2 | 53.5 |
+| docling | **84.9** | 86.1 |
+| marker | 81.2 | 83.8 |
+| MinerU | 81.0 | 85.8 |
+| filegoblin smart | 80.7 | **89.1** |
+| pymupdf4llm | 79.1 | 79.7 |
+| filegoblin off | 70.0 | 76.7 |
+| markitdown | 49.1 | 54.4 |
 
 Both sets put filegoblin smart in the top group, not on its own at the top,
 and both put the fast path well behind pymupdf4llm.
@@ -515,24 +516,63 @@ of the rest of the page badly. The table uses the 16-article gold; with the
 first two alone the row read filegoblin smart 71.5, off 22.5, MinerU 57.0,
 marker 34.8, docling 67.6, pymupdf4llm 34.4.
 
+### The gold audit (2026-11-01)
+
+Every PDF gold page except NEWS_1's (55 pages in 25 cases) was transcribed independently by
+two models, Gemini 4 Argon (thinking High) and Claude Opus 5.5 (effort High),
+with the gold conventions in the prompt. Each place where they disagreed
+with the gold was then settled on the page: on born-digital pages the words
+against the text layer, on scans against a crop of the image, and the
+structure (tables, headings, order) against a 200–300 dpi render.
+
+- **Words held up.** Across about 1,000 places checked, no gold word was
+  misread on any page, scans included. Where a model differed, the page sided
+  with the gold: a space a receipt doesn't print, a footnote moved, a
+  contact block reordered.
+- **Structure and markup took 15 changes, one per file:** three headings
+  that weren't (two letterheads, a court caption); three real ones that
+  weren't marked (two labels, a table title); two multi-line titles split
+  into several headings (EU_ACCENT, CJK_JA); two form footer lines kept; a
+  readable receipt line left out; a table title split across a page break;
+  one Arabic mark order; seven footnote markers detached from their words;
+  and one marker in superscript parentheses. `test_assets/gauntlet/gold/README.md` now answers
+  each judgement call behind them.
+- **The grader had four bugs, now fixed.** It split Hebrew and Arabic words
+  at every vowel mark. It glued a citation marker to its word ("woodward1").
+  It scored LaTeX font commands (`\mathbf{A}` against `A`). And it stretched
+  an excerpt's span to the last repeated phrase anywhere in the window:
+  dropping one gold line from FORM_1 moved MinerU's precision from 0.92 to
+  0.63 with its output unchanged. The span is now the run of matches that
+  best fits the excerpt.
+
+The tables above use the corrected gold and grader. The same saved outputs
+moved by under a point on the old cases' means; on the 11 new cases the
+grader fixes moved marker by +2.6 and MinerU by +0.9, and the gold fixes by
+under a point. With the committed gold and grader of `5236b7a`, the means
+were: old PDF cases filegoblin smart 89.0, off 76.6, MinerU 61.0, marker
+80.4, docling 84.7, pymupdf4llm 74.9; new cases smart 80.8, off 68.6,
+MinerU 79.4, marker 79.0, docling 84.7, pymupdf4llm 78.1. No tool changed
+places on the old cases; on the new ones marker and MinerU moved level with
+filegoblin.
+
 The grader now counts each Chinese or Japanese ideograph or kana as a word. A
 clause written without spaces was otherwise one token, so a single line break
 cost the whole clause. No earlier case contains CJK, so no earlier score moved.
 
 | case | filegoblin smart | filegoblin off | MinerU | marker | docling | pymupdf4llm | markitdown |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| CJK_ZH | 90.2 | 67.1 | 83.1 | 85.3 | **92.3** | 88.9 | 70.7 |
-| CJK_JA | 87.7 | 82.8 | 86.8 | 83.5 | **90.2** | 86.9 | 76.4 |
-| RTL_AR | 35.5 | 41.5 | 53.9 | 63.3 | 69.8 | **72.6** | 30.4 |
-| RTL_HE | 52.1 | 26.4 | 65.4 | 68.2 | **83.4** | 79.5 | 18.5 |
-| EU_ACCENT | 80.3 | 83.7 | **90.9** | 73.0 | 83.7 | 84.3 | 62.1 |
-| RECEIPT_1 | 94.5 | 83.4 | **95.2** | 93.7 | 85.2 | 94.3 | 0.0 |
-| INVOICE_1 | 95.0 | 93.7 | 92.7 | **96.8** | 95.2 | 86.0 | 68.6 |
-| FORM_FILLED | 84.1 | 84.2 | 77.1 | 85.2 | **91.9** | 78.6 | 71.1 |
-| NEWS_1 | **87.1** | 27.5 | 85.9 | 48.3 | 44.3 | 28.0 | 0.0 |
-| NEWS_2 | 95.7 | 81.5 | 68.7 | 89.1 | **96.5** | 75.4 | 71.2 |
-| SLIDES_2 | 87.0 | 82.4 | 73.3 | 82.3 | **98.9** | 84.4 | 61.4 |
-| **mean** | 80.8 | 68.6 | 79.4 | 79.0 | **84.7** | 78.1 | 48.2 |
+| CJK_ZH | 89.4 | 70.3 | 87.4 | 88.0 | **91.5** | 87.8 | 70.7 |
+| CJK_JA | 90.8 | 82.1 | 89.9 | 85.8 | 87.4 | **91.6** | 78.5 |
+| RTL_AR | 35.5 | 52.8 | 55.6 | 73.4 | 68.8 | **74.3** | 31.9 |
+| RTL_HE | 50.5 | 26.4 | 62.7 | 65.2 | **89.7** | 79.2 | 18.5 |
+| EU_ACCENT | 80.8 | 84.2 | **93.4** | 71.9 | 82.6 | 83.3 | 68.3 |
+| RECEIPT_1 | **94.7** | 82.4 | 94.1 | 92.5 | 85.6 | 93.7 | 0.0 |
+| INVOICE_1 | 92.0 | 92.5 | 94.5 | **94.8** | 93.4 | 84.2 | 68.6 |
+| FORM_FILLED | 81.1 | 81.2 | 78.4 | 85.1 | **91.6** | 78.7 | 71.0 |
+| NEWS_1 | **89.5** | 28.9 | 87.8 | 59.6 | 49.3 | 34.0 | 0.0 |
+| NEWS_2 | 95.7 | 81.5 | 73.4 | 94.2 | **96.5** | 75.4 | 71.2 |
+| SLIDES_2 | 87.6 | 87.3 | 73.3 | 82.3 | **97.0** | 88.1 | 61.4 |
+| **mean** | 80.7 | 70.0 | 81.0 | 81.2 | **84.9** | 79.1 | 49.1 |
 
 No tool failed a conversion. On macOS, filegoblin's off mode OCRs image-only
 pages with Apple Vision, which is why it reads the receipt.

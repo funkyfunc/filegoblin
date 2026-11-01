@@ -2,7 +2,7 @@
 
 Mode: `--vision smart`
 
-**Canaries:** 29/29 (100.0%) · **Quality:** 91.4 / 100 (mean over 28 cases with gold excerpts)
+**Canaries:** 29/29 (100.0%) · **Quality:** 91.6 / 100 (mean over 28 cases with gold excerpts; regraded 2026-11-01)
 
 <!-- notes -->
 Measured 2026-10-31 on an Apple M4 Pro, after the 2026-10-30 pass (smart mode inside a 4 GB PDF worker, booktabs tables on the fast path, running heads that do not recur; see docs/ADR.md). Every run since the memory ceiling of `4283928` holds the CLI to 6 GB and its PDF worker to 4 GB (FILEGOBLIN_MEMORY_MB / FILEGOBLIN_PDF_MEMORY_MB, set by the harness), and converts one case at a time. With `--vision off` the same cases score 28/29 canaries and 84.3 quality; R2 fails there because the fast path writes no LaTeX. Other tools on the same cases: docs/COMPARISON.md (`run_gauntlet.py --engine`).
@@ -20,7 +20,9 @@ Measured 2026-10-31 on an Apple M4 Pro, after the 2026-10-30 pass (smart mode in
 
 The 2026-10-30 pass: R1, R2, BOOK_2, FIN_1, CLIN_1 and FDA_1 convert again inside the 4 GB worker; CSI_SPEC 76.2 → 91.2 and SCOTUS_1 78.4 → 88.4 in both modes (running heads); SCI_2 64.8 → 71.6 with `--vision off` (booktabs tables); no case lost ground in either mode. The 83.0 → 83.1 off-mode step is the grader now ignoring inline HTML tags (`<br/>` in table cells), not a change in output.
 
-The gauntlet is filegoblin's own acceptance suite: every change since 2026-10-14 was kept only if no case lost ground, so its scores measure regressions, not standing against other tools. On 11 fresh cases written after the tuning, filegoblin smart scored 80.8 against docling's 84.7 (docs/reviews/2026-11-01-claims-audit.md).
+The gauntlet is filegoblin's own acceptance suite: every change since 2026-10-14 was kept only if no case lost ground, so its scores measure regressions, not standing against other tools. On 11 fresh cases written after the tuning, filegoblin smart scored 80.7 against docling's 84.9 (docs/reviews/2026-11-01-claims-audit.md).
+
+Regraded 2026-11-01 after the gold audit (`docs/COMPARISON.md`, "The gold audit"): the same saved outputs score 91.6 (smart) and 84.7 (off); the table above and the per-case rows below keep the 2026-10-31 grading.
 
 This block is kept when a run rewrites the scorecard; edit it by hand.
 <!-- /notes -->

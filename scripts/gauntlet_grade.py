@@ -126,6 +126,22 @@ def _html_table(m: re.Match) -> str:
     return "\n\n" + "\n".join(lines) + "\n\n"
 
 
+# Hebrew points and Arabic vowel marks are combining characters, so the word
+# pattern would split a word at each one (מִנהל → מ + נהל), and two orders of
+# the same marks (alef + tanween or tanween + alef) would tokenize differently.
+_RTL_MARKS = re.compile("[֑-ׇֽֿׁׂׅׄ"
+                        "ؐ-ًؚ-ٰٟۖ-ۜ۟-۪ۤۧۨ-ۭ]")
+
+
+# A numeric superscript attached to a word is a citation or footnote marker
+# however it is written (Woodward¹, Woodward<sup>1</sup>, Woodward$^{1}$);
+# left in, NFKC would glue it to the word (woodward1) and each spelling would
+# score differently.
+_SUP = "¹²³⁰⁴-⁹"
+_CITATION = re.compile(rf"(?<![(\[\u207d])(?:<sup>\s*[\d,\-–]+\s*</sup>|\$\^\{{?[\d,\-–]+\}}?\$|[{_SUP}]+(?:[,⁻][{_SUP}]+)*)",
+                       re.I)
+
+
 def clean(text: str) -> str:
     """Output or gold → comparable text: no comments, no file banners,
     Mermaid diagrams reduced to their labels, HTML tables (another tool's
@@ -135,10 +151,12 @@ def clean(text: str) -> str:
     text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
     text = re.sub(r"<table\b.*?</table>", _html_table, text, flags=re.S | re.I)
     text = re.sub(r"<br\s*/?>", " ", text, flags=re.I)
+    text = _CITATION.sub("", text)
     text = re.sub(r"</?(?:span|sup|sub|b|i|u|em|strong|p|div|a)"
                   r"""(?:\s+[\w-]+(?:=(?:"[^"<>]*"|'[^'<>]*'|[\w-]+))?)*\s*/?>""", "", text, flags=re.I)
     text = re.sub(r"(?m)^// --- FILE_(START|END).*$", " ", text)
     text = unicodedata.normalize("NFKC", text).replace("\u00ad", "")
+    text = _RTL_MARKS.sub("", text)
     text = text.translate(_DASHES).translate(_QUOTES)
     for k, v in _UNI_MATH.items():
         text = text.replace(k, v)
@@ -251,10 +269,22 @@ def text_scores(gold: list[str], window: list[str]) -> dict:
     lcs = sum(b.size for b in blocks)
     if not blocks:
         return {"completeness": 0.0, "precision": 0.0, "order": 0.0, "text": 0.0, "span": (0, 0)}
-    # The span the excerpt occupies: from the first to the last matched run
-    # of 2+ words (single-word matches at the edges are coincidences).
+    # The span the excerpt occupies: the run of matched blocks of 2+ words
+    # (single-word matches are coincidences) that best fits it, by the F1 of
+    # recall and precision. First-to-last would let one phrase the document
+    # repeats far away ("adjusted gross income" on the next page) stretch the
+    # span over unrelated text.
     solid = [b for b in blocks if b.size >= 2] or blocks
-    s0, s1 = solid[0].b, solid[-1].b + solid[-1].size
+    best, s0, s1 = -1.0, solid[0].b, solid[-1].b + solid[-1].size
+    for i in range(len(solid)):
+        matched = 0
+        for j in range(i, len(solid)):
+            matched += solid[j].size
+            length = solid[j].b + solid[j].size - solid[i].b
+            r, p = matched / len(gold), matched / length
+            f = 2 * r * p / (r + p)
+            if f > best:
+                best, s0, s1 = f, solid[i].b, solid[j].b + solid[j].size
     span = window[s0:s1]
     g, o = Counter(gold), Counter(span)
     present = sum((g & Counter(window)).values())
@@ -361,7 +391,13 @@ def _formulas(text: str) -> list[str]:
 def _norm_tex(t: str) -> str:
     t = re.sub(r"\\(left|right|big|Big|bigg|Bigg)\b", "", t)
     t = re.sub(r"\\[,;:! ]|\\quad|\\qquad|~", "", t)
-    t = re.sub(r"\\(mathrm|text|operatorname|mathit|mathbf|boldsymbol|mathbb|mathcal)\s*", r"\\\1", t)
+    # Font is typesetting (\mathbf{A} and A are the same symbol to a reader);
+    # \mathbb and \mathcal change the symbol (ℝ is not R), so they stay.
+    for _ in range(3):
+        t = re.sub(r"\\(?:mathrm|textrm|textbf|text|operatorname|mathit|mathbf|boldsymbol|bm)\s*\{([^{}]*)\}", r"\1", t)
+    t = re.sub(r"\\(?:mathrm|textrm|text|operatorname|mathit|mathbf|boldsymbol|bm)\s*(\w)", r"\1", t)
+    t = re.sub(r"\\(mathbb|mathcal)\s*", r"\\\1", t)
+    t = re.sub(r"([_^])\{(\w)\}", r"\1\2", t)
     t = re.sub(r"\\(leq)\b", r"\\le", t)
     t = re.sub(r"\\(geq)\b", r"\\ge", t)
     return re.sub(r"\s+", "", t)
