@@ -1460,3 +1460,57 @@ Measured: six `--vision smart` runs on old scans started together with 2 slots. 
 **Not covered.** Arbitrary Python or other tools a session runs itself. Agents running benchmarks should still keep concurrent heavy jobs low.
 
 **Status:** Accepted.
+
+## 2026-11-01: A page reader for handwritten and math scans (LightOnOCR-2-1B)
+
+**Context.** Smart mode trailed MinerU 4.1.2 by 0.7 overall points on the olmOCR-bench dev split (77.21 vs 77.93), almost all of it in the two scanned categories: old_scans 28.8 (MinerU 38.8, marker 42.5) and old_scans_math 65.0 (76.2, 82.5). PP-OCRv6 reads print well and handwriting badly ("Chif - Justier waili, of lwashinglin"). On scans of printed math, OCR and the formula model each read pieces of one derivation. MinerU and marker read such pages whole with a vision-language model. The study is `docs/reviews/2026-11-01-scan-models.md`.
+
+**Study (dev split, 13 old_scans + 6 old_scans_math pages).** Only models under MIT, Apache-2.0 or BSD were considered. Results:
+- TrOCR-base-handwritten (MIT), re-reading PP-OCR's line crops, did worse than PP-OCRv6 on 19th-century cursive (soft score 61.0 vs 66.9). Its language model writes fluent English that isn't on the page.
+- PaddleOCR-VL-1.5 (Apache-2.0) was good (84.7 on 5 pages) but behind LightOnOCR on every page, and slower.
+- granite-docling-258M looped on handwriting.
+- LightOnOCR-2-1B (Apache-2.0: Pixtral encoder plus Qwen3-0.6B, an OCR-only decoder), reading whole pages, matched marker on old_scans (42.5) and beat it on old_scans_math (86.2). It loses on long printed pages, so it is a model to route to, not a replacement.
+- The cheap signal is PP-OCR's own confidence, as a character-weighted mean line score. It separates every handwritten dev page (0.61–0.85) from every printed one (0.94 and up).
+
+**Decision.**
+- A new optional model, `vision::reader`: LightOnOCR-2-1B as four rten graphs, 790 MB in all. `scripts/vision_models.py` builds them (new `reader` step). The encoder is rebuilt to take any page size; the decoder is rebuilt as a step with a key/value cache per layer, with keys stored transposed and grouped-query attention by broadcasting, so a step never copies the cache. Both are quantized to symmetric 4-bit `MatMulNBits` with int8 compute. The encoder sees at most 1008 px: attention at 1540 px would need about 5 GB. The script was run from scratch, and its four files compute the same as the ones measured here (largest difference 0.0 on the encoder, decoder and embeddings; the vocabulary is byte-identical). The committed results come from those rebuilt files.
+- In `convert_scanned_page_gated`, after layout and OCR, a scanned page goes to the reader when OCR confidence is at most 0.92, or when the layout model found at least 3 formulas on it (6–22 on the dev math scans, 0 or 1 on every other scanned dev page) and OCR confidence is below 0.975. The dev math scans are old and worn, 0.94–0.97. A clean scan of a printed math book is 0.98–0.99: the gauntlet's R2 (Zeitz), whose six pages all went to the reader under the formula rule alone, came out worse (quality 93.2 → 88.4, a running head leaked) and nine times slower (41 → 360 s). If the reader is missing, does not fit, or does not finish (1,536 tokens or a repeating tail), the page keeps the PP-OCR reading. Text-layer pages and confident scans never reach it.
+- The reader writes out the whole page, running heads and folios included. Among its first and last 8 lines, a line is dropped when OCR read every one of its words inside a furniture region (what `assemble` drops), and among the first and last 3, a bare page number. The test split's first run showed this was needed (headers_footers −1.9).
+- It loads lazily and only when the process may hold 4 GB (a routed page peaked at 3.1 GB with the whole pipeline loaded). Before each page it also checks that what the process holds now, plus 1,280 MB, is within the budget: the reader adds 0.7–1.1 GB to the pipeline's peak, and on R2's six pages a PDF worker held to 4 GB went over and was killed with the whole document. `FILEGOBLIN_READER=0` switches it off.
+- The reader reports progress to the PDF worker's parent after encoding and every 32 tokens. A conversion waiting for a machine-wide vision slot now does too: while a routed page held a slot, an unrelated printed page waiting for one was stopped by the 120 s no-progress timeout.
+- It ships in the model archive (`--install-models`, now about 1.3 GB) and in `filegoblin-full`. It is not in the PyPI or npm model packages: that would need new package names, which only the maintainer can create. `--models-status` lists it as an optional set.
+
+**Rejected.**
+- onnx-community's LightOnOCR export: it needs onnxruntime-only ops (`GroupQueryAttention`, `MultiHeadAttention`, `SkipSimplifiedLayerNormalization`, `GatherBlockQuantized`).
+- The first decoder export, which sliced and re-stacked a 28-layer cache and copied it again for grouped-query attention: 461 ms per token against 165–230 ms now.
+- Float compute for `MatMulNBits` (slower) and int8 `MatMulInteger` weights (no faster, 60% bigger).
+- The encoder at 1540 px (memory), and in fp32 (it did not recover the few exact-string tests that 1008 px loses).
+- Attention one head at a time in the encoder, to avoid holding all sixteen score matrices at once: the peak did not move (2.93 GB vs 2.89 on a math scan), because those matrices are not what peaks, and encoding took 7.9 s instead of 6.7.
+
+**Results.**
+
+| olmOCR-bench dev | before | after | MinerU 4.1.2 | marker 2.1 |
+|---|---:|---:|---:|---:|
+| old_scans | 28.8 | **37.5** | 38.8 | 42.5 |
+| old_scans_math | 65.0 | **83.8** | 76.2 | 82.5 |
+| **overall** | **77.21** | **80.65** | 77.93 | 70.80 |
+
+No other dev category moved: none of their scanned pages crosses either threshold. Tests lost on dev: 2, both on 4_pg512, whose 21 display formulas the pipeline already had right.
+
+The test split (1,223 PDFs; runs `cs-final-test` and `scan-test-final5`, the committed build and the rebuilt models):
+
+| olmOCR-bench test | before | after |
+|---|---:|---:|
+| old_scans | 28.9 | **39.9** |
+| old_scans_math | 47.6 | **67.2** |
+| headers_footers | 91.6 | 91.2 |
+| table_tests | 80.0 | 80.6 |
+| **overall** | **74.31** | **78.17** |
+
+143 tests gained, 16 lost. Of the losses, 12 are formulas on routed math pages that the pipeline had right, 3 are the letterhead of one Bengali notice, and 1 is a pencilled "ack 5/27/14" on a letter. PP-OCR has no Bengali, and the old reading of that notice was noise ("A-SNOG", "26H02120222"), so it passed the tests that check a header is absent. The reader transcribes it, letterhead included, and the margin filter can't match words OCR never read. The split was run three times, and each run changed the code. The first showed the leaking running heads (headers_footers −1.9), hence the margin filter. The second, before the gauntlet showed R2, routed every formula page: old_scans_math 72.8, overall 78.89. The confidence cap on the formula rule costs 5.6 points of test old_scans_math, and that is the price of R2 not going down.
+
+Gauntlet, smart mode, against `cs-final-smart`: 29/29 canaries, and no case's quality moved (mean 91.5 both; R2 93.2 both). No gauntlet page reaches the reader under the final rules.
+
+Cost: printed and text-layer pages are unchanged. A routed handwritten page takes 29–84 s and a routed math page 92–159 s (before, 5–40 s), measured two at a time on a machine shared with two benchmarking sessions. A long handwritten document is now slow: about a minute a page.
+
+**Status:** Accepted.

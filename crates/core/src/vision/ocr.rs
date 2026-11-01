@@ -185,6 +185,14 @@ impl RotBox {
 
 /// Detects and reads every text line in the image.
 pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
+    read_with_confidence(img).map(|(lines, _)| lines)
+}
+
+/// [`read`], and how sure the recognizer was of the page: the mean score of
+/// every line it read, each weighted by its length in characters, counting
+/// the lines too unsure to keep. `None` for a page with no text at all.
+/// Printed text scores 0.94 and up; handwriting 0.6–0.85.
+pub fn read_with_confidence(img: &RgbImage) -> Option<(Vec<Line>, Option<f32>)> {
     let o = ocr()?;
     let t = std::time::Instant::now();
     let boxes = detect(o, img)?;
@@ -192,6 +200,7 @@ pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
     let mut best: Vec<Reading> = vec![Reading::default(); boxes.len()];
     read_crops(o, &boxes, &mut best, |b| b.warp(img, REC_HEIGHT))?;
     keep_one_script(&mut best);
+    let confidence = page_confidence(&best);
     let mut lines: Vec<Line> = Vec::with_capacity(boxes.len());
     for (b, Reading { text, score, .. }) in boxes.iter().zip(best) {
         let t = text.trim().to_string();
@@ -210,12 +219,23 @@ pub fn read(img: &RgbImage) -> Option<Vec<Line>> {
     }
     if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
         eprintln!(
-            "ocr: {} lines, detect {t_det:?}, recognize {:?}",
+            "ocr: {} lines, confidence {confidence:.3?}, detect {t_det:?}, recognize {:?}",
             lines.len(),
             t.elapsed() - t_det
         );
     }
-    Some(lines)
+    Some((lines, confidence))
+}
+
+/// Mean score of the readings, weighted by their length in characters.
+fn page_confidence(readings: &[Reading]) -> Option<f32> {
+    let (mut sum, mut chars) = (0f32, 0usize);
+    for r in readings {
+        let n = r.text.chars().count();
+        sum += r.score * n as f32;
+        chars += n;
+    }
+    (chars > 0).then(|| sum / chars as f32)
 }
 
 /// One line's reading, and — when it holds CJK symbols — the reading with
@@ -658,6 +678,23 @@ mod tests {
         let mut page = vec![reading("十", Some("+")), reading("ab", None)];
         keep_one_script(&mut page);
         assert_eq!(page[0].text, "十");
+    }
+
+    #[test]
+    fn page_confidence_weights_lines_by_length() {
+        let reading = |text: &str, score: f32| Reading {
+            text: text.into(),
+            score,
+            without_cjk: None,
+        };
+        let page = [
+            reading("a long and confidently read line", 1.0),
+            reading("shky", 0.2),
+            reading("", 0.0),
+        ];
+        let c = page_confidence(&page).unwrap();
+        assert!((c - (32.0 + 0.8) / 36.0).abs() < 1e-6, "{c}");
+        assert_eq!(page_confidence(&[reading("", 0.9)]), None);
     }
 
     #[test]

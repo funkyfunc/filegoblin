@@ -1,6 +1,7 @@
 //! `--install-models`: downloads this version's PDF vision model archive
-//! (`filegoblin-vision-models.tar.gz`, about 500 MB) from the GitHub release,
-//! checks its SHA-256 against the published `.sha256`, and unpacks it into
+//! (`filegoblin-vision-models.tar.gz`, about 1.3 GB with the page reader)
+//! from the GitHub release, checks its SHA-256 against the published
+//! `.sha256`, and unpacks it into
 //! `~/.filegoblin/models` or a directory of the user's choosing.
 //!
 //! `FILEGOBLIN_MODELS_URL` replaces the download URL (the `.sha256` is

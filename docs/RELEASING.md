@@ -71,6 +71,8 @@ The model packages are one per model, named for what it does:
 | `tables-1`, `tables-2` | table structure (Table Transformer v1.1, 118 MB, in halves) |
 | `ocr-detector`, `ocr-recognizer` | OCR for scanned pages (PP-OCRv6 medium) |
 
+The page reader (`lighton-*`, LightOnOCR-2-1B, about 790 MB) is in the model archive and in `filegoblin-full`, but in no registry package: it would need four to eight new package names, which only you can create. Registry installs work without it (scanned pages then all go through PP-OCR); `--models-status` lists it as optional.
+
 The two models over PyPI's 100 MB per-file limit come in halves; company package mirrors often have the same limit. filegoblin joins the halves when it loads the model. The splits are fixed in `MODEL_PACKAGES` in `scripts/package_registries.py`, so the names never change, and the build fails if a model outgrows its split.
 
 ## One-time registry setup

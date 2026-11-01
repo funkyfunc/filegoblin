@@ -2,8 +2,10 @@
 //!
 //! Everything here is pure Rust: pages are rasterized with `hayro` and the
 //! networks run on `rten`. No system libraries, no Python, no network and no
-//! LLM at runtime. The weights are permissively licensed ONNX files that ship
-//! next to the binary (see [`models`]).
+//! general-purpose LLM at runtime (the page reader's decoder is a 0.6 B
+//! language model trained only to transcribe pages). The weights are
+//! permissively licensed ONNX files that ship next to the binary (see
+//! [`models`]).
 //!
 //! * [`layout`] — PP-DocLayoutV3 (Apache-2.0): page regions (titles,
 //!   headings, paragraphs, tables, figures, captions, display *and inline*
@@ -13,12 +15,16 @@
 //!   header rows and spanning cells of a table image.
 //! * [`ocr`] — PP-OCRv6 medium (Apache-2.0): text line detection and
 //!   recognition, for pages that have no usable text layer.
+//! * [`reader`] — LightOnOCR-2-1B (Apache-2.0), optional: reads a whole
+//!   scanned page as Markdown when PP-OCR is unsure of it (handwriting) or
+//!   the page is full of formulas.
 
 pub mod formula;
 pub mod install;
 pub mod layout;
 pub mod models;
 pub mod ocr;
+pub mod reader;
 pub mod render;
 pub mod table;
 
@@ -222,6 +228,10 @@ fn wait_for_slot(quiet: bool) -> Option<std::fs::File> {
             );
             told = true;
         }
+        // Waiting is not being stuck: a PDF worker's parent stops a worker
+        // that sends no news for two minutes, and a page the page reader
+        // takes can hold a slot that long.
+        crate::parsers::pdf_worker::still_working();
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
 }

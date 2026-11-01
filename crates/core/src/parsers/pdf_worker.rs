@@ -139,6 +139,14 @@ pub(crate) fn page_done() {
     PAGES_DONE.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Records progress inside one long page: the page reader writes a
+/// handwritten page for a minute or more, longer than the parent waits
+/// without news.
+#[cfg(feature = "vision")]
+pub(crate) fn still_working() {
+    PAGES_DONE.fetch_add(1, Ordering::Relaxed);
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
