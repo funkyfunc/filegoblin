@@ -1,0 +1,340 @@
+//! Whole-page reading with LightOnOCR-2-1B (Apache-2.0), for scanned pages
+//! that PP-OCR reads poorly: handwriting, and printed math.
+//!
+//! A Pixtral encoder (Apache-2.0) turns the page image into one feature per
+//! 28×28 pixel block; a Qwen3-0.6B decoder (Apache-2.0) then writes the
+//! page's Markdown token by token. Both run as 4-bit graphs (`MatMulNBits`)
+//! rebuilt from the released weights by `scripts/vision_models.py`; the
+//! decoder takes a key/value cache per layer, so each token reads the page so
+//! far instead of recomputing it.
+//!
+//! It is a heavy model (about 0.8 GB of weights, 1–2 GB while it runs, and
+//! tens of seconds a page on a CPU), so it reads only the scanned pages the
+//! pipeline hands it; see [`ROUTE_BELOW`] and [`ROUTE_FORMULAS`].
+
+use super::models;
+use image::RgbImage;
+use rten::{Model, ValueOrView};
+use rten_tensor::prelude::*;
+use rten_tensor::{NdTensor, NdTensorView};
+use std::sync::OnceLock;
+
+/// A scanned page goes to the reader when PP-OCR's confidence in it,
+/// averaged over its characters, is at most this. On the olmOCR-bench dev
+/// split handwritten pages score 0.61–0.85 and printed ones 0.94 or more
+/// (2026-11-01 scan-model study).
+pub const ROUTE_BELOW: f32 = 0.92;
+/// A scanned page also goes to the reader when the layout model finds at
+/// least this many formulas on it. On the dev split's scans of printed math
+/// it found 6–22; on every other scanned page, 0 or 1.
+pub const ROUTE_FORMULAS: usize = 3;
+/// …but only when OCR is below this confidence in it. The dev split's math
+/// scans, old and worn, score 0.94–0.97; a clean scan of a printed math book
+/// scores 0.98–0.99 (the gauntlet's R2), and the pipeline already reads it
+/// better than the reader, and nine times faster.
+pub const ROUTE_FORMULAS_BELOW: f32 = 0.975;
+
+/// Longest side of the image the encoder sees. Attention over the page's
+/// blocks grows with their square: at 1008 pixels a page is about 4,000
+/// blocks and 1 GB of attention; at 1540 it was 9,000 and 5 GB.
+const MAX_SIDE: u32 = 1008;
+/// The encoder's patch (14 pixels) times its 2×2 merge.
+const BLOCK: u32 = 28;
+/// Most tokens one page may take. A handwritten letter is 150–300, a dense
+/// page of math 700.
+const MAX_TOKENS: usize = 1536;
+/// Below this budget the reader is not loaded at all: a handwritten page
+/// peaked at 3.1 GB with the reader and the rest of the pipeline loaded.
+const MIN_BUDGET_MB: u64 = 4096;
+/// What reading a page may add to the process: the weights when they are
+/// not loaded yet, and the encoder's and decoder's working memory. The
+/// reader added 0.7–1.1 GB to the pipeline's peak on a dev math scan and on
+/// a six-page scanned book (the gauntlet's R2).
+const NEED_MB: u64 = 1280;
+
+const MEAN: [f32; 3] = [0.481_454_66, 0.457_827_5, 0.408_210_73];
+const STD: [f32; 3] = [0.268_629_54, 0.261_302_6, 0.275_777_1];
+/// `<|im_start|>system<|im_end|>\n<|im_start|>user\n`
+const PROMPT_HEAD: [i32; 7] = [151_644, 8948, 151_645, 198, 151_644, 872, 198];
+/// `<|im_end|>\n<|im_start|>assistant\n`
+const PROMPT_TAIL: [i32; 5] = [151_645, 198, 151_644, 77091, 198];
+/// `<|image_pad|>`: one per image block, replaced by its feature.
+const IMAGE: i32 = 151_655;
+/// `<|im_end|>` and `<|endoftext|>`.
+const STOP: [i32; 2] = [151_645, 151_643];
+const LAYERS: usize = 28;
+const KV_HEADS: usize = 8;
+const HEAD_DIM: usize = 128;
+
+struct Reader {
+    vision: Model,
+    embed: Model,
+    step: Model,
+    /// token id → decoded bytes
+    vocab: Vec<Vec<u8>>,
+}
+
+fn reader() -> Option<&'static Reader> {
+    static M: OnceLock<Option<Reader>> = OnceLock::new();
+    M.get_or_init(|| {
+        if std::env::var("FILEGOBLIN_READER")
+            .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"))
+            || crate::memory::budget_mb() < MIN_BUDGET_MB
+        {
+            return None;
+        }
+        Some(Reader {
+            vision: models::load(models::READER_VISION)?,
+            embed: models::load(models::READER_EMBED)?,
+            step: models::load(models::READER_STEP)?,
+            vocab: super::formula::load_vocab(&models::read_text(models::READER_VOCAB)?)?,
+        })
+    })
+    .as_ref()
+}
+
+/// True when the reader's weights are installed (without loading them).
+pub fn installed() -> bool {
+    [
+        models::READER_VISION,
+        models::READER_EMBED,
+        models::READER_STEP,
+        models::READER_VOCAB,
+    ]
+    .iter()
+    .all(|f| models::available(f))
+}
+
+/// The page's Markdown, or `None` when the reader is not installed, is
+/// switched off (`FILEGOBLIN_READER=0`), does not fit the memory budget (or
+/// what is left of it), or did not finish the page (a decode that runs to
+/// the token limit is a loop, not a page).
+pub fn read_page(img: &RgbImage) -> Option<String> {
+    if !installed() || !fits() {
+        return None;
+    }
+    let r = reader()?;
+    let t = std::time::Instant::now();
+    let (w, h) = encoder_size(img.width(), img.height());
+    let features = encode(r, img, w, h)?;
+    crate::parsers::pdf_worker::still_working();
+    let t_vision = t.elapsed();
+    let toks = generate(r, &features)?;
+    let text = super::formula::decode(&r.vocab, &toks);
+    if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
+        eprintln!(
+            "reader: {w}x{h}, {} blocks, {} tokens, vision {t_vision:?}, total {:?}",
+            features.size(0),
+            toks.len(),
+            t.elapsed()
+        );
+    }
+    let text = without_pictures(&text);
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// The reader marks each picture on the page with a link to an image file
+/// it does not produce (`![image](image_1.png)`, sometimes in a centered
+/// `<div>`): drop them.
+fn without_pictures(text: &str) -> String {
+    static PICTURE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?:<div[^>]*>\s*)?!\[image\]\(image_\d+\.\w+\)(?:\s*</div>)?\n?")
+            .expect("valid regex")
+    });
+    static BLANK: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\n{3,}").expect("valid regex"));
+    BLANK
+        .replace_all(&PICTURE.replace_all(text, ""), "\n\n")
+        .into_owned()
+}
+
+/// Whether the process can take on a page for the reader without crossing
+/// its budget: a long scan already holds more than a single page, and a PDF
+/// worker past its ceiling is killed with the whole document.
+fn fits() -> bool {
+    crate::memory::footprint()
+        .is_none_or(|held| (held >> 20) + NEED_MB <= crate::memory::budget_mb())
+}
+
+/// The encoder's input size for an image: the longest side at most
+/// [`MAX_SIDE`], both sides whole blocks.
+fn encoder_size(w: u32, h: u32) -> (u32, u32) {
+    let s = (MAX_SIDE as f32 / w.max(h) as f32).min(1.0);
+    let fit = |v: u32| (((v as f32 * s) as u32) / BLOCK * BLOCK).max(BLOCK);
+    (fit(w), fit(h))
+}
+
+/// One feature per image block, `[blocks, 1024]`.
+fn encode(r: &Reader, img: &RgbImage, w: u32, h: u32) -> Option<NdTensor<f32, 2>> {
+    let small = image::imageops::resize(img, w, h, image::imageops::FilterType::CatmullRom);
+    let (wu, hu) = (w as usize, h as usize);
+    let mut x = NdTensor::<f32, 4>::zeros([1, 3, hu, wu]);
+    for (px, py, p) in small.enumerate_pixels() {
+        for c in 0..3 {
+            x[[0, c, py as usize, px as usize]] = (f32::from(p[c]) / 255.0 - MEAN[c]) / STD[c];
+        }
+    }
+    let input = *r.vision.input_ids().first()?;
+    let out = r
+        .vision
+        .run(
+            vec![(input, ValueOrView::from(x.view()))],
+            r.vision.output_ids(),
+            None,
+        )
+        .ok()?;
+    out.into_iter().next()?.try_into().ok()
+}
+
+/// Token embeddings, `[1, n, 1024]`.
+fn embed(r: &Reader, ids: &[i32]) -> Option<NdTensor<f32, 3>> {
+    let ids = NdTensor::<i32, 2>::from_data([1, ids.len()], ids.to_vec());
+    let input = *r.embed.input_ids().first()?;
+    let out = r
+        .embed
+        .run(
+            vec![(input, ValueOrView::from(ids.view()))],
+            r.embed.output_ids(),
+            None,
+        )
+        .ok()?;
+    out.into_iter().next()?.try_into().ok()
+}
+
+/// The prompt around `blocks` image features.
+fn prompt(blocks: usize) -> Vec<i32> {
+    let mut ids = PROMPT_HEAD.to_vec();
+    ids.extend(std::iter::repeat_n(IMAGE, blocks));
+    ids.extend(PROMPT_TAIL);
+    ids
+}
+
+/// Greedy decoding after the image; the tokens before the stop token, or
+/// `None` if the page never ended.
+fn generate(r: &Reader, features: &NdTensor<f32, 2>) -> Option<Vec<i32>> {
+    let ids = prompt(features.size(0));
+    let mut x = embed(r, &ids)?;
+    for b in 0..features.size(0) {
+        for d in 0..features.size(1) {
+            x[[0, PROMPT_HEAD.len() + b, d]] = features[[b, d]];
+        }
+    }
+    let node = |name: &str| r.step.find_node(name);
+    let (n_x, n_start) = (node("inputs_embeds")?, node("start")?);
+    let n_past = (0..LAYERS)
+        .flat_map(|i| [format!("past_k_{i}"), format!("past_v_{i}")])
+        .map(|name| node(&name))
+        .collect::<Option<Vec<_>>>()?;
+    // Per layer, keys stored transposed `[1, KV, 1, HEAD_DIM, t]` and values
+    // `[1, KV, 1, t, HEAD_DIM]`: the step attends to them as they are and
+    // only appends, so no token copies the cache more than once.
+    let mut past: Vec<NdTensor<f32, 5>> = (0..2 * LAYERS)
+        .map(|i| {
+            NdTensor::zeros(if i % 2 == 0 {
+                [1, KV_HEADS, 1, HEAD_DIM, 0]
+            } else {
+                [1, KV_HEADS, 1, 0, HEAD_DIM]
+            })
+        })
+        .collect();
+    let mut pos = 0usize;
+    let mut out: Vec<i32> = Vec::new();
+    while out.len() < MAX_TOKENS {
+        let start = NdTensor::<i32, 1>::from_data([1], vec![pos as i32]);
+        let mut inputs = vec![
+            (n_x, ValueOrView::from(x.view())),
+            (n_start, ValueOrView::from(start.view())),
+        ];
+        inputs.extend(
+            n_past
+                .iter()
+                .zip(&past)
+                .map(|(&id, t)| (id, ValueOrView::from(t.view()))),
+        );
+        let o = r.step.run(inputs, r.step.output_ids(), None).ok()?;
+        pos += x.size(1);
+        let mut o = o.into_iter();
+        let logits: NdTensor<f32, 2> = o.next()?.try_into().ok()?;
+        past = o.map(|v| v.try_into().ok()).collect::<Option<Vec<_>>>()?;
+        let next = argmax(logits.view())?;
+        if STOP.contains(&next) {
+            return Some(out);
+        }
+        out.push(next);
+        if looping(&out) {
+            return None;
+        }
+        if out.len().is_multiple_of(32) {
+            crate::parsers::pdf_worker::still_working();
+        }
+        x = embed(r, &[next])?;
+    }
+    None
+}
+
+fn argmax(logits: NdTensorView<f32, 2>) -> Option<i32> {
+    let mut best: Option<(f32, usize)> = None;
+    for v in 0..logits.size(1) {
+        let l = logits[[0, v]];
+        if best.is_none_or(|(b, _)| l > b) {
+            best = Some((l, v));
+        }
+    }
+    best.map(|(_, v)| v as i32)
+}
+
+/// The decode has fallen into a cycle: its last 96 tokens are one run of at
+/// most 24 tokens repeated (a model that loses its place on a page writes
+/// the same line, or the same "1 1 1", until the token limit).
+fn looping(toks: &[i32]) -> bool {
+    const SPAN: usize = 96;
+    if toks.len() < SPAN {
+        return false;
+    }
+    let tail = &toks[toks.len() - SPAN..];
+    (1..=24).any(|p| tail.iter().skip(p).zip(tail).all(|(a, b)| a == b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoder_input_is_whole_blocks_within_the_cap() {
+        assert_eq!(encoder_size(2550, 3300), (756, 1008));
+        assert_eq!(encoder_size(3300, 2550), (1008, 756));
+        // Smaller than the cap: not enlarged, only cut to whole blocks.
+        assert_eq!(encoder_size(600, 450), (588, 448));
+        assert_eq!(encoder_size(10, 10), (28, 28));
+    }
+
+    #[test]
+    fn the_prompt_holds_one_image_token_per_block() {
+        let p = prompt(4);
+        assert_eq!(p.len(), PROMPT_HEAD.len() + 4 + PROMPT_TAIL.len());
+        assert_eq!(&p[..7], &PROMPT_HEAD);
+        assert!(p[7..11].iter().all(|&t| t == IMAGE));
+        assert_eq!(&p[11..], &PROMPT_TAIL);
+    }
+
+    #[test]
+    fn picture_placeholders_are_dropped() {
+        let md = "# Notice\n\n<div style=\"text-align: center;\">\n    ![image](image_1.png)\n</div>\n\nText.\n\n![image](image_2.png)\nFig. 3 Viscosity";
+        assert_eq!(
+            without_pictures(md),
+            "# Notice\n\nText.\n\nFig. 3 Viscosity"
+        );
+    }
+
+    #[test]
+    fn a_repeating_tail_is_a_loop_and_prose_is_not() {
+        let cycle: Vec<i32> = (0..200).map(|i| [5, 9, 13][i % 3]).collect();
+        assert!(looping(&cycle));
+        let ones = vec![16; 120];
+        assert!(looping(&ones));
+        let prose: Vec<i32> = (0..300).map(|i| i * 7919 % 1013).collect();
+        assert!(!looping(&prose));
+        assert!(!looping(&ones[..50]));
+    }
+}

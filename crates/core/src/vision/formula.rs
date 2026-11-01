@@ -214,7 +214,7 @@ fn select_batch(t: &NdTensor<f32, 5>, slots: &[usize]) -> NdTensor<f32, 5> {
 }
 
 /// Byte-level BPE vocabulary from a HuggingFace `tokenizer.json`.
-fn load_vocab(json: &str) -> Option<Vec<Vec<u8>>> {
+pub(super) fn load_vocab(json: &str) -> Option<Vec<Vec<u8>>> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let map = v.get("model")?.get("vocab")?.as_object()?;
     let unicode_to_byte = byte_decoder();
@@ -254,7 +254,7 @@ fn byte_decoder() -> HashMap<char, u8> {
         .collect()
 }
 
-fn decode(vocab: &[Vec<u8>], toks: &[i32]) -> String {
+pub(super) fn decode(vocab: &[Vec<u8>], toks: &[i32]) -> String {
     let bytes: Vec<u8> = toks
         .iter()
         .filter_map(|&t| vocab.get(t as usize))

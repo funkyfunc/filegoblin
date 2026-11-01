@@ -255,9 +255,43 @@ fn convert_scanned_page_gated(
     let regions = layout::detect(&img)?;
     debug_regions(page, &regions);
     let t_layout = t.elapsed();
-    let words = ocr_words(&img, true);
+    let (words, confidence) = ocr_words_scored(&img, true);
+    // A page PP-OCR is unsure of is handwriting (or something else it cannot
+    // read line by line), and on a worn scan full of formulas OCR and the
+    // formula model each read pieces of what is one derivation: the page
+    // reader reads either whole, when installed.
+    let formulas = regions
+        .iter()
+        .filter(|r| matches!(r.label, Label::DisplayFormula | Label::InlineFormula))
+        .count();
     let (w, h) = (img.rgb.width() as f32, img.rgb.height() as f32);
     let pb = img.to_user(0.0, 0.0, w, h);
+    let route = confidence.is_some_and(|c| {
+        c <= crate::vision::reader::ROUTE_BELOW
+            || (c < crate::vision::reader::ROUTE_FORMULAS_BELOW
+                && formulas >= crate::vision::reader::ROUTE_FORMULAS)
+    });
+    if route && let Some(md) = crate::vision::reader::read_page(&img.rgb) {
+        // The reader writes out the whole page, running heads and folios
+        // too; drop what the layout model and OCR call furniture.
+        let (furniture, _, _) = furniture(&regions, &words, (pb.x0, pb.y0, pb.x1, pb.y1));
+        let margin: std::collections::HashSet<String> = words
+            .iter()
+            .filter(|w| {
+                let (cx, cy) = ((w.b.x0 + w.b.x1) / 2.0, (w.b.y0 + w.b.y1) / 2.0);
+                furniture.iter().any(|r| r.bbox.contains_point(cx, cy))
+            })
+            .flat_map(|w| folded_words(&w.text))
+            .collect();
+        debug_timing(
+            page,
+            "scan, page reader",
+            t_layout,
+            t.elapsed(),
+            regions.len(),
+        );
+        return Some(strip_margins(&md, &margin));
+    }
     let md = assemble(
         &img,
         &regions,
@@ -448,14 +482,18 @@ fn drop_doubled(words: Vec<Tok>) -> Vec<Tok> {
 /// on a scan there is no second page to recognise it by recurrence, and the
 /// layout model does not always box it as a page number.
 fn ocr_words(img: &PageImage, drop_folios: bool) -> Vec<Tok> {
-    static FOLIO: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)^[-–—(\[]?\s*(?:page\s*|p\.\s*)?\d{1,4}\s*[-–—.)\]]?$")
-            .expect("valid regex")
-    });
+    ocr_words_scored(img, drop_folios).0
+}
+
+/// [`ocr_words`], and the recognizer's confidence in the page
+/// ([`crate::vision::ocr::read_with_confidence`]).
+fn ocr_words_scored(img: &PageImage, drop_folios: bool) -> (Vec<Tok>, Option<f32>) {
     let ih = img.rgb.height() as f32;
     let mut words: Vec<Tok> = Vec::new();
-    for l in crate::vision::ocr::read(&img.rgb).unwrap_or_default() {
-        if drop_folios && (l.y1 < 0.08 * ih || l.y0 > 0.92 * ih) && FOLIO.is_match(l.text.trim()) {
+    let (lines, confidence) =
+        crate::vision::ocr::read_with_confidence(&img.rgb).unwrap_or_default();
+    for l in lines {
+        if drop_folios && (l.y1 < 0.08 * ih || l.y0 > 0.92 * ih) && is_folio(&l.text) {
             continue;
         }
         let total: usize = l.text.chars().count().max(1);
@@ -480,7 +518,67 @@ fn ocr_words(img: &PageImage, drop_folios: bool) -> Vec<Tok> {
             pos += n;
         }
     }
-    words
+    (words, confidence)
+}
+
+/// A line that is nothing but a page number ("31", "- 31 -", "Page 31").
+fn is_folio(line: &str) -> bool {
+    static FOLIO: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^[-–—(\[]?\s*(?:page\s*|p\.\s*)?\d{1,4}\s*[-–—.)\]]?$")
+            .expect("valid regex")
+    });
+    FOLIO.is_match(line.trim())
+}
+
+/// Lowercased alphanumeric words of `text`.
+fn folded_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// How many non-blank lines at each end of a page reader's output may be
+/// running heads or footers.
+const MARGIN_LINES: usize = 8;
+
+/// Drops the page furniture from a page reader's Markdown: among the first
+/// and last [`MARGIN_LINES`] lines, a line whose every word OCR read inside
+/// a furniture region (`margin`), and among the first and last three, a bare
+/// page number.
+fn strip_margins(md: &str, margin: &std::collections::HashSet<String>) -> String {
+    let lines: Vec<&str> = md.lines().collect();
+    let filled: Vec<usize> = (0..lines.len())
+        .filter(|&i| !lines[i].trim().is_empty())
+        .collect();
+    let n = filled.len();
+    let drop: std::collections::HashSet<usize> = filled
+        .iter()
+        .enumerate()
+        .filter(|&(k, &i)| {
+            let from_end = k.min(n - 1 - k);
+            let text = lines[i]
+                .trim()
+                .trim_start_matches(['#', '*', '_', '>', ' ']);
+            let words = folded_words(text);
+            (from_end < 3 && is_folio(text))
+                || (from_end < MARGIN_LINES
+                    && !words.is_empty()
+                    && words.iter().all(|w| margin.contains(w)))
+        })
+        .map(|(_, &i)| i)
+        .collect();
+    let kept: Vec<&str> = (0..lines.len())
+        .filter(|i| !drop.contains(i))
+        .map(|i| lines[i])
+        .collect();
+    // Collapse the blank lines a dropped line leaves behind.
+    static BLANK: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\n{3,}").expect("valid regex"));
+    BLANK
+        .replace_all(&kept.join("\n"), "\n\n")
+        .trim()
+        .to_string()
 }
 
 fn debug_regions(page: usize, regions: &[Region]) {
@@ -516,25 +614,24 @@ fn debug_timing(
     }
 }
 
-fn assemble(
-    img: &PageImage,
-    regions: &[Region],
-    words: Vec<Tok>,
+/// The regions whose words are page furniture rather than content, and
+/// which of them are a one-off imprint the model took for text.
+fn furniture<'a>(
+    regions: &'a [Region],
+    words: &[Tok],
     bx: (f32, f32, f32, f32),
-    ruled: &dyn Fn(&UserBox, &[Tok]) -> Option<crate::vision::table::Structure>,
-    table_fallback: &dyn Fn(&UserBox) -> Option<String>,
-) -> String {
+) -> (Vec<&'a Region>, Vec<&'a Region>, Edges<'a>) {
     let (_, by0, _, by1) = bx;
     let ph = (by1 - by0).max(1.0);
 
-    let edges = edge_furniture(regions, &words, bx);
-    let mut furniture: Vec<&Region> = edges.furniture.clone();
+    let edges = edge_furniture(regions, words, bx);
+    let mut furniture: Vec<&'a Region> = edges.furniture.clone();
     // A journal's imprint at the foot or head of an article's first page
     // ("INTERNATIONAL JOURNAL OF …, VOL. 8, 71–90 (1993) © 1993 John Wiley &
     // Sons, Inc. CCC 0884-8173/93/010071-20") is publication furniture that
     // appears once, so recurrence cannot find it and the layout model
     // usually calls it text.
-    let imprint: Vec<&Region> = regions
+    let imprint: Vec<&'a Region> = regions
         .iter()
         .filter(|r| edges.content(r) && !r.label.is_graphic())
         .filter(|r| {
@@ -554,6 +651,20 @@ fn assemble(
         })
         .collect();
     furniture.extend(imprint.iter().copied());
+    (furniture, imprint, edges)
+}
+
+fn assemble(
+    img: &PageImage,
+    regions: &[Region],
+    words: Vec<Tok>,
+    bx: (f32, f32, f32, f32),
+    ruled: &dyn Fn(&UserBox, &[Tok]) -> Option<crate::vision::table::Structure>,
+    table_fallback: &dyn Fn(&UserBox) -> Option<String>,
+) -> String {
+    let (_, by0, _, by1) = bx;
+    let ph = (by1 - by0).max(1.0);
+    let (furniture, imprint, edges) = furniture(regions, &words, bx);
     let content: Vec<&Region> = regions
         .iter()
         .filter(|r| {
@@ -1975,6 +2086,27 @@ mod tests {
             glued: false,
             math: false,
         }
+    }
+
+    #[test]
+    fn a_page_readers_running_heads_and_folio_are_dropped() {
+        let margin: std::collections::HashSet<String> = [
+            "bulletin",
+            "of",
+            "the",
+            "american",
+            "mathematical",
+            "society",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let md = "BULLETIN OF THE\nAMERICAN MATHEMATICAL SOCIETY\n\n# The theorem\n\nOf the society \
+                  we say nothing.\n\n1106";
+        assert_eq!(
+            strip_margins(md, &margin),
+            "# The theorem\n\nOf the society we say nothing."
+        );
     }
 
     #[test]

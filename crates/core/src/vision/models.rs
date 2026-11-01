@@ -30,6 +30,10 @@ pub const OCR_V6S_REC: &str = "ppocr-v6s-rec.onnx";
 pub const OCR_V6M_DET: &str = "ppocr-v6m-det.onnx";
 pub const OCR_V6M_REC: &str = "ppocr-v6m-rec.onnx";
 pub const OCR_V6_DICT: &str = "ppocr-v6-dict.txt";
+pub const READER_VISION: &str = "lighton-vision.onnx";
+pub const READER_EMBED: &str = "lighton-embed.onnx";
+pub const READER_STEP: &str = "lighton-step.onnx";
+pub const READER_VOCAB: &str = "lighton-vocab.json";
 
 /// The files a release ships (and `--install-models` installs).
 pub const RELEASE_SET: [&str; 9] = [
@@ -43,6 +47,11 @@ pub const RELEASE_SET: [&str; 9] = [
     OCR_V6M_REC,
     OCR_V6_DICT,
 ];
+
+/// The page reader ([`super::reader`]), shipped in the model archive and the
+/// `filegoblin-full` binary but not in the PyPI and npm model packages. It is
+/// optional: without it every scanned page goes through PP-OCR.
+pub const READER_SET: [&str; 4] = [READER_VISION, READER_EMBED, READER_STEP, READER_VOCAB];
 
 /// The directories searched for weights, in order.
 pub fn candidate_dirs() -> Vec<PathBuf> {
@@ -161,6 +170,10 @@ static BUNDLED: &[(&str, &[u8])] = bundle!(
     "ppocr-v6m-det.onnx",
     "ppocr-v6m-rec.onnx",
     "ppocr-v6-dict.txt",
+    "lighton-vision.onnx",
+    "lighton-embed.onnx",
+    "lighton-step.onnx",
+    "lighton-vocab.json",
 );
 
 #[cfg(feature = "bundled-models")]
@@ -205,21 +218,11 @@ pub fn load(name: &str) -> Option<rten::Model> {
     }
 }
 
-/// A human-readable account of where each release model comes from, for
-/// `--models-status`.
-pub fn status_report() -> String {
-    let mut out = String::new();
-    if bundled_build() {
-        out.push_str("Models: built into this binary.\n");
-    }
-    out.push_str("Search directories, in order:\n");
-    for d in candidate_dirs() {
-        let mark = if d.is_dir() { "" } else { "  (not present)" };
-        out.push_str(&format!("  {}{mark}\n", d.display()));
-    }
+/// One line per model in `names`: where it is, or MISSING. Returns how many
+/// are missing.
+fn list_models(out: &mut String, names: &[&str]) -> usize {
     let mut missing = 0;
-    out.push_str("Release models:\n");
-    for name in RELEASE_SET {
+    for name in names {
         let line = if bundled(name).is_some() {
             "built in".to_string()
         } else {
@@ -240,12 +243,39 @@ pub fn status_report() -> String {
         };
         out.push_str(&format!("  {name:<24} {line}\n"));
     }
+    missing
+}
+
+/// A human-readable account of where each release model comes from, for
+/// `--models-status`.
+pub fn status_report() -> String {
+    let mut out = String::new();
+    if bundled_build() {
+        out.push_str("Models: built into this binary.\n");
+    }
+    out.push_str("Search directories, in order:\n");
+    for d in candidate_dirs() {
+        let mark = if d.is_dir() { "" } else { "  (not present)" };
+        out.push_str(&format!("  {}{mark}\n", d.display()));
+    }
+    out.push_str("Release models:\n");
+    let missing = list_models(&mut out, &RELEASE_SET);
     if missing == 0 {
         out.push_str("All release models found: `--vision smart` (the default) will use them.\n");
     } else {
         out.push_str(&format!(
             "{missing} missing. Run `filegoblin --install-models`, install the `filegoblin[models]` (pip) or `@filegoblin/models` (npm) package, or use the filegoblin-full download.\n"
         ));
+    }
+    out.push_str("Page reader for handwritten scans (optional):\n");
+    if list_models(&mut out, &READER_SET) == 0 {
+        out.push_str(
+            "Found: scanned pages that PP-OCR reads poorly are read whole by LightOnOCR-2.\n",
+        );
+    } else {
+        out.push_str(
+            "Not installed: every scanned page goes through PP-OCR. `filegoblin --install-models` and the filegoblin-full download include it.\n",
+        );
     }
     out
 }

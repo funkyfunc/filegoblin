@@ -16,6 +16,10 @@ time; filegoblin itself only ever loads the resulting `.onnx` files with rten
 | ppocr-v6m-det.onnx       | PaddlePaddle/PP-OCRv6_medium_det_onnx               | Apache-2.0 |
 | ppocr-v6m-rec.onnx       | PaddlePaddle/PP-OCRv6_medium_rec_onnx               | Apache-2.0 |
 | ppocr-v6-dict.txt        | the rec model's `inference.yml` character list      | Apache-2.0 |
+| lighton-vision.onnx      | rebuilt from lightonai/LightOnOCR-2-1B, 4-bit       | Apache-2.0 |
+| lighton-embed.onnx       | LightOnOCR-2-1B token embeddings, int8              | Apache-2.0 |
+| lighton-step.onnx        | rebuilt from LightOnOCR-2-1B, KV-cached, 4-bit      | Apache-2.0 |
+| lighton-vocab.json       | LightOnOCR-2-1B `tokenizer.json` vocabulary         | Apache-2.0 |
 
 `--ocr v6s` (or `v5`) builds the smaller PP-OCRv6 small or English PP-OCRv5
 mobile pair instead, for comparisons; filegoblin uses the best pair it finds.
@@ -28,6 +32,12 @@ Conversions:
   original to 1e-3 in logits and exported as `init` (cross-attention K/V) and
   `step` (one token with a self-attention cache).
 * Table Transformer is exported with dynamic height/width.
+* LightOnOCR-2-1B (the page reader) is rebuilt like the formula decoder: the
+  Pixtral encoder with its patch grid read from the input shape, and the
+  Qwen3 decoder as one step with a key/value cache per layer (keys stored
+  transposed, grouped-query attention by broadcasting), each checked against
+  transformers to 1e-3, then folded and quantized to symmetric 4-bit
+  `MatMulNBits` (onnxruntime's quantizer; rten computes them in int8).
 * The PaddleOCR graphs are upgraded to opset 17 (rten rejects the legacy
   `Slice`/`BatchNormalization` attributes they carry), and every graph gets
   the clean-ups rten does not do itself: Identity removal, constant folding of
@@ -35,7 +45,7 @@ Conversions:
   `x * HardSigmoid(x)` → `HardSwish`. Outputs are checked against the source
   graph with onnxruntime.
 
-Usage (needs torch, transformers, onnx, onnxruntime, huggingface_hub):
+Usage (needs torch, transformers>=5, onnx, onnx_ir, onnxruntime, huggingface_hub):
     python scripts/vision_models.py OUT_DIR
 Then point filegoblin at it with FILEGOBLIN_MODELS=OUT_DIR, or ship the files
 in a `models/` directory next to the binary.
@@ -436,6 +446,164 @@ def ocr(out, work, which=None):
         f.write("\n".join(str(c) for c in chars) + "\n")
 
 
+def reader(out, work):
+    """LightOnOCR-2-1B as four rten graphs: the Pixtral encoder and projector
+    (any H, W in multiples of 28), int8 token embeddings, a KV-cached decoder
+    step, and the vocabulary. The encoder and decoder are rebuilt in plain
+    torch from the released weights (transformers' own export needs
+    onnxruntime-only attention ops), checked against transformers, then
+    folded and quantized to symmetric 4-bit `MatMulNBits` (int8 compute)."""
+    import math
+
+    import numpy as np
+    import onnx
+    import onnxruntime as ort
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from huggingface_hub import hf_hub_download
+    from onnx import TensorProto, helper, numpy_helper
+    from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
+    from transformers import LightOnOcrForConditionalGeneration
+
+    repo = "lightonai/LightOnOCR-2-1B"
+    m = LightOnOcrForConditionalGeneration.from_pretrained(
+        repo, dtype=torch.float32, attn_implementation="eager").eval().requires_grad_(False)
+    tc, vc = m.config.text_config, m.config.vision_config
+    lm, ve, pj = m.model.language_model, m.model.vision_encoder, m.model.vision_projection
+    L, NH, NKV, HD = tc.num_hidden_layers, tc.num_attention_heads, tc.num_key_value_heads, tc.head_dim
+    eps = tc.rms_norm_eps
+    inv_freq = 1.0 / tc.rope_parameters["rope_theta"] ** (torch.arange(0, HD, 2).float() / HD)
+    VNH = vc.num_attention_heads
+    VH = vc.hidden_size // VNH
+    vinv = 1.0 / vc.rope_parameters["rope_theta"] ** (torch.arange(0, VH, 2).float() / VH)
+    f_h, f_w = vinv[0::2], vinv[1::2]
+
+    def rms(x, w, e):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + e) * w
+
+    def rope(t, cos, sin, half=HD // 2):
+        # `half` is a constant: read off `t.shape` it would trace into shape arithmetic.
+        return t * cos + torch.cat([-t[..., half:], t[..., :half]], -1) * sin
+
+    class Step(nn.Module):
+        """inputs_embeds (1, S, D), start (1,), then per layer past_k_i (1, KV, 1, HD, P), keys stored
+        transposed, and past_v_i (1, KV, 1, P, HD) -> logits of the last position (1, V) and each cache
+        grown to P + S. Query heads attend to their shared KV head by broadcasting, so no step copies
+        the cache beyond appending to it."""
+
+        def forward(self, x, start, *past):
+            s, p = x.shape[1], past[1].shape[3]
+            f = (torch.arange(s) + start).float()[:, None] * inv_freq[None]
+            a = torch.cat([f, f], -1)
+            cos, sin = a.cos()[None, None], a.sin()[None, None]
+            mask = torch.where(torch.arange(p + s)[None, :] <= torch.arange(s)[:, None] + p, 0.0, -1e9)
+            mask = mask[None, None, None]
+            outs = []
+            for i, layer in enumerate(lm.layers):
+                at = layer.self_attn
+                h = rms(x, layer.input_layernorm.weight, eps)
+                q = rope(rms(at.q_proj(h).view(1, s, NH, HD), at.q_norm.weight, eps).transpose(1, 2), cos, sin)
+                k = rope(rms(at.k_proj(h).view(1, s, NKV, HD), at.k_norm.weight, eps).transpose(1, 2), cos, sin)
+                v = at.v_proj(h).view(1, s, NKV, HD).transpose(1, 2)
+                k = torch.cat([past[2 * i], k.transpose(2, 3).unsqueeze(2)], 4)
+                v = torch.cat([past[2 * i + 1], v.unsqueeze(2)], 3)
+                outs += [k, v]
+                att = torch.softmax(q.view(1, NKV, NH // NKV, s, HD) / math.sqrt(HD) @ k + mask, -1)
+                x = x + at.o_proj((att @ v).view(1, NH, s, HD).transpose(1, 2).reshape(1, s, NH * HD))
+                h = rms(x, layer.post_attention_layernorm.weight, eps)
+                x = x + layer.mlp.down_proj(F.silu(layer.mlp.gate_proj(h)) * layer.mlp.up_proj(h))
+            return (m.lm_head(rms(x[:, -1], lm.norm.weight, eps)), *outs)
+
+    class Vision(nn.Module):
+        """pixel_values (1, 3, H, W) -> one feature per 28x28 block (N, D)."""
+
+        def forward(self, px):
+            x = ve.patch_conv(px)
+            d, h, w = x.shape[1], x.shape[2], x.shape[3]
+            x = rms(x.flatten(2).transpose(1, 2), ve.ln_pre.weight, 1e-5)
+            hp = torch.arange(h)[:, None].expand(h, w).reshape(-1).float()
+            wp = torch.arange(w)[None, :].expand(h, w).reshape(-1).float()
+            a = torch.cat([hp[:, None] * f_h[None], wp[:, None] * f_w[None]], -1)
+            a = torch.cat([a, a], -1)
+            cos, sin = a.cos()[None, None], a.sin()[None, None]
+            n = x.shape[1]
+            for layer in ve.transformer.layers:
+                at = layer.attention
+                y = rms(x, layer.attention_norm.weight, 1e-5)
+                q = rope(at.q_proj(y).view(1, n, VNH, VH).transpose(1, 2), cos, sin, VH // 2)
+                k = rope(at.k_proj(y).view(1, n, VNH, VH).transpose(1, 2), cos, sin, VH // 2)
+                v = at.v_proj(y).view(1, n, VNH, VH).transpose(1, 2)
+                att = torch.softmax(q @ k.transpose(-1, -2) * VH ** -0.5, -1)
+                x = x + at.o_proj((att @ v).transpose(1, 2).reshape(1, n, VNH * VH))
+                y = rms(x, layer.ffn_norm.weight, 1e-5)
+                x = x + layer.feed_forward.down_proj(F.silu(layer.feed_forward.gate_proj(y)) * layer.feed_forward.up_proj(y))
+            x = rms(x[0], pj.norm.weight, eps)
+            # 2x2 merge in torch.unfold's order: channel, then row, then column.
+            g = x.view(h // 2, 2, w // 2, 2, d).permute(0, 2, 4, 1, 3).reshape(-1, d * 4)
+            return pj.linear_2(F.gelu(pj.linear_1(pj.patch_merger.merging_layer(g))))
+
+    step, vis = Step().eval(), Vision().eval()
+    with torch.inference_mode():
+        ids = torch.tensor([[151644, 872, 198, 9707, 11, 1879, 0, 151645, 198, 151644, 77091, 198]])
+        e = lm.embed_tokens(ids)
+        ref = m(inputs_embeds=e).logits[0, -1]
+        r = step(e[:, :8], torch.tensor([0]), *[torch.zeros(1, NKV, 1, HD, 0), torch.zeros(1, NKV, 1, 0, HD)] * L)
+        r = step(e[:, 8:], torch.tensor([8]), *r[1:])
+        assert (r[0][0] - ref).abs().max() < 1e-3, "rebuilt decoder drifted from transformers"
+        for hw in [(1008, 784), (560, 868)]:
+            px = torch.randn(1, 3, *hw)
+            ref = m.model.get_image_features(px, image_sizes=[hw]).pooler_output[0]
+            assert (vis(px) - ref).abs().max() < 1e-3, f"rebuilt encoder drifted at {hw}"
+
+    # One directory per graph: the decoder is over 2 GB, so its weights go to one external file per
+    # tensor, named after the tensor, and the encoder's export would overwrite those of the same name.
+    d = {g: os.path.join(work, "reader", g) for g in ("step", "vision")}
+    for p in d.values():
+        os.makedirs(p, exist_ok=True)
+    past_names = [f"past_{kv}_{i}" for i in range(L) for kv in "kv"]
+    new_names = [f"new_{kv}_{i}" for i in range(L) for kv in "kv"]
+    axes = {"inputs_embeds": {1: "S"}}
+    axes.update({n: {4 if "_k_" in n else 3: "P"} for n in past_names})
+    axes.update({n: {4 if "_k_" in n else 3: "T"} for n in new_names})
+    torch.onnx.export(step, (torch.randn(1, 2, tc.hidden_size), torch.tensor([3]),
+                             *[torch.zeros(1, NKV, 1, HD, 3), torch.zeros(1, NKV, 1, 3, HD)] * L),
+                      os.path.join(d["step"], "step.onnx"), input_names=["inputs_embeds", "start", *past_names],
+                      output_names=["logits", *new_names], dynamic_axes=axes, opset_version=17, dynamo=False)
+    torch.onnx.export(vis, (torch.randn(1, 3, 1008, 784),), os.path.join(d["vision"], "vision.onnx"), input_names=["pixel_values"],
+                      output_names=["features"], dynamic_axes={"pixel_values": {2: "H", 3: "W"}, "features": {0: "N"}},
+                      opset_version=17, dynamo=False)
+    for name, dst in (("vision", "lighton-vision.onnx"), ("step", "lighton-step.onnx")):
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC  # folding only, no contrib ops
+        so.optimized_model_filepath = os.path.join(d[name], name + "-folded.onnx")
+        ort.InferenceSession(os.path.join(d[name], name + ".onnx"), so, providers=["CPUExecutionProvider"])
+        q = MatMulNBitsQuantizer(onnx.load(so.optimized_model_filepath), block_size=32, is_symmetric=True, accuracy_level=4)
+        q.process()
+        g = q.model.model
+        for i, n in enumerate(g.graph.node):
+            n.name = f"node{i}"  # rten keeps node and value names in one namespace
+        onnx.save(g, os.path.join(out, dst))
+
+    # Token embeddings as int8 rows with one scale each.
+    W = lm.embed_tokens.weight.numpy()
+    scale = (np.abs(W).max(1, keepdims=True) / 127.0).astype(np.float32)
+    table = np.clip(np.round(W / scale), -127, 127).astype(np.int8)
+    g = helper.make_graph([
+        helper.make_node("Gather", ["table", "input_ids"], ["rows"], axis=0, name="n0"),
+        helper.make_node("Gather", ["scale", "input_ids"], ["s"], axis=0, name="n1"),
+        helper.make_node("Cast", ["rows"], ["rows_f"], to=TensorProto.FLOAT, name="n2"),
+        helper.make_node("Mul", ["rows_f", "s"], ["embeds"], name="n3")],
+        "embed", [helper.make_tensor_value_info("input_ids", TensorProto.INT64, [1, "S"])],
+        [helper.make_tensor_value_info("embeds", TensorProto.FLOAT, [1, "S", W.shape[1]])],
+        [numpy_helper.from_array(table, "table"), numpy_helper.from_array(scale, "scale")])
+    onnx.save(helper.make_model(g, opset_imports=[helper.make_opsetid("", 17)], ir_version=8),
+              os.path.join(out, "lighton-embed.onnx"))
+    tok = json.load(open(hf_hub_download(repo, "tokenizer.json")))
+    with open(os.path.join(out, "lighton-vocab.json"), "w", encoding="utf-8") as f:
+        json.dump({"model": {"vocab": tok["model"]["vocab"]}}, f, ensure_ascii=False)
+
+
 LICENSES = """# Third-party model weights
 
 filegoblin's `vision` feature runs these models. Each file was converted from
@@ -449,10 +617,13 @@ remain under their original licenses.
 | ppocr-v6m-rec.onnx, ppocr-v6-dict.txt | https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx | Apache-2.0 | PaddlePaddle Authors |
 | mfr-encoder.onnx, mfr-decoder-init.onnx, mfr-decoder-step.onnx, mfr-tokenizer.json | https://huggingface.co/breezedeus/pix2text-mfr-1.5 | MIT | breezedeus (Pix2Text) |
 | tatr-structure.onnx | https://huggingface.co/microsoft/table-transformer-structure-recognition-v1.1-all | MIT | Microsoft Corporation |
+| lighton-vision.onnx, lighton-embed.onnx, lighton-step.onnx, lighton-vocab.json | https://huggingface.co/lightonai/LightOnOCR-2-1B | Apache-2.0 | LightOn |
 
 Modifications: graph-format conversions only (ONNX export, float64 → float32,
-opset upgrade, Conv epilogue folding, and for the formula decoder a rebuild
-with a key/value cache from the released weights). No weights were retrained.
+opset upgrade, Conv epilogue folding, and for the formula decoder and the
+page reader a rebuild with a key/value cache from the released weights; the
+page reader's weights are also quantized to 4 and 8 bits). No weights were
+retrained.
 
 The full license texts are in LICENSE-APACHE-2.0.txt and LICENSE-MIT.txt.
 """
@@ -499,7 +670,7 @@ def main():
     out = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "models")
     work = os.path.join(out, ".work")
     os.makedirs(work, exist_ok=True)
-    for step in (layout, formula, table, ocr):
+    for step in (layout, formula, table, ocr, reader):
         print("==", step.__name__)
         step(out, work)
     write_licenses(out)
