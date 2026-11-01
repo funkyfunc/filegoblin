@@ -145,7 +145,11 @@ def clean(text: str) -> str:
     return text
 
 
-_WORD = re.compile(r"[^\W_]+(?:[.,'][^\W_]+)*")
+# Chinese and Japanese are written without spaces, so each ideograph or kana
+# is a word; otherwise a whole clause would be one token, and a line break
+# inside it would cost the clause.
+_CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+_WORD = re.compile(rf"[{_CJK}]|[^\W_{_CJK}]+(?:[.,'][^\W_{_CJK}]+)*")
 
 
 # LaTeX presentation commands: how a formula is typeset, not what it says.

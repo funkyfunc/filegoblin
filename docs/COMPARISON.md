@@ -12,6 +12,9 @@ for this machine, and was graded by the same two harnesses as filegoblin:
 - **The gauntlet** (29 cases, 17 of them PDFs, graded against hand-checked gold
   excerpts by `scripts/gauntlet_grade.py`): `scripts/run_gauntlet.py --engine
   TOOL`, then `--table`.
+- **New material, 2026-11-01** (see the last section): a fresh held-out set
+  in olmOCR-bench's format (133 one-page PDFs, 1,009 hand-checked tests), and
+  11 gauntlet cases in languages and document kinds not measured before.
 
 `scripts/engines.py` describes each engine (install line, formats, licence);
 `scripts/alt_engine_worker.py` runs inside the tool's environment, loads it
@@ -256,3 +259,167 @@ MinerU still leads olmOCR-bench's dev split by 0.7. It is 10 and 11 points
 ahead on the two scanned categories, and 2–3 tests ahead on headers/footers
 and multi-column; filegoblin leads arXiv math, long tiny text, tables and
 baseline.
+
+## New material: a held-out set and 11 gauntlet cases
+
+Measured 2026-11-01 on the same machine and harnesses, with filegoblin built at
+`75355f5` (`--features vision`) and the same versions of the other tools.
+
+The olmOCR-bench test split is no longer fully held out: the 2026-10-22
+research read failures across the whole bench, and the unruled-table fix of
+2026-10-31 was found on test pages. The dev split is tuned on by design. So
+both of the numbers above have been fitted to some degree.
+
+### The held-out set (133 one-page PDFs, 1,009 tests)
+
+It is built in olmOCR-bench's exact format, so `scripts/olmocr_bench.py` and
+allenai's scorer grade it unchanged. It lives outside the repository at
+`~/Library/Caches/fgv/heldout/`, as the bench does, with a README, the rules the
+tests were written to (`SPEC.md`), and a manifest.
+
+**How the tests were made.** Every test was written by hand-checking its page:
+- the rendered image for content and reading order;
+- the page's own text layer, or the arXiv LaTeX source for equations, for exact
+  characters;
+- for scans, transcription by eye.
+
+No converter, OCR engine or VLM ran on these pages until the tests were frozen.
+`FROZEN` holds the sha256 of each test file at that moment.
+
+**Sources:**
+- **arXiv:** CC BY, CC BY-SA and CC0 papers submitted in October 2026.
+- **US federal reports and statistics (2026):** GAO, CRS, NIST, CDC MMWR, BLS,
+  Census, the Fed, EIA, the Federal Register and the Congressional Record.
+- **Open-licence journals:** CC BY journals from 2026 (PLOS, BMC, eLife,
+  Frontiers, Copernicus).
+- **Europe:** EU acts and agency reports, plus national statistics under open
+  licences.
+- **Scans:** public-domain pages from the Library of Congress, the Internet
+  Archive, HathiTrust and NACA, with printed, typewritten and handwritten pages.
+
+**Licences:** 65 public domain, 52 CC BY or the EU's equivalent, 5 CC BY-SA,
+and 1 each CC0, Etalab and OGL. None is NC or ND. No document is in
+olmOCR-bench or the gauntlet.
+
+**Categories:** olmOCR-bench's seven, plus `multilingual`: 18 pages in 18
+Latin-, Greek- and Cyrillic-script languages. CJK is left out because allenai's
+baseline test fails any output containing CJK characters.
+
+**Use it for scores only.** Reading its failures and fixing filegoblin for them
+would turn it into one more dev set.
+
+```bash
+OLMOCR_BENCH=~/Library/Caches/fgv/heldout/bench_data scripts/olmocr_bench.py run NAME --engine TOOL
+OLMOCR_BENCH=~/Library/Caches/fgv/heldout/bench_data scripts/olmocr_bench.py table NAME …
+```
+
+| category (PDFs / tests) | filegoblin smart | filegoblin off | MinerU | marker | docling | pymupdf4llm | markitdown |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| arXiv math (20 / 124) | **82.3** | 0.0 | 53.2 | 71.8 | 0.0 | 0.0 | 0.0 |
+| headers/footers (20 / 117) | 90.6 | 78.6 | 94.0 | **96.6** | 93.2 | 59.8 | 56.4 |
+| long tiny text (10 / 80) | **100.0** | 33.8 | 98.8 | 98.8 | 92.5 | 91.2 | 63.8 |
+| multi-column (19 / 125) | 96.0 | 63.2 | 96.0 | **99.2** | 94.4 | 83.2 | 73.6 |
+| old scans (15 / 139) | 85.6 | 62.6 | 91.4 | **96.4** | 71.2 | 53.2 | 7.9 |
+| old scans math (6 / 27) | 44.4 | 0.0 | 51.9 | **70.4** | 0.0 | 0.0 | 0.0 |
+| tables (25 / 224) | 84.8 | 26.8 | 70.1 | 75.4 | **85.3** | 66.5 | 19.6 |
+| multilingual (18 / 173) | 89.6 | 65.3 | 84.4 | 75.7 | **90.8** | 68.8 | 60.7 |
+| baseline | **100.0** | **100.0** | 99.2 | **100.0** | **100.0** | 97.7 | 84.2 |
+| **overall** | 85.93 | 47.81 | 82.10 | **87.14** | 69.70 | 57.84 | 40.69 |
+
+**Runs.** The other tools ran one file at a time. filegoblin ran with
+`--jobs 3 --no-cache`, sharing the machine's three vision slots with two other
+benchmarking sessions, so its median of 9.5 s per page is mostly waiting. Read
+no speed into it.
+
+**Two failed conversions in the first smart run.** Two of its 133 pages failed
+with "no progress on this PDF for 120 s". Alone, the same pages convert in 41 s
+and 9 s, so the table counts them re-run. As run, the score was 84.89.
+
+The cause is a bug in `75355f5`. The PDF worker's stall watchdog counts finished
+pages as progress, so a one-page PDF that waits more than 120 s for a vision
+slot is stopped as if it were stuck. Waiting for a slot should not count as a
+stall.
+
+What this set says that the bench did not:
+
+- **marker, not MinerU, leads**, by 1.2 points over filegoblin smart. marker
+  scores 96–99 on scans, furniture and multi-column order. filegoblin leads
+  only arXiv math and long tiny text, and is level on multi-column with MinerU.
+- **MinerU drops to 53.2 on arXiv math** (75.5 on bench dev). filegoblin's
+  82.3 holds up.
+- **filegoblin's weakest categories are scanned math (44.4) and old scans
+  (85.6).** Both trail marker and MinerU, the same model gap the bench showed.
+  Next comes headers/footers (90.6), behind all three model-based tools: a
+  furniture gap the bench's 95.6 understated.
+- **The fast path's parity with pymupdf4llm does not carry over: 47.8 against
+  57.8.** On the bench's dev split the two were level (40.54 and 40.52). Here
+  `--vision off` trails on:
+  - long tiny text, 33.8 against 91.2;
+  - multi-column order, 63.2 against 83.2;
+  - tables, 26.8 against 66.5.
+
+  This is the clearest sign that the fast path's recent gains were fitted to
+  the bench.
+
+### New gauntlet cases (11)
+
+These cover document kinds and languages not measured before. Gold excerpts are
+hand-checked from the page images, and each case lists its source and licence
+in `gauntlet_manifest.json`:
+- **CJK_ZH:** Taiwan DGBAS press release (Open Government Data License).
+- **CJK_JA:** Statistics Bureau of Japan (terms compatible with CC BY 4.0).
+- **RTL_AR and RTL_HE:** Wikipedia renders (CC BY-SA 4.0).
+- **EU_ACCENT:** an EUR-Lex implementing regulation in French (CC BY 4.0).
+- **RECEIPT_1:** a dot-matrix till receipt from Wikimedia Commons (CC0).
+- **INVOICE_1:** an invoice generated for the gauntlet, since no openly licensed
+  real one was found.
+- **FORM_FILLED:** IRS W-4 (2026) with fictional values in its live AcroForm fields.
+- **NEWS_1:** the Evening Star of 15 March 1922, an image-only scan from
+  Chronicling America.
+- **NEWS_2:** NASA Stennis's *Lagniappe* newsletter.
+- **SLIDES_2:** a NASA NEPP slide deck exported to PDF.
+
+The grader now counts each Chinese or Japanese ideograph or kana as a word. A
+clause written without spaces was otherwise one token, so a single line break
+cost the whole clause. No earlier case contains CJK, so no earlier score moved.
+
+| case | filegoblin smart | filegoblin off | MinerU | marker | docling | pymupdf4llm | markitdown |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| CJK_ZH | 90.2 | 67.1 | 83.1 | 85.3 | **92.3** | 88.9 | 70.7 |
+| CJK_JA | 87.7 | 82.8 | 86.8 | 83.5 | **90.2** | 86.9 | 76.4 |
+| RTL_AR | 35.5 | 41.5 | 53.9 | 63.3 | 69.8 | **72.6** | 30.4 |
+| RTL_HE | 52.1 | 26.4 | 65.4 | 68.2 | **83.4** | 79.5 | 18.5 |
+| EU_ACCENT | 80.3 | 83.7 | **90.9** | 73.0 | 83.7 | 84.3 | 62.1 |
+| RECEIPT_1 | 94.5 | 83.4 | **95.2** | 93.7 | 85.2 | 94.3 | 0.0 |
+| INVOICE_1 | 95.0 | 93.7 | 92.7 | **96.8** | 95.2 | 86.0 | 68.6 |
+| FORM_FILLED | 84.1 | 84.2 | 77.1 | 85.2 | **91.9** | 78.6 | 71.1 |
+| NEWS_1 | **71.5** | 22.5 | 57.0 | 34.8 | 67.6 | 34.4 | 0.0 |
+| NEWS_2 | 95.7 | 81.5 | 68.7 | 89.1 | **96.5** | 75.4 | 71.2 |
+| SLIDES_2 | 87.0 | 82.4 | 73.3 | 82.3 | **98.9** | 84.4 | 61.4 |
+| **mean** | 79.4 | 68.1 | 76.7 | 77.7 | **86.8** | 78.7 | 48.2 |
+
+No tool failed a conversion. On macOS, filegoblin's off mode OCRs image-only
+pages with Apple Vision, which is why it reads the receipt.
+
+Where filegoblin is weakest here:
+
+- **Right-to-left text is reversed.** Arabic comes out in visual order,
+  character by character backwards (`نادوسلا تايلاو` for `ولايات السودان`), in
+  both modes. On the Hebrew case, smart mode reads some regions in logical order
+  and others reversed or garbled. These are the lowest scores of any tool except
+  markitdown. Nothing in the gauntlet or olmOCR-bench exercised RTL before.
+- **Long multi-line table rows split into many rows.** EU_ACCENT's annex has one
+  logical row whose cells run to several paragraphs. filegoblin smart makes each
+  visual line a table row and folds the "(1) (2) (3)" column-number row into the
+  first cell (tables 33). MinerU keeps the row whole (tables 100, 90.9 overall).
+- **A filled form's first page collapses into one paragraph.** On the W-4, the
+  fields' values are all present, including the name, address, employer and
+  amounts. But page 1's labels and values run together in reading order, and
+  "166.15" comes out as "166 15" across its dollar and cent boxes. docling keeps
+  the structure (91.9 against 84.1).
+- **Slides lose headings and keep furniture.** SLIDES_2 keeps "To be presented
+  by" and the "Unclassified / Open Access" banner, and promotes fewer slide
+  titles to headings. docling scores 98.9.
+- **filegoblin leads on the 1922 newspaper scan:** 71.5, against docling's 67.6
+  and 57 or less for the rest. It is level with the leaders on CJK, receipts and
+  invoices.
