@@ -1250,9 +1250,14 @@ pub fn rule_bounded_tables(
 /// the header, under it, below the body) and is read as a booktabs table, so
 /// every check made there (a real gutter, lines explained by their columns,
 /// no leader dots or contents lists, no prose) holds here too.
-pub fn unruled_tables(words: &[PdfWord], word_gap: f32) -> Vec<ExtractedTable> {
-    let em = {
-        let mut h: Vec<f32> = words
+///
+/// A table set in one column of a two-column page shares its lines with the
+/// prose beside it. Prose on a body line (a cell of five words or more,
+/// outside the label and the numbers) is left out, lines wholly beside the
+/// table are read past, and the table keeps to its own columns.
+pub fn unruled_tables<'w>(words: &'w [PdfWord], word_gap: f32) -> Vec<ExtractedTable> {
+    let median_height = |ws: &[&PdfWord]| {
+        let mut h: Vec<f32> = ws
             .iter()
             .map(|w| w.bottom - w.top)
             .filter(|h| *h > 0.0)
@@ -1260,21 +1265,27 @@ pub fn unruled_tables(words: &[PdfWord], word_gap: f32) -> Vec<ExtractedTable> {
         h.sort_by(f32::total_cmp);
         h.get(h.len() / 2).copied().unwrap_or(10.0)
     };
+    let em = median_height(&words.iter().collect::<Vec<_>>());
     let min_gutter = (2.0 * word_gap).max(0.5 * em);
     let lines = text_lines(words.iter().collect());
-    let segments = |l: &[&PdfWord]| -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for (k, w) in l.iter().enumerate() {
-            if k == 0 || w.x0 - l[k - 1].x1 >= min_gutter {
-                out.push(w.text.clone());
-            } else if let Some(s) = out.last_mut() {
-                s.push(' ');
-                s.push_str(&w.text);
+    let segments = |l: &[&'w PdfWord]| -> Vec<Vec<&'w PdfWord>> {
+        let mut out: Vec<Vec<&PdfWord>> = Vec::new();
+        for (k, &w) in l.iter().enumerate() {
+            match out.last_mut() {
+                Some(s) if w.x0 - l[k - 1].x1 < min_gutter => s.push(w),
+                _ => out.push(vec![w]),
             }
         }
         out
     };
-    let numeric = |s: &str| {
+    let text = |s: &[&PdfWord]| {
+        s.iter()
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let numeric = |s: &[&PdfWord]| {
+        let s = text(s);
         let digits = s.chars().filter(char::is_ascii_digit).count();
         let letters = s.chars().filter(|c| c.is_alphabetic()).count();
         digits > 0
@@ -1283,54 +1294,133 @@ pub fn unruled_tables(words: &[PdfWord], word_gap: f32) -> Vec<ExtractedTable> {
                 c.is_alphanumeric() || c.is_whitespace() || ".,%±()+-−–—$€£*/:<>=[]".contains(c)
             })
     };
-    let data = |l: &[&PdfWord]| {
-        let segs = segments(l);
+    // A line's cells, without prose beside them; true when some was cut.
+    let cells = |l: &[&'w PdfWord]| -> (Vec<Vec<&'w PdfWord>>, bool) {
+        let mut segs = segments(l);
+        let Some(first) = (1..segs.len()).find(|&k| numeric(&segs[k])) else {
+            return (segs, false);
+        };
+        let last = (first..segs.len())
+            .rev()
+            .find(|&k| numeric(&segs[k]))
+            .unwrap_or(first);
+        let prose = |s: &[Vec<&PdfWord>]| s.iter().any(|c| c.len() >= 5);
+        let mut cut = false;
+        if prose(&segs[last + 1..]) {
+            segs.truncate(last + 1);
+            cut = true;
+        }
+        if prose(&segs[..first - 1]) {
+            segs.drain(..first - 1);
+            cut = true;
+        }
+        (segs, cut)
+    };
+    let data = |segs: &[Vec<&PdfWord>]| {
         let nums = segs.iter().skip(1).filter(|s| numeric(s)).count();
         (3..=12).contains(&segs.len()) && nums >= 2 && nums * 3 >= (segs.len() - 1) * 2
     };
     let top = |l: &[&PdfWord]| l.iter().map(|w| w.top).fold(f32::MAX, f32::min);
     let bottom = |l: &[&PdfWord]| l.iter().map(|w| w.bottom).fold(f32::MIN, f32::max);
+    let caption = |l: &[&PdfWord]| {
+        l.first().is_some_and(|w| {
+            ["Table", "TABLE", "Tab.", "Figure", "FIGURE", "Fig.", "FIG."]
+                .iter()
+                .any(|c| w.text.starts_with(c))
+        })
+    };
     let mut tables = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        if !data(&lines[i]) {
+        let (c, cut) = cells(&lines[i]);
+        if !data(&c) {
             i += 1;
             continue;
         }
-        let mut j = i;
-        while j + 1 < lines.len()
-            && data(&lines[j + 1])
-            && top(&lines[j + 1]) - top(&lines[j]) <= 2.5 * em
-        {
+        let mut body: Vec<(usize, Vec<&PdfWord>)> = vec![(i, c.concat())];
+        let mut beside = cut;
+        let mut j = i + 1;
+        while j < lines.len() {
+            let row = &body[body.len() - 1].1;
+            let (c, cut) = cells(&lines[j]);
+            if data(&c) && top(&c.concat()) - top(row) <= 2.5 * em {
+                body.push((j, c.concat()));
+                beside |= cut;
+            } else {
+                // A line wholly beside a table that has prose beside it is
+                // the neighbouring column's: read past it.
+                let (x0, x1) = extent(body.iter().flat_map(|r| r.1.iter().copied()));
+                if !(beside && lines[j].iter().all(|w| w.x1 < x0 || w.x0 > x1)) {
+                    break;
+                }
+            }
             j += 1;
         }
-        if j - i + 1 >= 3 {
-            // Header: up to three short lines right above the body.
-            let mut h = i;
-            while h > 0
-                && i - h < 3
-                && top(&lines[h]) - bottom(&lines[h - 1]) <= 1.5 * em
-                && !data(&lines[h - 1])
-                && segments(&lines[h - 1])
-                    .iter()
-                    .all(|s| s.split_whitespace().count() <= 8)
-            {
-                h -= 1;
-            }
-            let rows = &lines[h..=j];
-            let x0 = rows.iter().flatten().map(|w| w.x0).fold(f32::MAX, f32::min) - 1.0;
-            let x1 = rows.iter().flatten().map(|w| w.x1).fold(f32::MIN, f32::max) + 1.0;
-            let mut ys = vec![top(&lines[h]) - 1.0];
-            if h < i {
-                ys.push(0.5 * (bottom(&lines[i - 1]) + top(&lines[i])));
-            }
-            ys.push(bottom(&lines[j]) + 1.0);
-            let rules: Vec<Edge> = ys.iter().map(|&y| Edge::horizontal(x0, x1, y)).collect();
-            tables.extend(rule_bounded_tables(&rules, words, word_gap));
+        i = body[body.len() - 1].0 + 1;
+        if body.len() < 3 {
+            continue;
         }
-        i = j + 1;
+        // The table keeps to its own columns when prose is beside it.
+        let (bx0, bx1) = extent(body.iter().flat_map(|r| r.1.iter().copied()));
+        let clip = |l: &[&'w PdfWord]| -> Vec<&'w PdfWord> {
+            l.iter()
+                .copied()
+                .filter(|w| !beside || (w.x1 > bx0 - min_gutter && w.x0 < bx1 + min_gutter))
+                .collect()
+        };
+        // Header: up to three short lines right above the body, set no
+        // larger than it and as close as its own type size allows; a
+        // caption or the tail of a paragraph above is not one.
+        let bem = median_height(
+            &body
+                .iter()
+                .flat_map(|r| r.1.iter().copied())
+                .collect::<Vec<_>>(),
+        );
+        let mut head: Vec<Vec<&PdfWord>> = Vec::new();
+        let mut above = top(&body[0].1);
+        let mut h = body[0].0;
+        while h > 0 && head.len() < 3 {
+            let l = clip(&lines[h - 1]);
+            h -= 1;
+            if l.is_empty() {
+                continue;
+            }
+            if above - bottom(&l) > 1.5 * bem
+                || data(&cells(&l).0)
+                || segments(&l).iter().any(|s| s.len() > 8)
+                || median_height(&l) > 1.15 * bem
+                || caption(&l)
+            {
+                break;
+            }
+            above = top(&l);
+            head.push(l);
+        }
+        let all = || {
+            head.iter()
+                .chain(body.iter().map(|r| &r.1))
+                .flatten()
+                .copied()
+        };
+        let (x0, x1) = extent(all());
+        let mut ys = vec![above - 1.0];
+        if let Some(under) = head.first() {
+            ys.push(0.5 * (bottom(under) + top(&body[0].1)));
+        }
+        ys.push(bottom(&body[body.len() - 1].1) + 1.0);
+        let rules: Vec<Edge> = ys
+            .iter()
+            .map(|&y| Edge::horizontal(x0 - 1.0, x1 + 1.0, y))
+            .collect();
+        tables.extend(rule_bounded_tables(&rules, words, word_gap));
     }
     tables
+}
+
+/// The horizontal extent of some words.
+fn extent<'a>(ws: impl Iterator<Item = &'a PdfWord>) -> (f32, f32) {
+    ws.fold((f32::MAX, f32::MIN), |(a, b), w| (a.min(w.x0), b.max(w.x1)))
 }
 
 /// The text between two rules of a stack: (top rule, bottom rule, lines).
@@ -1589,6 +1679,112 @@ mod tests {
             .collect();
         assert_eq!(rows[0], ["N", "H1", "L2", "Linf"]);
         assert_eq!(rows[3], ["200", "2.75", "3.50", "3.25"]);
+    }
+
+    /// Words of one line from `x`, each 25 pt wide, `gap` apart.
+    fn spaced_words(words: &mut Vec<PdfWord>, texts: &[&str], x: f32, top: f32, h: f32, gap: f32) {
+        for (k, t) in texts.iter().enumerate() {
+            let x = x + (25.0 + gap) * k as f32;
+            words.push(PdfWord::new(*t, x, top, x + 25.0, top + h));
+        }
+    }
+
+    fn table_rows(t: &ExtractedTable) -> Vec<Vec<&str>> {
+        t.rows
+            .iter()
+            .map(|r| r.iter().map(|c| c.text.trim()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_table_beside_prose_keeps_to_its_own_column() {
+        // A two-column page: prose on the left at an 11 pt pitch, a table
+        // on the right at 14 pt, so their lines interleave.
+        let mut words = Vec::new();
+        for k in 0..12 {
+            let prose = ["lorem", "ipsum", "dolor", "sit", "amet", "elit"];
+            spaced_words(&mut words, &prose, 40.0, 90.0 + 11.0 * k as f32, 10.0, 3.0);
+        }
+        spaced_words(
+            &mut words,
+            &["Variable", "rEUR", "rUSD"],
+            250.0,
+            90.0,
+            10.0,
+            35.0,
+        );
+        for (k, row) in [
+            ["Mean", "2.34", "4.36"],
+            ["Median", "1.44", "-7.19"],
+            ["Maximum", "0.01", "0.03"],
+            ["Minimum", "-0.08", "-0.03"],
+        ]
+        .iter()
+        .enumerate()
+        {
+            spaced_words(&mut words, row, 250.0, 104.0 + 14.0 * k as f32, 10.0, 35.0);
+        }
+        let tables = unruled_tables(&words, 3.0);
+        assert_eq!(tables.len(), 1);
+        let rows = table_rows(&tables[0]);
+        assert_eq!(rows[0], ["Variable", "rEUR", "rUSD"]);
+        assert_eq!(rows[4], ["Minimum", "-0.08", "-0.03"]);
+        assert!(rows.iter().flatten().all(|c| !c.contains("lorem")));
+    }
+
+    #[test]
+    fn a_caption_or_a_paragraph_ending_above_is_not_the_header() {
+        // 10 pt prose ending in a line spread at wide gaps, then a 7 pt
+        // table 12 pt below it: further than its own type allows.
+        let mut words = Vec::new();
+        for k in 0..6 {
+            let prose = [
+                "the", "table", "below", "shows", "the", "ethnic", "and", "gender",
+            ];
+            spaced_words(&mut words, &prose, 40.0, 100.0 + 13.0 * k as f32, 10.0, 3.0);
+        }
+        spaced_words(
+            &mut words,
+            &["in", "number.", "(B=black,", "W=white,"],
+            40.0,
+            178.0,
+            10.0,
+            8.0,
+        );
+        let table = |words: &mut Vec<PdfWord>, top: f32| {
+            spaced_words(words, &["BM", "BF", "WM"], 110.0, top, 7.0, 15.0);
+            for (k, row) in [
+                ["One", "4", "4", "7"],
+                ["Two", "10", "4", "9"],
+                ["Three", "15", "7", "6"],
+            ]
+            .iter()
+            .enumerate()
+            {
+                spaced_words(words, row, 70.0, top + 13.0 + 13.0 * k as f32, 7.0, 15.0);
+            }
+        };
+        table(&mut words, 200.0);
+        let tables = unruled_tables(&words, 3.0);
+        assert_eq!(tables.len(), 1);
+        let rows = table_rows(&tables[0]);
+        assert_eq!(rows[0], ["", "BM", "BF", "WM"]);
+        assert!(rows.iter().flatten().all(|c| !c.contains("number")));
+
+        // A caption right above the header.
+        let mut words = Vec::new();
+        spaced_words(
+            &mut words,
+            &["Table", "1", "Ethnic", "breakdown"],
+            70.0,
+            188.0,
+            7.0,
+            3.0,
+        );
+        table(&mut words, 200.0);
+        let tables = unruled_tables(&words, 3.0);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(table_rows(&tables[0])[0], ["", "BM", "BF", "WM"]);
     }
 
     #[test]

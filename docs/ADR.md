@@ -1390,6 +1390,8 @@ Rules as in the 2026-10-30 pass: tune on the dev split, keep a change only if no
   - **The body:** three or more consecutive lines that break at gutters into 3–12 cells, two thirds of them numbers, at a pitch of at most 2.5 em.
   - **The header:** up to three short lines right above the body.
   - **How it is read:** the table gets the rules it does not draw (above the header, under it, below the body) and goes through the booktabs reader. Every guard there applies: a real gutter, lines explained by their columns, no leader dots, no contents lists, no prose. It never replaces a table the converter wrote itself, and never one already found by its rules.
+  - **Prose beside it** (follow-up): a body line's cell of five words or more, outside its label and its numbers, is a line of the neighbouring text column. It is left out, lines wholly beside the table are read past, and the table keeps to its own horizontal extent.
+  - **Header guards** (follow-up): header lines are measured in the table's own type size (at most 1.5 of its em above, set no larger than 1.15× it), and a line opening with `Table` or `Fig.` is a caption, not a header.
   - **Cost:** pages with no vector paths now reach the table pass too.
 
 **Rejected.**
@@ -1424,17 +1426,14 @@ Gauntlet (28 graded cases; no case lost ground in either mode):
 Test split (1,223 PDFs), checked once at the end. The baseline is the saved run of the 2026-10-30 build, which is byte-identical to this pass's fresh baseline on all 180 dev pages:
 - Smart: 74.29 → **74.31** (+1/−0, headers/footers).
 - Off: 40.08 → **40.98** (+58/−6). Headers/footers 68.3 → 74.0; tables 32.5 → 34.0.
-- All six losses are unruled tables on two pages. One numeric table stands beside a column of prose, and the table took in that column's lines (text lines span the whole page). The other took a caption line ("(B=black, W=white, …)") as its header. Both are general flaws, but they were not fixed: they were found on the test split, and fixing them there would tune on it. They are listed under Open.
+- All six losses were unruled tables on two pages. One numeric table stands beside a column of prose, and the table took in that column's lines (text lines span the whole page). The other took the last line of the paragraph above it ("in application number. (B=black, W=white, …)") as its header.
+- **Follow-up, at the user's request:** both flaws were fixed (below) although they were found on the test split. So for this one change the test split is no longer held out. The fix was judged on dev and the gauntlet first: no test and no case moved in either mode. The off test split was then run once more: 40.08 → **41.13** (+63/−0; tables 32.5 → 35.2). The six losses are back, and five more tests pass. Smart was not rerun: on dev it is byte-for-byte the same score, and the unruled pass only reaches smart pages that fall back to the fast path.
 
 Speed: 45 dev PDFs (every fourth), one process each, the old and new builds interleaved, median of three rounds. `--vision off` 1.61 → 1.57 s in all; `--vision smart` 134.9 → 134.4 s. No change beyond noise, though the table pass now also reaches pages with no vector paths.
 
 **Open.**
 - **Smart headers/footers** (95.6 against MinerU's 98.9). Three dev pages have a short top or bottom line the layout model does not label as furniture. MinerU relabels by position: everything above the lowest header is header, and everything above a page number in the top 30%. That idea fits our PP-DocLayoutV3 labels and was not tried.
 - **Fast-path columns** (off 50.9 against pymupdf4llm's 77.4). This needs XY-cut++'s spanning blocks (a pull quote across the gutter) and a way to keep heading levels when regions are converted separately.
-- **Unruled tables, two flaws found on the test split.**
-  - Lines are grouped across the whole page, so a table beside a column of prose takes in that column's lines.
-  - A caption line right above the body can be taken as the header.
-  - Restricting the lines to the table's own horizontal extent, and refusing header lines that are sentences, are the obvious fixes. Both must be judged on dev and the gauntlet.
 - **Fast-path tables** (36.9 against 55.9). Most remaining misses are two-column text tables and wrapped cells. MinerU's and marker's continuation-row rule needs row geometry that pdf_oxide's tables do not give.
 
 **Status:** Accepted.

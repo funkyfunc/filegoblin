@@ -249,7 +249,7 @@ The 2026-10-31 ADR entry read the other tools' source for the ideas behind
 these leads (`docs/reviews/2026-10-31-competitor-source.md`). Two carried over
 to the fast path: position-only furniture after marker, and unruled numeric
 tables after MinerU. With them, `--vision off` scores 40.54 on dev (pymupdf4llm: 40.52) and
-40.98 on test, and the gauntlet scores 84.4 (off) and 91.5 (smart). Smart mode's
+41.13 on test, and the gauntlet scores 84.4 (off) and 91.5 (smart). Smart mode's
 olmOCR-bench score did not move (dev 77.21, test 74.31).
 
 MinerU still leads olmOCR-bench's dev split by 0.7. It is 10 and 11 points
