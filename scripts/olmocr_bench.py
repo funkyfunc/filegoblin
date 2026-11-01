@@ -23,11 +23,24 @@ Usage (run the scorer with the venv's python):
 
 Outputs go to $OLMOCR_BENCH/NAME/<category>/<stem>_pg1_repeat1.md, the layout
 the official scorer reads. The overall score is the mean of the per-category
-pass rates over the 7 categories plus "baseline" (the official definition).
+pass rates over the 7 categories plus "baseline" (the official definition;
+a set with other categories averages over those too).
 
 The split is fixed and stratified: in each category the PDFs are ordered by
 the SHA-1 of their path and the first eighth (at least 6) form "dev". Tune on
 dev; report "test", which a change was never tuned on.
+
+The test split is no longer fully held out (the 2026-10-22 table and furniture
+research read failures across the whole bench), so a second set exists in the
+same format: about 130 one-page PDFs from 2026 publications and public-domain
+scans that no tool was run on before its tests were frozen, plus a
+"multilingual" category the bench lacks. It lives outside the repo with its
+manifest of sources and licences (README there):
+
+    OLMOCR_BENCH=~/Library/Caches/fgv/heldout/bench_data scripts/olmocr_bench.py run NAME
+    OLMOCR_BENCH=~/Library/Caches/fgv/heldout/bench_data scripts/olmocr_bench.py table A B
+
+Never tune on it: read its scores, not its failures.
 """
 import argparse
 import concurrent.futures as cf
@@ -46,6 +59,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import engines  # noqa: E402
 CATEGORIES = ["arxiv_math", "headers_footers", "long_tiny_text", "multi_column",
               "old_scans", "old_scans_math", "table_tests", "baseline"]
+
+
+def ordered(cats):
+    """The official categories in their order, then any others a set adds
+    (the held-out set's "multilingual"), with baseline last."""
+    extra = sorted(set(cats) - set(CATEGORIES))
+    return [c for c in CATEGORIES[:-1] + extra + ["baseline"] if c in cats]
 
 
 def bench_dir():
@@ -181,7 +201,7 @@ def score(name, which, save=None, quiet=False):
         for cat, t, ok, why in ex.map(one, tests):
             results[t.id] = {"cat": cat, "pdf": t.pdf, "ok": ok, "why": why[:300]}
             per.setdefault(cat, []).append(ok)
-    rates = {c: 100 * sum(per[c]) / len(per[c]) for c in CATEGORIES if c in per}
+    rates = {c: 100 * sum(per[c]) / len(per[c]) for c in ordered(per)}
     overall = sum(rates.values()) / len(rates)
     if not quiet:
         for c, r in rates.items():
@@ -197,7 +217,7 @@ def compare(a, b, which):
     ra, oa, ta = score(a, which, quiet=True)
     rb, ob, tb = score(b, which, quiet=True)
     print(f"{'category':18s} {a[:9]:>9s} {b[:9]:>9s}      Δ")
-    for c in CATEGORIES:
+    for c in ordered(set(ra) | set(rb)):
         if c in ra and c in rb:
             print(f"{c:18s} {ra[c]:9.1f} {rb[c]:9.1f} {rb[c] - ra[c]:+6.1f}")
     print(f"{'overall':18s} {oa:9.2f} {ob:9.2f} {ob - oa:+6.2f}")
@@ -217,7 +237,7 @@ def table(names, which):
     scored = [(n, *score(n, which, quiet=True)[:2]) for n in names]
     print("| category | " + " | ".join(n for n, _, _ in scored) + " |")
     print("|---|" + "---:|" * len(scored))
-    for c in CATEGORIES:
+    for c in ordered({c for _, r, _ in scored for c in r}):
         print(f"| {c} | " + " | ".join(f"{r[c]:.1f}" if c in r else "" for _, r, _ in scored) + " |")
     print("| **overall** | " + " | ".join(f"**{o:.2f}**" for _, _, o in scored) + " |")
     cells = []

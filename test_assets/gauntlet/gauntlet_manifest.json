@@ -414,5 +414,170 @@
       "SPECIFICATION FORMATS AND CONVENTIONS",
       "City of Norcross"
     ]
+  },
+  {
+    "id": "CJK_ZH",
+    "file": "multilingual/cjk_zh.pdf",
+    "category": "Multilingual CJK (Traditional Chinese)",
+    "description": "DGBAS (Taiwan) labour-force press release, pages 1-6 of 42 (MS Word, DFKai-SB/PMingLiU): letterhead, CJK prose with 壹/一/（一） outline headings, a dense 17-column statistics table with spanning year headers, charts",
+    "canaries_present": [
+      "行政院主計總處",
+      "戶籍人口就業失業統計結果",
+      "就業失業重要統計指標",
+      "勞動力低度運用指標"
+    ],
+    "source_url": "https://www.stat.gov.tw/News_Content.aspx?n=3703&s=236807",
+    "license": "Open Government Data License, version 1.0 (政府資料開放授權條款－第1版), CC BY 4.0 compatible; pages 1-6 of the attachment 11509新聞稿(含附表及附載).pdf extracted",
+    "license_url": "https://data.gov.tw/license"
+  },
+  {
+    "id": "CJK_JA",
+    "file": "multilingual/cjk_ja.pdf",
+    "category": "Multilingual CJK (Japanese)",
+    "description": "Statistics Bureau of Japan, 統計トピックスNo.138 chapter I (5 pages, MS-Mincho/MS-Gothic): boxed headlines, kanji/kana prose with full-width digits, ruled table 表３ (top-10 countries in katakana), stacked-bar and line charts",
+    "canaries_present": [
+      "高齢者の人口",
+      "マルティニーク",
+      "主要国における高齢者人口の割合の比較",
+      "人口性比"
+    ],
+    "source_url": "https://www.stat.go.jp/data/topics/pdf/topi138_01.pdf",
+    "license": "Statistics Bureau of Japan terms of use (公共データ利用規約 第1.0版, successor to the Government of Japan Standard Terms of Use 2.0), compatible with CC BY 4.0",
+    "license_url": "https://www.stat.go.jp/info/riyou.html"
+  },
+  {
+    "id": "RTL_AR",
+    "file": "multilingual/rtl_ar.pdf",
+    "category": "Multilingual RTL (Arabic)",
+    "description": "Arabic Wikipedia 'قائمة ولايات السودان' (4 pages, Chromium/Skia render, Noto Naskh Arabic): RTL prose with Western digits, an 8-column RTL table of 18 states split across pages with image-only cells",
+    "canaries_present": [
+      "قائمة ولايات السودان",
+      "ولاية البحر الأحمر",
+      "بورتسودان",
+      "الكثافة السكانية"
+    ],
+    "source_url": "https://ar.wikipedia.org/w/index.php?title=%D9%82%D8%A7%D8%A6%D9%85%D8%A9_%D9%88%D9%84%D8%A7%D9%8A%D8%A7%D8%AA_%D8%A7%D9%84%D8%B3%D9%88%D8%AF%D8%A7%D9%86&oldid=76949779",
+    "license": "CC BY-SA 4.0 (Wikipedia contributors); PDF from the Wikimedia REST page/pdf renderer",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/"
+  },
+  {
+    "id": "RTL_HE",
+    "file": "multilingual/rtl_he.pdf",
+    "category": "Multilingual RTL (Hebrew)",
+    "description": "Hebrew Wikipedia 'מחוזות ישראל' (4 pages, Chromium/Skia render): RTL prose with footnote refs and maqaf, a 7-column RTL table with multi-line cells, a 3-column nested list beside a map",
+    "canaries_present": [
+      "החלוקה למחוזות",
+      "נפת רמת הגולן",
+      "בתקופת המנדט הבריטי",
+      "מחוז יהודה ושומרון"
+    ],
+    "source_url": "https://he.wikipedia.org/w/index.php?title=%D7%9E%D7%97%D7%95%D7%96%D7%95%D7%AA_%D7%99%D7%A9%D7%A8%D7%90%D7%9C&oldid=44119828",
+    "license": "CC BY-SA 4.0 (Wikipedia contributors); PDF from the Wikimedia REST page/pdf renderer",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/"
+  },
+  {
+    "id": "EU_ACCENT",
+    "file": "multilingual/eu_accent.pdf",
+    "category": "Multilingual Accented European (French)",
+    "description": "Règlement d'exécution (UE) 2024/2621, French OJ L act (3 pages, PDFlib): recitals, articles, footnotes, running head/ELI footer, annex 3-column table with one long multi-paragraph row and a dash list",
+    "canaries_present": [
+      "RÈGLEMENT D’EXÉCUTION",
+      "nomenclature combinée",
+      "Désignation des marchandises",
+      "robot d’intervention"
+    ],
+    "source_url": "https://eur-lex.europa.eu/eli/reg_impl/2024/2621/oj",
+    "license": "CC BY 4.0 (reuse of EUR-Lex content under Commission Decision 2011/833/EU and C(2019) 1655)",
+    "license_url": "https://eur-lex.europa.eu/content/legal-notice/legal-notice.html"
+  },
+  {
+    "id": "RECEIPT_1",
+    "file": "receipts/alexanders_supermarket_receipt.pdf",
+    "category": "Scanned Receipts",
+    "description": "Scanned dot-matrix supermarket till receipt (Alexander's, Hanover St., Manchester NH), one image-only page: line items, quantity lines, total, tender, tax; gold transcribed by eye",
+    "canaries_present": [
+      "HOODSIE",
+      "CASH TEND",
+      "39.99",
+      "DOMINO CONFECT"
+    ],
+    "source_url": "https://commons.wikimedia.org/wiki/File:Alexander%27s_Supermarket_receipt,_late_twentieth_century.tif",
+    "license": "CC0 1.0",
+    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/"
+  },
+  {
+    "id": "INVOICE_1",
+    "file": "forms/invoice_harrow_finch.pdf",
+    "category": "Invoices",
+    "description": "Born-digital one-page invoice GENERATED with PyMuPDF (fictional company and people): seller block, invoice details, bill-to/ship-to side by side, ruled line-item table, right-aligned totals, payment terms",
+    "canaries_present": [
+      "HF-INV-26-0412",
+      "Quillmoor Joinery Supply Co.",
+      "1,912.18",
+      "Combination square, 12 in., hardened blade"
+    ],
+    "source_url": "generated for the gauntlet with PyMuPDF (no external source)",
+    "license": "CC0 1.0",
+    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/"
+  },
+  {
+    "id": "FORM_FILLED",
+    "file": "forms/irs_form_w4_2026_filled.pdf",
+    "category": "Filled PDF Forms",
+    "description": "IRS Form W-4 (2026), pages 1-4, live AcroForm fields filled with fictional data via PyMuPDF (text fields + one checkbox; XFA removed, not flattened); values must appear next to their labels",
+    "canaries_present": [
+      "Okonkwo-Reyes",
+      "Bramblewood Cooperative Grocers",
+      "166.15",
+      "4182 Larkspur Hollow Rd"
+    ],
+    "source_url": "https://www.irs.gov/pub/irs-pdf/fw4.pdf",
+    "license": "Public domain (US federal government work, 17 U.S.C. 105)",
+    "license_url": "https://www.usa.gov/government-copyright"
+  },
+  {
+    "id": "NEWS_1",
+    "file": "newspapers/evening_star_1922_03_15_p1.pdf",
+    "category": "Historic Newspaper Scans",
+    "description": "Evening Star (Washington, D.C.), 15 March 1922, front page: 8-column broadsheet as an image-only PDF (no OCR layer); gold = two articles with spanning headlines that cross a column break, transcribed by eye",
+    "canaries_present": [
+      "Obenchain",
+      "Senator Sherman",
+      "MISTRIALS",
+      "feeble-minded"
+    ],
+    "source_url": "https://www.loc.gov/resource/sn83045462/1922-03-15/ed-1/?sp=1",
+    "license": "Public domain (published 1922); Library of Congress: no known restrictions on publication",
+    "license_url": "https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/"
+  },
+  {
+    "id": "NEWS_2",
+    "file": "newspapers/nasa_lagniappe_2023_04_excerpt.pdf",
+    "category": "Newsletters (born-digital)",
+    "description": "NASA Stennis 'Lagniappe' newsletter, April 2023, pages 2, 3, 10 and 19: two-column stories wrapped around centred photos, drop caps, captions, boxed sidebars, running heads",
+    "canaries_present": [
+      "Artemis II",
+      "Larry Pigott",
+      "Jeannine Burk",
+      "Hail & Farewell"
+    ],
+    "source_url": "https://www.nasa.gov/wp-content/uploads/2023/05/april-lagniappe-2023.pdf",
+    "license": "Public domain (NASA, US federal government work)",
+    "license_url": "https://www.nasa.gov/nasa-brand-center/images-and-media/"
+  },
+  {
+    "id": "SLIDES_2",
+    "file": "presentations/nasa_nepp_2019_program_overview.pdf",
+    "category": "Slide Decks (PDF)",
+    "description": "NASA NEPP Program Status and Technology Investments Overview (2019), 16 slides exported from PowerPoint: bullets with sub-bullets, an acronym table, a facility table with multi-line cells, org charts and diagrams",
+    "canaries_present": [
+      "NEPP",
+      "Provision CARES Proton Therapy",
+      "Loma Linda, CA",
+      "Selection of NEPP FY2019 Highlights"
+    ],
+    "source_url": "https://ntrs.nasa.gov/citations/20190026596",
+    "license": "Public domain (US federal government work; NTRS: GOV_PUBLIC_USE_PERMITTED, no third-party material)",
+    "license_url": "https://www.usa.gov/government-copyright"
   }
 ]
