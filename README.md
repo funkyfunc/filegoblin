@@ -516,6 +516,11 @@ why that is off by default.
   instead), so together the run's processes stay within the budget. Input it
   reads as a stream is bounded too: an MCP message over 1 MB is answered with an
   error and dropped as it arrives, and piped stdin is read up to 1 GB.
+- **Many runs at once cannot take it either.** A budget bounds one run, so
+  conversions that use the vision models also share the machine: one at a time
+  per 8 GB of memory (`FILEGOBLIN_VISION_SLOTS` sets the number), across every
+  filegoblin process of the user. Others wait, saying so once, and start as
+  slots free up.
 - **A damaged legacy Office file fails on its own.** `.doc`, `.ppt` and `.xls` are
   read on a separate thread with its own stack, so a reader panic is an error for
   that file. 1,600 truncated and corrupted variants of the fixtures (700 of them

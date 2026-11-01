@@ -1437,3 +1437,26 @@ Speed: 45 dev PDFs (every fourth), one process each, the old and new builds inte
 - **Fast-path tables** (36.9 against 55.9). Most remaining misses are two-column text tables and wrapped cells. MinerU's and marker's continuation-row rule needs row geometry that pdf_oxide's tables do not give.
 
 **Status:** Accepted.
+
+## 2026-10-31: Vision conversions share the machine, not only their run's budget
+
+**Context.** On 2026-10-31 the Mac (24 GB) ran out of memory again and macOS killed apps (JetsamEvent 22:41). Three agent sessions were running at once. One script meant to run 3 conversions at a time started all 19, because its `jobs -r` count ran in a subshell. That made 38 `--vision smart` processes holding 29.5 GB, each well under its own limit. Another session's 8 Python processes held 12 GB, and Chrome held 7 GB. `--memory` bounds one run; nothing bounded many runs started side by side.
+
+**Decision.** A conversion that will use the vision models takes a machine-wide slot before it loads them (`vision::MachineSlot`):
+- There is one slot per 8 GB of physical memory, at least one; `FILEGOBLIN_VISION_SLOTS` sets the number.
+- A slot is an `flock` on `~/.filegoblin/slots/vision-N.lock`. It is under the home directory because agent sessions may each have their own `TMPDIR`. The OS releases the lock when its process dies, so a killed run cannot leak one.
+- Threads of one process share its slot, since the models load once per process.
+- The slot is given back after each conversion. So a PDF worker idle in its pool never blocks its sibling, which would otherwise deadlock a run on a 1-slot machine.
+- A run that has to wait says so once, unless quiet.
+- The comparison harness's engine worker (`scripts/alt_engine_worker.py`) takes the same slots for MinerU, marker, docling and pymupdf4llm, for its whole life.
+
+Measured: six `--vision smart` runs on old scans started together with 2 slots. At most 2 processes held models at once (4.9 GB in all); four waited and said so; all six converted, in 52 s.
+
+**Rejected.**
+- Checking free memory before loading. Free memory on macOS is soft (compressed and inactive pages), and two runs checking at the same moment would both see room.
+- Holding the slot for a worker's whole life. Its sibling could then wait forever for a slot held by an idle worker.
+- A semaphore in `TMPDIR`: sessions do not share it.
+
+**Not covered.** Arbitrary Python or other tools a session runs itself. Agents running benchmarks should still keep concurrent heavy jobs low.
+
+**Status:** Accepted.

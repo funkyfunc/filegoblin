@@ -13,6 +13,7 @@ to stderr, so it cannot corrupt the protocol.
 Each engine runs in its recommended configuration: the default its own
 documentation gives for this machine (Apple silicon, no NVIDIA GPU).
 """
+import fcntl
 import json
 import os
 import sys
@@ -84,6 +85,42 @@ ENGINES = {
 }
 
 
+def take_vision_slot():
+    """Waits for one of filegoblin's machine-wide vision slots and holds it
+    for the life of this process (see `MachineSlot` in
+    crates/core/src/vision/mod.rs): one per 8 GB of memory, or
+    FILEGOBLIN_VISION_SLOTS. These tools load models of their own, so runs of
+    them and of filegoblin started side by side share one limit instead of
+    each assuming the whole machine. Returns the held file, or None when the
+    slots cannot be opened."""
+    slots = os.environ.get("FILEGOBLIN_VISION_SLOTS", "")
+    if not (slots.isdigit() and int(slots) > 0):
+        slots = max(1, os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") >> 33)
+    slots = int(slots)
+    folder = os.path.join(os.path.expanduser("~"), ".filegoblin", "slots")
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError:
+        return None
+    told = False
+    started = time.time()
+    while True:
+        for i in range(slots):
+            try:
+                fh = open(os.path.join(folder, f"vision-{i}.lock"), "a+")
+            except OSError:
+                return None
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fh
+            except OSError:
+                fh.close()
+        if not told and time.time() - started > 2:
+            print(f"waiting for one of {slots} vision slots", file=sys.stderr)
+            told = True
+        time.sleep(0.5)
+
+
 def main():
     name = sys.argv[1]
     # Keep the protocol channel private: the real stdout becomes fd `proto`,
@@ -91,6 +128,7 @@ def main():
     proto = os.fdopen(os.dup(1), "w", buffering=1)
     os.dup2(2, 1)
     sys.stdout = sys.stderr
+    slot = take_vision_slot() if name != "markitdown" else None  # noqa: F841 (held)
     start = time.time()
     convert = ENGINES[name]()
     proto.write(json.dumps({"ready": True, "load": time.time() - start}) + "\n")

@@ -706,6 +706,9 @@ fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
     #[cfg(feature = "vision")]
     let mode = opts.vision;
     #[cfg(feature = "vision")]
+    let _vision_slot = (mode != crate::cli::VisionMode::Off && crate::vision::wanted())
+        .then(|| crate::vision::MachineSlot::take(opts.quiet));
+    #[cfg(feature = "vision")]
     let renderer = if mode != crate::cli::VisionMode::Off && crate::vision::enabled() {
         std::fs::read(path)
             .ok()
