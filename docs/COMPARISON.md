@@ -25,6 +25,20 @@ python3 scripts/olmocr_bench.py run cmp-docling --split dev --jobs 1 --engine do
 python3 scripts/run_gauntlet.py --engine docling
 ```
 
+**Read this first.** An audit on 2026-11-01 (`docs/reviews/2026-11-01-claims-audit.md`) re-ran the other
+tools on olmOCR-bench's 1,223-PDF test split and read two fresh sets written after the tuning.
+- **Every number below reproduces.** But the dev split and the gauntlet are where filegoblin was tuned, and
+  the other tools never saw them.
+- **On documents nobody tuned on, the order changes.**
+  - The test split puts MinerU 4.7 points ahead of filegoblin smart.
+  - The fresh held-out pages put marker's fast mode narrowly ahead.
+  - docling leads the fresh gauntlet cases.
+  - The fast path trails pymupdf4llm everywhere but dev.
+
+  See "olmOCR-bench (test split)" and "Off the tuning sets".
+- **Every tool ran in its default configuration**: marker in fast mode, docling without formula enrichment.
+  Read every comparison here as default against default.
+
 ## The tools
 
 | tool | version | configuration (its default here) | device | licence |
@@ -32,8 +46,8 @@ python3 scripts/run_gauntlet.py --engine docling
 | **filegoblin** `--vision smart` | 1.16.0 + `4283928` | layout (PP-DocLayoutV3), tables (Table Transformer), formulas (pix2text MFR), OCR (PP-OCRv6) on pages that need them | CPU (rten) | MIT OR Apache-2.0 |
 | **filegoblin** `--vision off` | same | text layer only, no models | CPU | same |
 | MinerU | 4.1.2 | `mineru-kit parse`, tier **standard** (the default): layout and OCR models plus the MinerU2.5-Pro 1.2B VLM through llama.cpp | MPS + Metal | Apache-2.0 with extra terms: a commercial licence above 100 M monthly users or US$20 M monthly revenue; online services must credit MinerU |
-| marker | 2.1.0 (surya 0.23.0) | `PdfConverter` defaults: mode **fast** (marker's default on CPU/MPS), the surya VLM through llama.cpp's `llama-server` (b11985) for OCR and equations | MPS + Metal | code Apache-2.0; model weights a modified OpenRAIL-M, free for research, personal use and companies under US$5 M funding/revenue |
-| docling | 2.145.0 | `DocumentConverter()` defaults: Heron layout model, TableFormer, OCR chosen automatically (RapidOCR); formula enrichment off | MPS / CPU | MIT |
+| marker | 2.1.0 (surya 0.23.0) | `PdfConverter` defaults: mode **fast** (marker picks it whenever the device is not CUDA), the surya VLM through llama.cpp's `llama-server` (b11985) for OCR and equations. Its **balanced** mode (VLM layout, inline-math OCR) is the one its README scores at 76.0 against fast's 66.6. Measured here on the dev split, balanced scores **77.00** (fast 70.80, filegoblin smart 77.21) at 10.6 s per page | MPS + Metal | code Apache-2.0; model weights a modified OpenRAIL-M, free for research, personal use and companies under US$5 M funding/revenue |
+| docling | 2.145.0 | `DocumentConverter()` defaults: Heron layout model, TableFormer, OCR chosen automatically (RapidOCR); formula enrichment off (`do_formula_enrichment`, not its default), so its two math categories score 0 by configuration | MPS / CPU | MIT |
 | pymupdf4llm | 2.0 (PyMuPDF 2.0, pymupdf-layout 2.0) | `to_markdown()` with PyMuPDF Layout (its default when installed) and RapidOCR for pages that need OCR (Tesseract is a system package, so not installed) | CPU (ONNX) | **AGPL-3.0** or Artifex commercial licence |
 | markitdown | 0.1.9 | `MarkItDown().convert()` (pdfminer.six for PDFs) | CPU | MIT |
 | olmOCR | — | not run: its pipeline needs an NVIDIA GPU with ≥ 12 GB (README); the numbers below are **published, not measured** | — | Apache-2.0 |
@@ -46,7 +60,9 @@ models are permissively licensed.
 ## olmOCR-bench (dev split, 180 PDFs)
 
 Pass rates per category; overall is the mean of the eight, the official
-definition.
+definition. 180 PDFs is a small sample: the 95 % interval on each overall is
+about ±5 points, so this table does not rank tools that are within 5 points of
+each other. The test split below does.
 
 | category | filegoblin smart | filegoblin off | MinerU | marker | docling | pymupdf4llm | markitdown |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -87,9 +103,45 @@ through MPS or Metal; filegoblin, pymupdf4llm and markitdown use only the CPU.
 | docling (GPU) | 50.3 | marker README |
 | filegoblin smart (measured, full bench, v1.16.0) | 74.68 | docs/ADR.md, 2026-10-23 |
 
-The measured dev-split numbers agree with these: marker's fast mode lands
-near its published 66.6 (70.8 on dev), docling near 50 without formula
-enrichment (54.8), MinerU 4.1 a little above MinerU 2.5's 75.2 (77.9).
+The filegoblin row mixes the 180 dev PDFs it was tuned on with the 1,223
+test PDFs, and the other rows are other versions on other hardware, so this
+table is context, not a ranking. On the test split measured here (next
+section), marker's fast mode scores 65.6 (published 66.6) and docling 54.6;
+MinerU 4.1 scores 79.0, above MinerU 2.5's published 75.2.
+
+## olmOCR-bench (test split, 1,223 PDFs)
+
+Measured 2026-11-01 (`docs/reviews/2026-11-01-claims-audit.md`), one tool at a
+time, same harness and scorer. The other tools ran in the default
+configurations of the table above. The two filegoblin rows are main at
+`75355f5`. filegoblin was never tuned on this split, but it is not fully held
+out for filegoblin either: fixes found by reading failures here are worth
+about 0.6 (smart) and 0.5 (off) of its scores. The other tools carry none of
+that.
+
+| category | filegoblin smart | filegoblin off | MinerU | marker (fast) | docling | pymupdf4llm |
+|---|---:|---:|---:|---:|---:|---:|
+| arXiv math | **87.1** | 0.0 | 77.7 | 23.1 | 0.0 | 0.0 |
+| headers/footers | 91.6 | 74.0 | **95.7** | 93.9 | 90.1 | 32.4 |
+| long tiny text | **88.1** | 54.1 | 83.9 | 63.2 | 77.7 | 59.6 |
+| multi-column | 72.0 | 49.5 | **79.7** | 74.4 | 73.5 | 66.1 |
+| old scans | 28.9 | 17.3 | 38.3 | **43.9** | 24.0 | 19.7 |
+| old scans math | 47.6 | 0.0 | **76.7** | 60.8 | 0.0 | 0.0 |
+| tables | 80.0 | 35.2 | **82.0** | 65.8 | 73.4 | 64.4 |
+| baseline | 99.2 | 98.9 | 98.0 | **99.3** | 97.9 | 95.9 |
+| **overall** | 74.31 | 41.13 | **79.01** | 65.55 | 54.58 | 42.27 |
+| 95 % interval | 72.3–76.3 | 39.0–43.0 | 77.3–80.6 | 63.3–68.1 | 52.8–56.3 | 40.6–44.2 |
+
+- **MinerU leads filegoblin smart by 4.7** (interval 2.6–6.5), about 5.3 once
+  filegoblin's test-informed fixes are discounted. Its lead comes from scanned
+  math (+29), scans (+9), multi-column (+8), headers/footers and tables.
+- **filegoblin leads marker's fast mode by 8.8** (5.9–11.4), docling by 19.7
+  and pymupdf4llm by 32.
+- **The fast path trails pymupdf4llm by 1.1.** The interval is −1.5 to +3.9,
+  so not significant.
+- **The test split moves the tools differently from dev:** MinerU +1.1,
+  pymupdf4llm +1.8, docling −0.2, marker −5.3, filegoblin smart −2.9 (the same
+  drop as a filegoblin build from before the split existed).
 
 ## The gauntlet
 
@@ -153,14 +205,36 @@ and marker write them; olmOCR's scorer reads them too) and ignores inline
 (its `<br/>` inside table cells had counted as words) and nothing else; and
 the canaries are filegoblin's own expectations, so only quality compares tools.
 
+What the gauntlet can and cannot show against other tools:
+- **It is filegoblin's own acceptance test.** Every change since 2026-10-14 had to keep every case, and the
+  2026-10-30 pass fixed SCOTUS_1 and CSI_SPEC after this comparison showed the others winning there. The
+  other tools ran once, untuned.
+- **The "cases it reads" mean mixes formats.** 12 of the 28 graded cases are not PDFs, which marker and
+  pymupdf4llm do not read.
+- **P1–P3 are synthetic.** They are small PPTX files built to reproduce known markitdown bugs, and they lack
+  a `<p:spPr>` element the schema requires. Their crashes count as 0 for three tools.
+- **MinerU's five failures are the harness's 8 GB cap**, not a crash. It was not tested whether MinerU
+  finishes them with more memory.
+- **On the 11 PDF cases every tool finished**, filegoblin smart scores 89.8, MinerU 88.7, docling 84.6,
+  marker 79.5 and pymupdf4llm 74.1.
+- **On 11 fresh gauntlet cases written after the tuning**, docling leads; see "Off the tuning sets" below.
+
 ## Where each tool beats filegoblin, and why
 
-**Short answer.** On olmOCR-bench, filegoblin smart beats every free tool
-here except MinerU 4.1, which leads by about 1.9 points (0.7 without the one
-page filegoblin's memory ceiling stopped). On the gauntlet it leads them all: its
-PDF cases score 88.2 when they finish, against 84.7 for docling, the best of
-the others. With `--vision off` it is close to pymupdf4llm on the gauntlet and
-behind it on olmOCR-bench.
+**Short answer** (corrected 2026-11-01).
+- **olmOCR-bench test split:** MinerU 4.1 leads filegoblin smart by 4.7
+  points. filegoblin is clearly ahead of marker's fast mode, docling and
+  pymupdf4llm.
+- **Dev split:** filegoblin and MinerU cannot be told apart (0.7 apart, ±5).
+- **133 fresh pages:** marker's fast mode is ahead of filegoblin and MinerU
+  is behind it, neither significantly.
+- **The gauntlet:** it leads on the PDF cases each tool finished (89.8 vs
+  MinerU 88.7), on its own tuning suite. On 11 fresh cases docling leads
+  (86.8) and filegoblin is second (79.4).
+- **`--vision off`:** trails pymupdf4llm everywhere except the dev split.
+
+The rest of this section was written from the dev split and the gauntlet on
+2026-10-30.
 
 Where the others win, test by test (olmOCR-bench dev split: tests a tool passes
 and filegoblin smart fails; MinerU 76, marker 63, docling 24, pymupdf4llm 15,
@@ -208,6 +282,10 @@ against 102, 284, 425 and 513 the other way):
   detection, so booktabs-style tables (rules above and below, none down)
   scored 0 of 38 dev tests. The next ADR entry adds them (tables 16.2 → 36.0).
   On the gauntlet the two are level (PDF means 74.4 and 74.9).
+  After the 2026-10-30/31 passes the fast path matched pymupdf4llm on dev
+  (40.54 vs 40.52), but about 1.5 points of that are specific to dev. On the
+  test split pymupdf4llm leads 42.3 to 41.1, and on the held-out pages and the
+  fresh gauntlet cases by about 10.
 
 Where filegoblin leads:
 
@@ -217,13 +295,15 @@ Where filegoblin leads:
 - **Tables**: 74.8 on olmOCR-bench (MinerU 70.3, docling 66.7) and the best
   gauntlet table scores (TBL_1 100, TI_REG 94.4).
 - **Everything that is not a PDF**: the adversarial PPTX cases crash MinerU,
-  docling and markitdown (`InvalidXmlError`); HTML articles keep their
+  docling and markitdown (`InvalidXmlError`; these are synthetic files missing a
+  required `<p:spPr>`, built to reproduce markitdown bugs); HTML articles keep their
   navigation and cookie banners in docling and markitdown (WEB_1 29.9 and 0,
   every leaked string costing 5 points); filegoblin reads all 12 non-PDF
   cases at 85–100.
 - **Long documents within a memory budget**: MinerU's standard tier passed 8 GB
   on every gauntlet document over 50 pages (BOOK_1, FIN_1, TECH_1, CLIN_1,
-  FDA_1) and was stopped. filegoblin's own smart mode needed more than its
+  FDA_1) and was stopped by the harness's 8 GB cap. It was not tried with
+  more, so this shows its memory use, not that it cannot finish them. filegoblin's own smart mode needed more than its
   4 GB worker on six gauntlet PDFs; the next ADR entry fixes that.
 - **Licence and hardware**: MIT/Apache-2.0 for the binary and its models; the
   CPU only, on any machine. MinerU (commercial-licence thresholds, attribution
@@ -241,8 +321,8 @@ not recur. Same machine, same limits, same harness:
 |---|---:|---:|---|
 | olmOCR-bench dev, smart | 76.03 | **77.21** | MinerU 77.93 |
 | olmOCR-bench dev, off | 37.13 | **39.61** | pymupdf4llm 40.52 (CPU) |
-| olmOCR-bench test (1,223 PDFs), smart | 73.70 | **74.29** | not measured |
-| olmOCR-bench test, off | 39.28 | **40.08** | not measured |
+| olmOCR-bench test (1,223 PDFs), smart | 73.70 | **74.29** | MinerU 79.01 (measured 2026-11-01) |
+| olmOCR-bench test, off | 39.28 | **40.08** | pymupdf4llm 42.27 (CPU; measured 2026-11-01) |
 | gauntlet, graded PDF cases, smart | 58.6 (6 failed) | **89.0** (0 failed) | docling 84.7 |
 | gauntlet, graded PDF cases, off | 74.4 | **76.4** | pymupdf4llm 74.9 |
 | gauntlet, all graded cases, smart | 74.1 | **91.4** | |
@@ -258,9 +338,47 @@ olmOCR-bench score did not move (dev 77.21, test 74.31).
 MinerU still leads olmOCR-bench's dev split by 0.7. It is 10 and 11 points
 ahead on the two scanned categories, and 2–3 tests ahead on headers/footers
 and multi-column; filegoblin leads arXiv math, long tiny text, tables and
-baseline.
+baseline. On the test split MinerU's lead is 4.7 (above).
 
-## New material: a held-out set and 11 gauntlet cases
+## Off the tuning sets
+
+The dev split and the gauntlet are where filegoblin was tuned. Two sets were
+written on 2026-10-31 by a separate session, which froze them before any
+converter ran (`~/Library/Caches/fgv/heldout/`, outside the repo; only scores
+are read from it).
+
+**Held-out pages**: 133 one-page PDFs, 1,009 tests, olmOCR's seven categories
+plus 18 multilingual pages. All nine categories are averaged; the intervals
+are a 95 % bootstrap over PDFs.
+
+| | overall | 95 % interval |
+|---|---:|---|
+| marker 2.1 (fast) | **87.1** | 83.3–90.9 |
+| filegoblin smart | 85.9 (a second run: 84.9) | 82.7–90.2 |
+| MinerU 4.1.2 | 82.1 | 77.8–86.2 |
+| docling 2.145 | 69.7 | 66.4–72.8 |
+| pymupdf4llm 2.0 | 57.8 | 53.9–61.4 |
+| filegoblin off | 47.8 | 43.9–52.0 |
+| markitdown 0.1.9 | 40.7 | 36.7–44.7 |
+
+**New gauntlet cases**: 11 PDFs (CJK, Arabic, Hebrew, French, a receipt, an
+invoice, a filled form, a 1922 newspaper scan, a newsletter, a slide deck).
+Quality is graded as above.
+
+| | mean (11) | without Arabic/Hebrew (9) |
+|---|---:|---:|
+| docling | **86.8** | **89.1** |
+| filegoblin smart | 79.4 | 87.3 |
+| pymupdf4llm | 78.7 | 79.2 |
+| marker | 77.7 | 80.4 |
+| MinerU | 76.7 | 80.5 |
+| filegoblin off | 68.1 | 75.7 |
+| markitdown | 48.2 | 53.5 |
+
+Both sets put filegoblin smart in the top group, not on its own at the top,
+and both put the fast path well behind pymupdf4llm.
+
+## Off the tuning sets, in detail
 
 Measured 2026-11-01 on the same machine and harnesses, with filegoblin built at
 `75355f5` (`--features vision`) and the same versions of the other tools.

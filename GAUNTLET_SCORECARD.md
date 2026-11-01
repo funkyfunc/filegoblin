@@ -20,6 +20,8 @@ Measured 2026-10-31 on an Apple M4 Pro, after the 2026-10-30 pass (smart mode in
 
 The 2026-10-30 pass: R1, R2, BOOK_2, FIN_1, CLIN_1 and FDA_1 convert again inside the 4 GB worker; CSI_SPEC 76.2 → 91.2 and SCOTUS_1 78.4 → 88.4 in both modes (running heads); SCI_2 64.8 → 71.6 with `--vision off` (booktabs tables); no case lost ground in either mode. The 83.0 → 83.1 off-mode step is the grader now ignoring inline HTML tags (`<br/>` in table cells), not a change in output.
 
+The gauntlet is filegoblin's own acceptance suite: every change since 2026-10-14 was kept only if no case lost ground, so its scores measure regressions, not standing against other tools. On 11 fresh cases written after the tuning, filegoblin smart scored 79.4 against docling's 86.8 (docs/reviews/2026-11-01-claims-audit.md).
+
 This block is kept when a run rewrites the scorecard; edit it by hand.
 <!-- /notes -->
 
