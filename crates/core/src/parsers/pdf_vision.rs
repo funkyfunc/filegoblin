@@ -253,6 +253,7 @@ fn convert_scanned_page_gated(
         None => img,
     };
     let regions = layout::detect(&img)?;
+    debug_regions(page, &regions);
     let t_layout = t.elapsed();
     let words = ocr_words(&img, true);
     let (w, h) = (img.rgb.width() as f32, img.rgb.height() as f32);
@@ -526,16 +527,8 @@ fn assemble(
     let (_, by0, _, by1) = bx;
     let ph = (by1 - by0).max(1.0);
 
-    // Furniture regions only count near the top or bottom edge: a model that
-    // calls a mid-page line a "header" is wrong more often than not.
-    let mut furniture: Vec<&Region> = regions
-        .iter()
-        .filter(|r| r.label.is_furniture())
-        .filter(|r| {
-            let cy = (r.bbox.y0 + r.bbox.y1) / 2.0;
-            cy > by1 - 0.2 * ph || cy < by0 + 0.2 * ph
-        })
-        .collect();
+    let edges = edge_furniture(regions, &words, bx);
+    let mut furniture: Vec<&Region> = edges.furniture.clone();
     // A journal's imprint at the foot or head of an article's first page
     // ("INTERNATIONAL JOURNAL OF …, VOL. 8, 71–90 (1993) © 1993 John Wiley &
     // Sons, Inc. CCC 0884-8173/93/010071-20") is publication furniture that
@@ -543,7 +536,7 @@ fn assemble(
     // usually calls it text.
     let imprint: Vec<&Region> = regions
         .iter()
-        .filter(|r| !r.label.is_furniture() && !r.label.is_graphic())
+        .filter(|r| edges.content(r) && !r.label.is_graphic())
         .filter(|r| {
             let cy = (r.bbox.y0 + r.bbox.y1) / 2.0;
             cy > by1 - 0.18 * ph || cy < by0 + 0.18 * ph
@@ -564,7 +557,7 @@ fn assemble(
     let content: Vec<&Region> = regions
         .iter()
         .filter(|r| {
-            !r.label.is_furniture()
+            edges.content(r)
                 && r.label != Label::InlineFormula
                 && !imprint.iter().any(|f| std::ptr::eq(*f, *r))
         })
@@ -613,7 +606,7 @@ fn assemble(
         latex_inline.iter().any(Option::is_some) || latex_display.iter().any(Option::is_some);
     for w in &words {
         let (cx, cy) = ((w.b.x0 + w.b.x1) / 2.0, (w.b.y0 + w.b.y1) / 2.0);
-        if furniture.iter().any(|r| r.bbox.contains_point(cx, cy)) {
+        if furniture.iter().any(|r| r.bbox.contains_point(cx, cy)) || edges.beyond(&w.b, &content) {
             continue;
         }
         let under_formula = inline
@@ -731,16 +724,40 @@ fn assemble(
 
     // Words no region claimed: group them into blocks and slot each block in
     // after the region just above it in the same column.
-    for blk in group_orphans(&toks, &orphans) {
-        let bb = blk
-            .iter()
-            .map(|&i| toks[i].b)
-            .reduce(|a, b| a.union(&b))
-            .expect("non-empty block");
-        let key = orphan_key(&bb, &content);
-        let md = lines_to_text(&toks, &blk);
+    let orphan_blocks: Vec<(UserBox, Vec<usize>)> = group_orphans(&toks, &orphans)
+        .into_iter()
+        .map(|blk| {
+            let bb = blk
+                .iter()
+                .map(|&i| toks[i].b)
+                .reduce(|a, b| a.union(&b))
+                .expect("non-empty block");
+            (bb, blk)
+        })
+        .collect();
+    for (k, (bb, blk)) in orphan_blocks.iter().enumerate() {
+        let key = orphan_key(bb, &content);
+        let md = lines_to_text(&toks, blk);
         let cy = (bb.y0 + bb.y1) / 2.0;
         if (cy > by1 - 0.18 * ph || cy < by0 + 0.18 * ph) && blk.len() <= 40 && is_imprint(&md) {
+            continue;
+        }
+        let others: Vec<UserBox> = content
+            .iter()
+            .chain(&furniture)
+            .map(|r| r.bbox)
+            .chain(
+                orphan_blocks
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != k)
+                    .map(|(_, (b, _))| *b),
+            )
+            .collect();
+        if marginal(bb, &md, &others, bx) {
+            if std::env::var_os("FILEGOBLIN_DEBUG_FURNITURE").is_some() {
+                eprintln!("edge furniture orphan: {md:?}");
+            }
             continue;
         }
         // A lone glyph no region claimed (a QED box, a stray bracket from an
@@ -775,6 +792,250 @@ fn assemble(
     } else {
         out
     }
+}
+
+/// The page's furniture: the layout model's header, footer and page-number
+/// regions, checked against where they sit on the page.
+struct Edges<'a> {
+    furniture: Vec<&'a Region>,
+    /// Furniture-labelled regions that are body text after all.
+    demoted: Vec<&'a Region>,
+    /// The inner edges of the running head and foot. A word past one of
+    /// them that no kept region holds is furniture too.
+    top: Option<f32>,
+    bottom: Option<f32>,
+}
+
+impl Edges<'_> {
+    fn content(&self, r: &Region) -> bool {
+        !self.furniture.iter().any(|f| std::ptr::eq(*f, r))
+            && (!r.label.is_furniture() || self.demoted.iter().any(|f| std::ptr::eq(*f, r)))
+    }
+
+    fn beyond(&self, b: &UserBox, content: &[&Region]) -> bool {
+        let (cx, cy) = ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0);
+        (self.top.is_some_and(|t| cy >= t) || self.bottom.is_some_and(|t| cy <= t))
+            && !content.iter().any(|r| r.bbox.contains_point(cx, cy))
+    }
+}
+
+/// Text of the words centred in `b`.
+fn text_in(words: &[Tok], b: &UserBox) -> String {
+    words
+        .iter()
+        .filter(|w| b.contains_point((w.b.x0 + w.b.x1) / 2.0, (w.b.y0 + w.b.y1) / 2.0))
+        .map(|w| w.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Furniture regions, checked by position (the idea MinerU applies after
+/// its layout model, written fresh here):
+///
+/// * A furniture label counts only near the top or bottom edge, and not when
+///   body text lies between it and that edge: a "header" with paragraphs
+///   above it is a line of the body.
+/// * The running head's inner edge bounds the furniture band: a short block
+///   wholly past it (a journal tag beside the head, a page number above it)
+///   is furniture as well, and so is a word past it that no region holds.
+/// * A short block alone at the very top or bottom edge, apart from the body
+///   ([`marginal`]), is furniture even when the model calls it text.
+fn edge_furniture<'a>(regions: &'a [Region], words: &[Tok], bx: (f32, f32, f32, f32)) -> Edges<'a> {
+    let (_, by0, _, by1) = bx;
+    let ph = (by1 - by0).max(1.0);
+    let at_top = |r: &Region| (r.bbox.y0 + r.bbox.y1) / 2.0 > by1 - 0.2 * ph;
+    // Furniture regions only count near the top or bottom edge: a model that
+    // calls a mid-page line a "header" is wrong more often than not.
+    let mut furniture: Vec<&Region> = regions
+        .iter()
+        .filter(|r| r.label.is_furniture())
+        .filter(|r| {
+            let cy = (r.bbox.y0 + r.bbox.y1) / 2.0;
+            cy > by1 - 0.2 * ph || cy < by0 + 0.2 * ph
+        })
+        .collect();
+    let text_like = |r: &Region| {
+        !r.label.is_furniture()
+            && !r.label.is_graphic()
+            && !matches!(
+                r.label,
+                Label::Table | Label::InlineFormula | Label::DisplayFormula | Label::FormulaNumber
+            )
+    };
+    let short = |r: &Region| {
+        r.bbox.height() <= 0.035 * ph && text_in(words, &r.bbox).chars().count() <= 150
+    };
+    let hov = |a: &UserBox, b: &UserBox| a.x1.min(b.x1) - a.x0.max(b.x0) > 0.0;
+    let mut demoted: Vec<&Region> = Vec::new();
+    furniture.retain(|f| {
+        if !matches!(f.label, Label::Header | Label::Footer) {
+            return true;
+        }
+        let top = at_top(f);
+        let tol = 0.25 * f.bbox.height();
+        let body_beyond = regions.iter().any(|r| {
+            text_like(r)
+                && !short(r)
+                && hov(&r.bbox, &f.bbox)
+                && if top {
+                    r.bbox.y0 >= f.bbox.y1 - tol
+                } else {
+                    r.bbox.y1 <= f.bbox.y0 + tol
+                }
+        });
+        if body_beyond {
+            demoted.push(*f);
+        }
+        !body_beyond
+    });
+    // The boundary: the inner edge of the innermost short head (or foot) in
+    // the outer tenth of the page.
+    let heads: Vec<&Region> = furniture
+        .iter()
+        .filter(|r| {
+            matches!(r.label, Label::Header | Label::Footer | Label::Number)
+                && r.bbox.height() <= 0.035 * ph
+        })
+        .copied()
+        .collect();
+    let top = heads
+        .iter()
+        .filter(|r| r.bbox.y0 >= by1 - 0.1 * ph)
+        .map(|r| r.bbox.y0)
+        .reduce(f32::min);
+    let bottom = heads
+        .iter()
+        .filter(|r| r.bbox.y1 <= by0 + 0.1 * ph)
+        .map(|r| r.bbox.y1)
+        .reduce(f32::max);
+    for r in regions {
+        if text_like(r)
+            && short(r)
+            && (top.is_some_and(|t| r.bbox.y0 >= t - 2.0)
+                || bottom.is_some_and(|b| r.bbox.y1 <= b + 2.0))
+        {
+            furniture.push(r);
+        }
+    }
+    // Every block counts as an obstacle, furniture too: a block inward of
+    // the model's own head or foot is left to the boundary above.
+    let blocks: Vec<&Region> = regions
+        .iter()
+        .filter(|r| {
+            r.label != Label::InlineFormula
+                && (!r.label.is_furniture()
+                    || furniture
+                        .iter()
+                        .chain(&demoted)
+                        .any(|f| std::ptr::eq(*f, *r)))
+        })
+        .collect();
+    let mut found: Vec<&Region> = Vec::new();
+    for r in &blocks {
+        if matches!(r.label, Label::Text | Label::AsideText | Label::Content)
+            && !furniture.iter().any(|f| std::ptr::eq(*f, *r))
+        {
+            let others: Vec<UserBox> = blocks
+                .iter()
+                .filter(|o| !std::ptr::eq(**o, *r))
+                .map(|o| o.bbox)
+                .collect();
+            if marginal(&r.bbox, &text_in(words, &r.bbox), &others, bx) {
+                found.push(r);
+            }
+        }
+    }
+    furniture.extend(found);
+    if std::env::var_os("FILEGOBLIN_DEBUG_FURNITURE").is_some() {
+        for r in &furniture {
+            eprintln!(
+                "edge furniture {:?} {:.3}-{:.3}: {:?}",
+                r.label,
+                (r.bbox.y0 - by0) / ph,
+                (r.bbox.y1 - by0) / ph,
+                text_in(words, &r.bbox)
+            );
+        }
+        for r in &demoted {
+            eprintln!(
+                "edge body {:?} {:.3}-{:.3}: {:?}",
+                r.label,
+                (r.bbox.y0 - by0) / ph,
+                (r.bbox.y1 - by0) / ph,
+                text_in(words, &r.bbox)
+            );
+        }
+        if top.is_some() || bottom.is_some() {
+            eprintln!(
+                "edge lines {:?} {:?}",
+                top.map(|t| (t - by0) / ph),
+                bottom.map(|b| (b - by0) / ph)
+            );
+        }
+    }
+    Edges {
+        furniture,
+        demoted,
+        top,
+        bottom,
+    }
+}
+
+/// marker's marginalia rule on a layout block: wholly inside the top 8% or
+/// bottom 13% of the page, no taller than 3.5% of it, at most 150
+/// characters, with no other block between it and the edge (furniture
+/// included) and a gap of at least its own height to the next block inward.
+/// A block level with a paragraph is the first or last line of a column; a
+/// list item, a caption, a note or a line of prose cut by the page edge also
+/// stays.
+fn marginal(b: &UserBox, text: &str, others: &[UserBox], bx: (f32, f32, f32, f32)) -> bool {
+    let (bx0, by0, bx1, by1) = bx;
+    let ph = (by1 - by0).max(1.0);
+    let top = b.y0 >= by1 - 0.08 * ph;
+    let bottom = b.y1 <= by0 + 0.13 * ph;
+    let n = text.chars().count();
+    if !(top || bottom) || b.height() > 0.035 * ph || n == 0 || n > 150 {
+        return false;
+    }
+    let mut gap = f32::MAX;
+    for o in others {
+        // A block level with a paragraph is the body's first or last line.
+        if o.y1.min(b.y1) - o.y0.max(b.y0) > 0.0 {
+            if o.height() > 0.035 * ph {
+                return false;
+            }
+            continue;
+        }
+        let beyond = if top { o.y0 >= b.y1 } else { o.y1 <= b.y0 };
+        if beyond {
+            return false;
+        }
+        gap = gap.min(if top { b.y0 - o.y1 } else { o.y0 - b.y1 });
+    }
+    if gap < b.height() {
+        return false;
+    }
+    let t = text.trim_start();
+    let listed = t.starts_with(['•', '◦', '▪', '–', '—', '-', '·'])
+        || t.split_once(' ').is_some_and(|(n, _)| {
+            n.len() <= 4
+                && n.ends_with(['.', ')'])
+                && n[..n.len() - 1].chars().all(|c| c.is_ascii_alphanumeric())
+        });
+    let caption = ["Fig", "FIG", "Table", "TABLE", "Figure", "FIGURE"]
+        .iter()
+        .any(|c| t.starts_with(c));
+    let note = bottom
+        && (t.starts_with(['*', '†', '‡', '§'])
+            || t.split_once(' ').is_some_and(|(n, rest)| {
+                n.len() <= 2
+                    && n.chars().all(|c| c.is_ascii_digit())
+                    && rest.chars().next().is_some_and(char::is_alphabetic)
+            }));
+    let prose = b.width() > 0.5 * (bx1 - bx0)
+        && t.split_whitespace().count() > 8
+        && t.chars().last().is_some_and(char::is_lowercase);
+    !(listed || caption || note || prose)
 }
 
 /// Inline formulas completed from the text layer, which knows which words
@@ -1896,6 +2157,69 @@ mod tests {
             md.starts_with("Table 2: Results\n\n| Item | Value |"),
             "{md}"
         );
+    }
+
+    fn region(label: Label, x0: f32, y0: f32, x1: f32, y1: f32) -> Region {
+        Region {
+            label,
+            score: 0.9,
+            bbox: UserBox { x0, y0, x1, y1 },
+            order: 0,
+        }
+    }
+
+    #[test]
+    fn what_lies_past_the_running_head_is_furniture_too() {
+        // A letter page, y up: a running head, a journal tag beside it that
+        // the model calls text, a stray word past it in no region, the body.
+        let bx = (0.0, 0.0, 612.0, 792.0);
+        let regions = vec![
+            region(Label::Header, 100.0, 750.0, 500.0, 760.0),
+            region(Label::Text, 520.0, 751.0, 560.0, 761.0),
+            region(Label::Text, 50.0, 400.0, 560.0, 740.0),
+        ];
+        let words = vec![
+            tok("ESG", 50.0, 750.0, 80.0, 760.0),
+            tok("JGR", 520.0, 751.0, 560.0, 761.0),
+            tok("Body", 50.0, 730.0, 90.0, 740.0),
+        ];
+        let edges = edge_furniture(&regions, &words, bx);
+        assert!(!edges.content(&regions[1]));
+        assert!(edges.content(&regions[2]));
+        let content: Vec<&Region> = regions.iter().filter(|r| edges.content(r)).collect();
+        assert!(edges.beyond(&words[0].b, &content));
+        assert!(!edges.beyond(&words[2].b, &content));
+    }
+
+    #[test]
+    fn a_header_with_paragraphs_above_it_is_body_text() {
+        let bx = (0.0, 0.0, 612.0, 792.0);
+        let regions = vec![
+            region(Label::Text, 50.0, 690.0, 560.0, 770.0),
+            region(Label::Header, 50.0, 670.0, 560.0, 682.0),
+            region(Label::Header, 50.0, 775.0, 560.0, 785.0),
+        ];
+        let edges = edge_furniture(&regions, &[], bx);
+        assert!(edges.content(&regions[1]));
+        assert!(!edges.content(&regions[2]));
+    }
+
+    #[test]
+    fn a_short_block_alone_at_the_edge_is_marginal() {
+        let bx = (0.0, 0.0, 612.0, 792.0);
+        let ub = |x0, y0, x1, y1| UserBox { x0, y0, x1, y1 };
+        let body = ub(50.0, 150.0, 560.0, 740.0);
+        let foot = ub(50.0, 30.0, 200.0, 40.0);
+        assert!(marginal(&foot, "Exposé No XXV", &[body], bx));
+        // Not with a block beyond it, level with a column of text, close
+        // under the body, or as a caption.
+        let folio = ub(290.0, 15.0, 320.0, 25.0);
+        assert!(!marginal(&foot, "Exposé No XXV", &[body, folio], bx));
+        let column = ub(300.0, 30.0, 560.0, 400.0);
+        assert!(!marginal(&foot, "on Form", &[body, column], bx));
+        let near = ub(50.0, 45.0, 560.0, 740.0);
+        assert!(!marginal(&foot, "Exposé No XXV", &[near], bx));
+        assert!(!marginal(&foot, "Figure 3. Results", &[body], bx));
     }
 
     #[test]

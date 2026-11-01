@@ -1460,3 +1460,43 @@ Measured: six `--vision smart` runs on old scans started together with 2 slots. 
 **Not covered.** Arbitrary Python or other tools a session runs itself. Agents running benchmarks should still keep concurrent heavy jobs low.
 
 **Status:** Accepted.
+
+## 2026-11-01: Smart mode checks the layout model's headers and footers by position
+
+**Context.** In `--vision smart`, PP-DocLayoutV3 labels running heads, running feet and page numbers, and `assemble` drops what those regions hold (only within 20% of the top or bottom edge). Smart headers/footers on the olmOCR-bench dev split were 95.6, against MinerU's 98.9. The model errs both ways:
+- **Furniture left in.** A short line at the edge is labelled text or not boxed at all. Examples: the journal tag "ESG" beside a running head, outside the head's box. "Exposé No XXV … 26 Mai 1978" alone at the foot of a scanned cover, where no recurrence or text-layer rule applies.
+- **Body dropped.** A region labelled header can have the page's paragraphs above it.
+
+MinerU corrects the labels by position after its layout model (`_relabel_header_footer_boundary_blocks`: everything above the lowest header is header). The fast path already has marker's marginalia rule (`pdf_furniture::marginal_lines`). Its excluded rectangles reach smart pages with a text layer, but not scans or blocks the layout model draws differently.
+
+**Decision.** `pdf_vision::edge_furniture`, written fresh (MinerU's code was read for the idea only), runs on every smart page, text layer or scan:
+1. **Boundary.** The inner edge of the innermost header, footer or page number in the outer tenth of the page bounds the furniture band. Only regions no taller than 3.5% of the page count. A short block wholly past that edge (≤ 3.5% tall, ≤ 150 characters, not a table, picture or formula) is furniture too. So is a word past it that no kept region holds.
+2. **Marginal blocks** (`marginal`, marker's rule applied to layout blocks and to words no region claimed). A block is furniture when all of these hold:
+   - It lies wholly in the top 8% or bottom 13% of the page.
+   - It is ≤ 3.5% of the page tall and ≤ 150 characters.
+   - Nothing lies between it and the edge, furniture included. Where the model has found the head or foot, rule 1 decides.
+   - It is not level with a paragraph (that is the first or last line of a column).
+   - It stands at least its own height from the next block inward.
+   - It is not a list item, caption, note or a line of prose cut by the page edge.
+3. **Demotion.** A header or footer region with body text between it and its edge (a block over 3.5% tall or 150 characters, overlapping it across the page) is body text and stays.
+
+`FILEGOBLIN_DEBUG_FURNITURE` prints each decision.
+
+**Rejected.**
+- **A size test for demotion.** A header or footer over 150 characters or 5% of the page tall would count as body text. On dev it gained no test. It restored a two-line journal head ("International Journal of Clinical Medicine, 2013, 4, 561–570 … doi") and a "34CB" stamp on a scan. The letterhead it was aimed at (old_scans/74) still fails its tests on OCR spelling.
+- **The marginal rule with only body blocks as obstacles.** It took the last line of a paragraph above a page's footer ("between 580 and 630 nm.", a reference line, "shot.") and a lone word ending the first line of a third column ("…on Form"). Counting furniture as an obstacle and refusing blocks level with a paragraph fixed all five; nothing else changed.
+
+**Result.** olmOCR-bench dev split, smart: 77.21 → **77.62** (+3/−0). Headers/footers 95.6 → 98.9; no other category moved. Five pages changed, each by dropping furniture: "ESG", the Exposé line, a dictionary guide word, two newspaper folio tags.
+
+Gauntlet, smart: 91.5 → **91.5**, no case moved. Two outputs changed:
+- CLIN_1 loses three "18/51" page counters.
+- On a SLIDE_1 photo page, the OCR'd logo "T≡5L=" past the page number is dropped. The page then falls back to the text layer, which also brings back the slide's title.
+
+Held-out test split, smart, run once at the end: 74.31 → **74.47** (+10/−1). Headers/footers 91.6 → 93.1. Long tiny text 88.1 → 87.8, the one loss. No other category moved. The baseline is the same build with the rules off, run on the 51 pages whose output changed.
+
+**Open.**
+- Of the four dev failures one is left, and it is not furniture: "ANEC" opens the page's own heading. MinerU fails it too.
+- The test loss (long_tiny_text/14b): on an encyclopaedia scan, the first line of column 2 is level with the running head over column 3. No region holds it, so rule 1 takes it as a word past the head. Requiring the word to stand apart from the line below it, as rule 2 does, would keep it. That change was not made after seeing the held-out split; it needs a fresh dev pass.
+- BOOK_1's "TIS final pgs vii" slug is on a page smart mode sends down the fast path. There pdf_oxide's table on the contents page takes in a line outside the CropBox. A vision-label rule cannot reach it.
+
+**Status:** Accepted.
