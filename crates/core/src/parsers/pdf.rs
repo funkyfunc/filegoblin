@@ -928,6 +928,11 @@ fn convert_pdf(path: &Path, opts: &ParseOptions) -> Result<String> {
                                 md.push_str(&ocr.trim().replace('\n', "\n> "));
                             }
                         }
+                        // Right-to-left lines in reading order (the converter
+                        // leaves them half turned).
+                        if !unreadable && !from_ocr {
+                            md = super::pdf_bidi::logical_markdown(&doc, page, &md);
+                        }
                         (md, unreadable, from_ocr)
                     }
                 }

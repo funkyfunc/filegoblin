@@ -379,7 +379,14 @@ pub(crate) fn glyph_words(chars: &[TextChar]) -> Option<Vec<GlyphWord>> {
         } else {
             0.0
         };
+        // A right-to-left segment that has space characters spells its word
+        // breaks with them: its joined Arabic letters are placed one by one
+        // and part by more than the font's advances say, which is no word
+        // gap. Only a gap of half an em (between table cells) breaks there.
+        let spaced_rtl = seg.iter().any(|c| c.char.is_whitespace())
+            && super::pdf_bidi::rtl_dominant(&seg.iter().map(|c| c.char).collect::<String>());
         let threshold = (typical + 0.12).max(0.12);
+        let break_at = if spaced_rtl { 0.5 } else { threshold };
 
         let mut cur: Option<GlyphWord> = None;
         let mut prev: Option<&TextChar> = None;
@@ -389,19 +396,22 @@ pub(crate) fn glyph_words(chars: &[TextChar]) -> Option<Vec<GlyphWord>> {
                 // ligature mapped to "ﬂ ", drawn as one glyph) sits inside
                 // that glyph's advance, and the next letter follows it
                 // without a gap: no reader sees a space there.
-                let phantom = prev.is_some_and(|p| {
-                    let advance = if p.advance_width > 0.0 {
-                        p.advance_width
-                    } else {
-                        p.bbox.width
-                    };
-                    !p.char.is_whitespace()
-                        && c.origin_x < p.origin_x + advance - 0.05 * em(p)
-                        && seg.get(k + 1).is_some_and(|n| {
-                            !n.char.is_whitespace()
-                                && extra_space(p, n) / em(p).max(em(n)) <= threshold
-                        })
-                });
+                // (Not in a spaced right-to-left segment, whose glyph
+                // advances are often the font's default width.)
+                let phantom = !spaced_rtl
+                    && prev.is_some_and(|p| {
+                        let advance = if p.advance_width > 0.0 {
+                            p.advance_width
+                        } else {
+                            p.bbox.width
+                        };
+                        !p.char.is_whitespace()
+                            && c.origin_x < p.origin_x + advance - 0.05 * em(p)
+                            && seg.get(k + 1).is_some_and(|n| {
+                                !n.char.is_whitespace()
+                                    && extra_space(p, n) / em(p).max(em(n)) <= threshold
+                            })
+                    });
                 if phantom {
                     continue;
                 }
@@ -410,7 +420,7 @@ pub(crate) fn glyph_words(chars: &[TextChar]) -> Option<Vec<GlyphWord>> {
                 continue;
             }
             let gap_break = prev.is_some_and(|p| {
-                !p.char.is_whitespace() && extra_space(p, c) / em(p).max(em(c)) > threshold
+                !p.char.is_whitespace() && extra_space(p, c) / em(p).max(em(c)) > break_at
             });
             if gap_break {
                 words.extend(cur.take());

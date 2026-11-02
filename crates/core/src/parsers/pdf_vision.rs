@@ -118,9 +118,9 @@ fn convert_page_gated(
     // advance; rotated pages take their words from the spans.
     let mut words = match frame {
         Some(_) => span_words(doc, page, excluded, frame),
-        None => {
-            glyph_words(doc, page, geom, excluded).or_else(|| span_words(doc, page, excluded, None))
-        }
+        None => rtl_words(doc, page, geom, excluded)
+            .or_else(|| glyph_words(doc, page, geom, excluded))
+            .or_else(|| span_words(doc, page, excluded, None)),
     }
     .unwrap_or_default();
     // Regions the model sees as text but the text layer leaves empty are
@@ -174,6 +174,7 @@ fn convert_page_gated(
         ruled_structure(paths, geom.bx.3, b, toks)
     };
     let md = assemble(&img, &regions, words, page_box, &ruled, &table_fallback);
+    let md = super::pdf_bidi::rtl_tables_right_to_left(&md);
     debug_timing(page, "text layer", t_layout, t.elapsed(), regions.len());
     Some((md, table_numbers))
 }
@@ -322,6 +323,31 @@ fn glyph_words(
     if !super::pdf_words::agrees(&words, &theirs) {
         return None;
     }
+    Some(glyph_toks(words, excluded))
+}
+
+/// Words of a page that is mostly right-to-left text, from its glyphs with
+/// the letters only `/ActualText` names put back
+/// ([`super::pdf_bidi::visual_chars`]), in visual order; lines are put in
+/// logical order when they are joined ([`join_line`]). The converter's own
+/// words are no check here: it runs right-to-left words together and turns
+/// some of them. `None` for any other page.
+fn rtl_words(
+    doc: &PdfDocument,
+    page: usize,
+    geom: &PageGeom,
+    excluded: &[Rect],
+) -> Option<Vec<Tok>> {
+    let chars = super::pdf_words::on_page(super::pdf_bidi::visual_chars(doc, page)?, geom.bx);
+    let text: String = chars.iter().map(|c| c.char).collect();
+    if !super::pdf_bidi::rtl_dominant(&text) {
+        return None;
+    }
+    let words = super::pdf_words::glyph_words(&chars)?;
+    Some(glyph_toks(words, excluded))
+}
+
+fn glyph_toks(words: Vec<super::pdf_words::GlyphWord>, excluded: &[Rect]) -> Vec<Tok> {
     let toks = words
         .into_iter()
         .filter(|w| !pdf_furniture::excluded(excluded, w.x0, w.y0, w.x1, w.y1))
@@ -338,7 +364,7 @@ fn glyph_words(
             math: w.math,
         })
         .collect();
-    Some(drop_doubled(toks))
+    drop_doubled(toks)
 }
 
 /// Words of the text layer, taken from the converter's own text spans so
@@ -1413,7 +1439,24 @@ fn lines_to_text(toks: &[Tok], idx: &[usize]) -> String {
 /// it, and so does a word whose span the text layer runs on from the
 /// previous one without a space (a separately-encoded apostrophe, a
 /// footnote mark or significance star, a word split across two spans).
+///
+/// A line of mostly right-to-left text is joined as drawn, left to right
+/// (its closing punctuation then sits left of the word it closes), and put
+/// in logical order afterwards ([`super::pdf_bidi::visual_to_logical`]).
 fn join_line(toks: &[Tok], line: &[usize]) -> String {
+    let closing = |t: &str| {
+        t.chars()
+            .all(|c| matches!(c, ',' | '.' | ';' | ':' | ')' | '!' | '?'))
+    };
+    let rtl = line
+        .iter()
+        .any(|&i| toks[i].text.chars().any(super::pdf_bidi::is_rtl))
+        && super::pdf_bidi::rtl_dominant(
+            &line
+                .iter()
+                .map(|&i| toks[i].text.as_str())
+                .collect::<String>(),
+        );
     let mut s = String::new();
     let mut prev: Option<&Tok> = None;
     for &i in line {
@@ -1422,9 +1465,11 @@ fn join_line(toks: &[Tok], line: &[usize]) -> String {
         // Spacing is the text layer's: a word joins the previous one only
         // when its span runs on from the previous span with no space between
         // them (and the previous token really is that neighbour).
-        let hug = t
-            .chars()
-            .all(|c| matches!(c, ',' | '.' | ';' | ':' | ')' | '!' | '?'))
+        let hug = (if rtl {
+            prev.is_some_and(|p| closing(&p.text) && tok.b.x0 - p.b.x1 < 0.25 * p.size.max(1.0))
+        } else {
+            closing(t)
+        })
             // A hyphen set as its own word at the end of a line is the
             // line-break hyphen of the word before it.
             || ((t == "-" || t == "\u{ad}") && line.last() == Some(&i))
@@ -1454,7 +1499,7 @@ fn join_line(toks: &[Tok], line: &[usize]) -> String {
         s.push_str(t);
         prev = Some(tok);
     }
-    s
+    super::pdf_bidi::visual_to_logical(&s)
 }
 
 /// Clusters tokens into lines by their vertical centres; each line sorted

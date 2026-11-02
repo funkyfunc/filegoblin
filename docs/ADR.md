@@ -1605,3 +1605,53 @@ every benchmark decision rests on, needed an independent check.
 filegoblin was second before. `docs/COMPARISON.md` has the before and after.
 
 **Status:** Accepted.
+
+## 2026-11-01: Right-to-left PDF text in reading order
+
+**Context:** filegoblin wrote Arabic and Hebrew PDFs backwards. On the gauntlet's two Chromium renders of
+Wikipedia pages, smart mode scored 35.5 (Arabic) and 50.5 (Hebrew), and off mode 52.8 and 26.4. Every other
+tool except markitdown scored higher. Three causes, found by comparing the glyph stream with the gold:
+- Chromium (like most generators) draws a right-to-left run left to right, in visual order, and marks it
+  `/ReversedChars`. filegoblin read words in drawing order, so each word came out reversed and each line
+  last word first.
+- pdf_oxide turns some right-to-left spans into logical order (those it measures as visual) and leaves the
+  rest, then writes a line's spans left to right. Its lines were neither order. Inside a span it keeps a
+  lam-alef ligature's two letters in logical order. Its markdown reverses whole Arabic runs, digits included
+  (`81` for 18).
+- Chromium names each joined Arabic letter only in an `/ActualText` of its own. pdf_oxide's spans read
+  that; its single glyphs do not (U+FFFD).
+
+**Decision** (`parsers/pdf_bidi.rs`, with `unicode-bidi`, MIT/Apache, already in the tree):
+- Each visual line is put in logical order with UAX #9: reordering a visual line reverses its
+  right-to-left runs again. Numbers and Latin words keep their order, brackets are mirrored back (L4), and
+  combining marks stay after their letter (L3). The line's direction comes from the letters at its ends,
+  then the majority. A line without right-to-left letters is returned unchanged, so LTR and CJK text
+  cannot move.
+- Order comes from the glyphs. Letters come from the glyphs too, except that a glyph without one takes
+  its letter from the span over it. The span is aligned with the glyphs by edit distance, with a
+  transposition step for the lam-alef pair. It is used as written or turned round, whichever way its
+  letters agree with the glyphs' positions. In a right-to-left segment that has space characters, words
+  break at spaces and at gaps of half an em only: Chromium places joined Arabic letters one by one, and
+  the advances pdf_oxide reports for them are a default width.
+- Vision path: on a page that is mostly right-to-left, words come from those glyphs, `join_line` joins each
+  line as drawn and puts it in logical order, and closing punctuation hugs the word to its right.
+- Fast path: pdf_oxide's paragraphs, headings and table cells are kept, but their text is not. Each line
+  or cell holding right-to-left letters takes the run of page words with the same letters (counted): it
+  can start anywhere in a line and continue down the column. It is then written in logical order. Links on
+  those lines are dropped (pdf_oxide cuts them along its scrambled spans). The isolate marks pdf_oxide
+  inserts, which also broke link URLs, are removed.
+- Pipe tables whose cells are mostly right-to-left text list their right-hand column first, in both paths.
+
+**Consequences:** gauntlet smart RTL_AR 35.5 → 81.5, RTL_HE 50.5 → 84.2; off 52.8 → 68.3 and
+26.4 → 73.8. No other case moved in either mode (smart mean 88.2 → 90.3, off 80.7 → 82.3 over 39
+cases). olmOCR-bench dev split unchanged (smart 76.97, off 40.54; no test gained or lost), and so is the held-out set (smart 85.14, off 47.81; its multilingual category 89.0 and 65.3). These two cases were the target, so they no longer count as fresh in
+`docs/COMPARISON.md`.
+
+Not solved:
+- The layout model does not mark these pages' section titles as headings: smart mode scores 0 on headings
+  for both cases, and off mode keeps pdf_oxide's.
+- An Arabic word sometimes still loses a letter or runs into the next one.
+- A generator that draws a right-to-left run from its right end, glyph by glyph, is not handled.
+- pdf_oxide's span reversal and lam-alef order are upstream behaviour, not filed.
+
+**Status:** Accepted.
