@@ -239,10 +239,11 @@ What the gauntlet can and cannot show against other tools:
 - **133 fresh pages:** marker's fast mode is ahead of filegoblin and MinerU
   is behind it, neither significantly.
 - **The gauntlet:** it leads on the PDF cases each tool finished (90.1 vs
-  MinerU 89.5), on its own tuning suite. On 11 fresh cases docling leads
-  (84.9), and marker (81.2), MinerU (81.0) and filegoblin (80.7) are level
-  behind it; without the two right-to-left cases filegoblin is first (89.1
-  against docling's 86.1 and MinerU's 85.8).
+  MinerU 89.5), on its own tuning suite. On 11 fresh cases docling led
+  (84.9), with marker (81.2), MinerU (81.0) and filegoblin (80.7) level
+  behind it. The right-to-left fix of 2026-11-01 takes filegoblin to 87.9,
+  but it was made for those two cases, so they are no longer fresh: without
+  them filegoblin is first (89.1 against docling's 86.1 and MinerU's 85.8).
 - **`--vision off`:** trails pymupdf4llm everywhere except the dev split.
 
 The rest of this section was written from the dev split and the gauntlet on
@@ -379,13 +380,17 @@ Quality is graded as above.
 
 | | mean (11) | without Arabic/Hebrew (9) |
 |---|---:|---:|
-| docling | **84.9** | 86.1 |
+| docling | 84.9 | 86.1 |
 | marker | 81.2 | 83.8 |
 | MinerU | 81.0 | 85.8 |
-| filegoblin smart | 80.7 | **89.1** |
+| filegoblin smart | 80.7 (87.9†) | **89.1** |
 | pymupdf4llm | 79.1 | 79.7 |
-| filegoblin off | 70.0 | 76.7 |
+| filegoblin off | 70.0 (75.7†) | 76.7 |
 | markitdown | 49.1 | 54.4 |
+
+† With right-to-left text in reading order (2026-11-01, see the ADR). That
+fix was made for RTL_AR and RTL_HE, so the column without them is the fresh
+comparison.
 
 Both sets put filegoblin smart in the top group, not on its own at the top,
 and both put the fast path well behind pymupdf4llm.
@@ -563,8 +568,8 @@ cost the whole clause. No earlier case contains CJK, so no earlier score moved.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | CJK_ZH | 89.4 | 70.3 | 87.4 | 88.0 | **91.5** | 87.8 | 70.7 |
 | CJK_JA | 90.8 | 82.1 | 89.9 | 85.8 | 87.4 | **91.6** | 78.5 |
-| RTL_AR | 35.5 | 52.8 | 55.6 | 73.4 | 68.8 | **74.3** | 31.9 |
-| RTL_HE | 50.5 | 26.4 | 62.7 | 65.2 | **89.7** | 79.2 | 18.5 |
+| RTL_AR | 35.5 → **81.5**† | 52.8 → 68.3† | 55.6 | 73.4 | 68.8 | 74.3 | 31.9 |
+| RTL_HE | 50.5 → 84.2† | 26.4 → 73.8† | 62.7 | 65.2 | **89.7** | 79.2 | 18.5 |
 | EU_ACCENT | 80.8 | 84.2 | **93.4** | 71.9 | 82.6 | 83.3 | 68.3 |
 | RECEIPT_1 | **94.7** | 82.4 | 94.1 | 92.5 | 85.6 | 93.7 | 0.0 |
 | INVOICE_1 | 92.0 | 92.5 | 94.5 | **94.8** | 93.4 | 84.2 | 68.6 |
@@ -572,18 +577,24 @@ cost the whole clause. No earlier case contains CJK, so no earlier score moved.
 | NEWS_1 | **89.5** | 28.9 | 87.8 | 59.6 | 49.3 | 34.0 | 0.0 |
 | NEWS_2 | 95.7 | 81.5 | 73.4 | 94.2 | **96.5** | 75.4 | 71.2 |
 | SLIDES_2 | 87.6 | 87.3 | 73.3 | 82.3 | **97.0** | 88.1 | 61.4 |
-| **mean** | 80.7 | 70.0 | 81.0 | 81.2 | **84.9** | 79.1 | 49.1 |
+| **mean** | 80.7 → **87.9**† | 70.0 → 75.7† | 81.0 | 81.2 | 84.9 | 79.1 | 49.1 |
+
+† After the right-to-left fix (2026-11-01), which was made for these two
+cases; no other case moved.
 
 No tool failed a conversion. On macOS, filegoblin's off mode OCRs image-only
 pages with Apple Vision, which is why it reads the receipt.
 
 Where filegoblin is weakest here:
 
-- **Right-to-left text is reversed.** Arabic comes out in visual order,
-  character by character backwards (`نادوسلا تايلاو` for `ولايات السودان`), in
-  both modes. On the Hebrew case, smart mode reads some regions in logical order
-  and others reversed or garbled. These are the lowest scores of any tool except
-  markitdown. Nothing in the gauntlet or olmOCR-bench exercised RTL before.
+- **Right-to-left text was reversed** (fixed 2026-11-01). Arabic came out in
+  visual order, character by character backwards (`نادوسلا تايلاو` for
+  `ولايات السودان`), in both modes. Lines are now put in logical order
+  (UAX #9), and RTL tables list their right-hand column first. What is left:
+  the layout model does not mark the Hebrew and Arabic section titles as
+  headings (smart mode's headings score 0 on both cases), some Arabic words
+  still lose a letter or run together, and the fast path keeps pdf_oxide's
+  own text for lines it cannot match to the page's glyphs.
 - **Long multi-line table rows split into many rows.** EU_ACCENT's annex has one
   logical row whose cells run to several paragraphs. filegoblin smart makes each
   visual line a table row and folds the "(1) (2) (3)" column-number row into the

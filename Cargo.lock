@@ -1758,6 +1758,7 @@ dependencies = [
  "tokio",
  "tree-sitter",
  "tree-sitter-rust",
+ "unicode-bidi",
  "unicode-normalization",
  "ureq",
  "url",

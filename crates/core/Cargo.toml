@@ -86,6 +86,9 @@ encoding_rs = "0.8"
 serde = { version = "1.0.228", features = ["derive"] }
 # Cache keys (pure Rust)
 sha2 = "0.10"
+# UAX #9 bidi levels (MIT/Apache), already in the tree via url/idna: puts
+# right-to-left PDF text into reading order (parsers/pdf_bidi.rs).
+unicode-bidi = "0.3.18"
 # Composes accents a PDF draws as glyphs of their own (`e` + `´`).
 unicode-normalization = "0.1.25"
 whisper-rs = { version = "0.16", optional = true }

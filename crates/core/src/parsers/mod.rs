@@ -280,6 +280,7 @@ pub mod omml;
 pub mod opendocument;
 pub mod openxml_chart;
 pub mod pdf;
+pub(crate) mod pdf_bidi;
 pub(crate) mod pdf_edges;
 pub mod pdf_furniture;
 #[cfg(feature = "vision")]
