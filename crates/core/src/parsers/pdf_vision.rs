@@ -38,6 +38,10 @@ struct Tok {
     glued: bool,
     /// The text layer sets the word in a math font (or as math symbols).
     math: bool,
+    /// The OCR line the word was read in (0: not from OCR). Two OCR lines
+    /// are never merged into one visual line: on a skewed scan their boxes
+    /// overlap vertically, and merging them interleaves their words.
+    line: u32,
 }
 
 /// Converts one text-layer page with the layout model. `None` when the page
@@ -362,6 +366,7 @@ fn glyph_toks(words: Vec<super::pdf_words::GlyphWord>, excluded: &[Rect]) -> Vec
             size: w.size,
             glued: w.glued,
             math: w.math,
+            line: 0,
         })
         .collect();
     drop_doubled(toks)
@@ -473,6 +478,7 @@ fn span_words(
                         size: s.font_size,
                         glued: i == 0 && runs_on,
                         math: false,
+                        line: 0,
                     });
                 }
             }
@@ -518,7 +524,7 @@ fn ocr_words_scored(img: &PageImage, drop_folios: bool) -> (Vec<Tok>, Option<f32
     let mut words: Vec<Tok> = Vec::new();
     let (lines, confidence) =
         crate::vision::ocr::read_with_confidence(&img.rgb).unwrap_or_default();
-    for l in lines {
+    for (line, l) in (1u32..).zip(lines) {
         if drop_folios && (l.y1 < 0.08 * ih || l.y0 > 0.92 * ih) && is_folio(&l.text) {
             continue;
         }
@@ -539,6 +545,7 @@ fn ocr_words_scored(img: &PageImage, drop_folios: bool) -> (Vec<Tok>, Option<f32
                     b,
                     glued: false,
                     math: false,
+                    line,
                 });
             }
             pos += n;
@@ -787,6 +794,7 @@ fn assemble(
             size: r.bbox.height(),
             glued: false,
             math: false,
+            line: 0,
         });
     }
 
@@ -1526,13 +1534,25 @@ fn visual_lines(toks: &[Tok], idx: &[usize]) -> Vec<Vec<usize>> {
     order.sort_by(|&a, &b| centre(b).total_cmp(&centre(a)));
     // (sum of centres, count, members)
     let mut lines: Vec<(f32, f32, Vec<usize>)> = Vec::new();
+    // A word read in one OCR line does not join a line holding another OCR
+    // line above or below it (overlapping it horizontally).
+    let stacked = |i: usize, m: &[usize]| {
+        let t = &toks[i];
+        t.line != 0
+            && m.iter().any(|&j| {
+                let u = &toks[j];
+                u.line != 0
+                    && u.line != t.line
+                    && t.b.x1.min(u.b.x1) - t.b.x0.max(u.b.x0) > 0.3 * t.b.width().min(u.b.width())
+            })
+    };
     for i in order {
         let c = centre(i);
         let hit = lines
             .iter_mut()
             .rev()
             .take(3)
-            .find(|(sum, n, _)| (c - *sum / *n).abs() <= 0.5 * h_ref);
+            .find(|(sum, n, m)| (c - *sum / *n).abs() <= 0.5 * h_ref && !stacked(i, m));
         match hit {
             Some((sum, n, m)) => {
                 *sum += c;
@@ -2130,6 +2150,7 @@ mod tests {
             size: y1 - y0,
             glued: false,
             math: false,
+            line: 0,
         }
     }
 
@@ -2425,6 +2446,28 @@ mod tests {
         ];
         let idx: Vec<usize> = (0..toks.len()).collect();
         assert_eq!(lines_to_text(&toks, &idx), "hello world $x^2$\nsecond");
+    }
+
+    #[test]
+    fn skewed_ocr_lines_are_not_interleaved() {
+        // Two tight lines of small print, tilted: each OCR line's box is
+        // taller than the gap between their centres.
+        let ocr = |text: &str, line: u32, x0: f32, x1: f32, y0: f32| Tok {
+            line,
+            ..tok(text, x0, y0, x1, y0 + 12.0)
+        };
+        let toks = vec![
+            ocr("Entered", 1, 10.0, 60.0, 704.0),
+            ocr("as", 1, 62.0, 75.0, 704.0),
+            ocr("matter", 1, 77.0, 120.0, 704.0),
+            ocr("Jersey,", 2, 30.0, 70.0, 698.0),
+            ocr("under", 2, 72.0, 110.0, 698.0),
+        ];
+        let idx: Vec<usize> = (0..toks.len()).collect();
+        assert_eq!(
+            lines_to_text(&toks, &idx),
+            "Entered as matter\nJersey, under"
+        );
     }
 
     #[test]

@@ -1655,3 +1655,26 @@ Not solved:
 - pdf_oxide's span reversal and lam-alef order are upstream behaviour, not filed.
 
 **Status:** Accepted.
+
+## 2026-11-02: OCR lines on a skewed scan are not interleaved
+
+**Context.** On a slightly tilted scan, two tight lines of small print come out of PP-OCR as two lines whose
+boxes overlap vertically: each box is taller than the gap between the two lines' centres. `visual_lines`
+groups words by centre, within half a line height, so it merged the two OCR lines into one visual line and
+sorted their words left to right. The words of the two lines came out interleaved ("Entered Jersey, as under
+matter"). Found on an old_scans dev page (63.pdf), a bulletin's mailing notice.
+
+**Decision** (`parsers/pdf_vision.rs`): every word read by OCR carries the number of the OCR line it was
+read in. A word does not join a visual line that already holds a word from another OCR line overlapping it
+horizontally (by more than 30% of the narrower word), i.e. a line stacked above or below it. Words from the
+text layer, and OCR lines side by side in different columns, group as before.
+
+**Consequences:** olmOCR-bench dev, smart mode with the page reader: old_scans 37.5 → 41.2 (3 tests gained,
+none lost), overall 81.06 → 81.53. On the scanned categories of the test split (115 PDFs) and of the
+held-out set (21 PDFs) no test was gained or lost. Gauntlet, smart: NEWS_1 89.5 → 89.9, no other case moved.
+
+Measuring it showed that the page reader, at three conversions at a time, can stop making progress for over
+120 s and trip the no-progress timeout: 5 and 2 of the 180 dev PDFs in two runs, different PDFs each time. The
+numbers above come from runs with `FILEGOBLIN_PDF_TIMEOUT=900`.
+
+**Status:** Accepted.
