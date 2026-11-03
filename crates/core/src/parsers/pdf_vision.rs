@@ -260,7 +260,7 @@ fn convert_scanned_page_gated(
     let regions = layout::detect(&img)?;
     debug_regions(page, &regions);
     let t_layout = t.elapsed();
-    let (words, confidence) = ocr_words_scored(&img, true);
+    let (words, confidence, line_scores) = ocr_words_scored(&img, true);
     // A page PP-OCR is unsure of is handwriting (or something else it cannot
     // read line by line), and on a worn scan full of formulas OCR and the
     // formula model each read pieces of what is one derivation: the page
@@ -276,7 +276,11 @@ fn convert_scanned_page_gated(
             || (c < crate::vision::reader::ROUTE_FORMULAS_BELOW
                 && formulas >= crate::vision::reader::ROUTE_FORMULAS)
     });
-    if route && let Some(md) = crate::vision::reader::read_page(&img.rgb) {
+    if route
+        && let Some(reading) = crate::vision::reader::read_page(&img.rgb)
+        && let Some(md) =
+            crate::vision::reader::finish(&prefer_sure_ocr(&reading, &words, &line_scores))
+    {
         // The reader writes out the whole page, running heads and folios
         // too; drop what the layout model and OCR call furniture.
         let (furniture, _, _) = furniture(&regions, &words, (pb.x0, pb.y0, pb.x1, pb.y1));
@@ -517,13 +521,15 @@ fn ocr_words(img: &PageImage, drop_folios: bool) -> Vec<Tok> {
     ocr_words_scored(img, drop_folios).0
 }
 
-/// [`ocr_words`], and the recognizer's confidence in the page
-/// ([`crate::vision::ocr::read_with_confidence`]).
-fn ocr_words_scored(img: &PageImage, drop_folios: bool) -> (Vec<Tok>, Option<f32>) {
+/// [`ocr_words`], the recognizer's confidence in the page
+/// ([`crate::vision::ocr::read_with_confidence`]), and its score for each
+/// line (`scores[line - 1]` for a word's [`Tok::line`]).
+fn ocr_words_scored(img: &PageImage, drop_folios: bool) -> (Vec<Tok>, Option<f32>, Vec<f32>) {
     let ih = img.rgb.height() as f32;
     let mut words: Vec<Tok> = Vec::new();
     let (lines, confidence) =
         crate::vision::ocr::read_with_confidence(&img.rgb).unwrap_or_default();
+    let scores = lines.iter().map(|l| l.score).collect();
     for (line, l) in (1u32..).zip(lines) {
         if drop_folios && (l.y1 < 0.08 * ih || l.y0 > 0.92 * ih) && is_folio(&l.text) {
             continue;
@@ -551,7 +557,163 @@ fn ocr_words_scored(img: &PageImage, drop_folios: bool) -> (Vec<Tok>, Option<f32
             pos += n;
         }
     }
-    (words, confidence)
+    (words, confidence, scores)
+}
+
+/// An OCR line read at least this surely is printed text the recognizer
+/// knows: its words outrank the page reader's where the reader was unsure.
+/// Worn print can score 0.95 while misreading single letters ("tho" for
+/// "the"), which is why the reader must also be unsure.
+const SURE_OCR_LINE: f32 = 0.95;
+/// The page reader was unsure of a word when one of its tokens had a
+/// log-probability below this. On the dev split's scans the words it made
+/// up had a median of −0.88; the ones it read right, about 0.
+const UNSURE_READER_TOKEN: f32 = -0.7;
+
+/// The page reader's text, with its words replaced by OCR's where OCR read
+/// the line surely ([`SURE_OCR_LINE`]) and the reader was unsure
+/// ([`UNSURE_READER_TOKEN`]). On a letterhead the reader can write fluent
+/// text that is not on the page ("postcards, banns" for "pestilence,
+/// famine"); OCR, reading the print letter by letter, does not. Each OCR
+/// line is matched to the stretch of the reader's words it reads, and only
+/// the words the two disagree on are compared. Words the reader added, and
+/// anything in math, are left as they are.
+fn prefer_sure_ocr(page: &crate::vision::reader::Page, ocr: &[Tok], line_scores: &[f32]) -> String {
+    let text = &page.text;
+    if page.byte_lp.len() != text.len() {
+        return text.clone();
+    }
+    static MATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\$\$[\s\S]*?\$\$|\$[^$]*\$").expect("valid regex")
+    });
+    let math: Vec<(usize, usize)> = MATH.find_iter(text).map(|m| (m.start(), m.end())).collect();
+    // The reader's words: byte range and folded form.
+    let words: Vec<(usize, usize, String)> = text
+        .split_whitespace()
+        .map(|w| {
+            let start = w.as_ptr() as usize - text.as_ptr() as usize;
+            (start, start + w.len(), fold(w))
+        })
+        .collect();
+    let mathy = |k: usize| {
+        let (a, b, _) = &words[k];
+        text[*a..*b].contains(['$', '\\']) || math.iter().any(|&(s, e)| s <= *a && *b <= e)
+    };
+    let mut taken = vec![false; words.len()];
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut i = 0;
+    while i < ocr.len() {
+        let line = ocr[i].line;
+        let j = i + ocr[i..].iter().take_while(|t| t.line == line).count();
+        let toks = &ocr[i..j];
+        i = j;
+        let sure = line != 0
+            && line_scores
+                .get(line as usize - 1)
+                .is_some_and(|&s| s >= SURE_OCR_LINE);
+        let folded: Vec<String> = toks.iter().map(|t| fold(&t.text)).collect();
+        if !sure || folded.iter().map(String::len).sum::<usize>() < 6 {
+            continue;
+        }
+        let Some(pairs) = align_words(&folded, &words) else {
+            continue;
+        };
+        let (k0, k1) = (pairs[0].1, pairs[pairs.len() - 1].1 + 1);
+        if taken[k0..k1].iter().any(|&t| t) {
+            continue;
+        }
+        taken[k0..k1].iter_mut().for_each(|t| *t = true);
+        // Between two matched words: OCR's words and the reader's.
+        for w in pairs.windows(2) {
+            let ((o0, r0), (o1, r1)) = (w[0], w[1]);
+            if o1 == o0 + 1 || r1 == r0 + 1 || (r0 + 1..r1).any(mathy) {
+                continue;
+            }
+            let (a, b) = (words[r0 + 1].0, words[r1 - 1].1);
+            let unsure = text[a..b]
+                .char_indices()
+                .filter(|(_, c)| !c.is_whitespace())
+                .any(|(p, _)| page.byte_lp[a + p] < UNSURE_READER_TOKEN);
+            if unsure {
+                let ocr_text: Vec<&str> =
+                    toks[o0 + 1..o1].iter().map(|t| t.text.as_str()).collect();
+                // Keep the reader's Markdown around the words (`**`, `#`).
+                let marks = |s: &str| s.len() - s.trim_start_matches(['*', '_', '#', '`']).len();
+                let lead = marks(&text[a..words[r0 + 1].1]);
+                let last = &text[words[r1 - 1].0..b];
+                let trail = last.len() - last.trim_end_matches(['*', '_', '`']).len();
+                edits.push((a + lead, b - trail, ocr_text.join(" ")));
+            }
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (a, b, rep) in edits.iter().filter(|e| e.0 < e.1) {
+        if *a < last {
+            continue;
+        }
+        out.push_str(&text[last..*a]);
+        out.push_str(rep);
+        last = *b;
+    }
+    out.push_str(&text[last..]);
+    if std::env::var_os("FILEGOBLIN_DEBUG").is_some() && !edits.is_empty() {
+        eprintln!(
+            "reader: {} stretches replaced by surely read OCR lines",
+            edits.len()
+        );
+    }
+    out
+}
+
+/// A word's letters and digits, lowercased: what two readings of it are
+/// compared on.
+fn fold(w: &str) -> String {
+    w.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Where an OCR line's words (`line`, folded) are in the reader's words: the
+/// matched pairs `(line index, reader index)` of the best local alignment
+/// (match +2, anything else −1), first and last word matched. `None` if
+/// fewer than half the line's words (and fewer than two) match.
+fn align_words(line: &[String], words: &[(usize, usize, String)]) -> Option<Vec<(usize, usize)>> {
+    let (m, n) = (line.len(), words.len());
+    let mut h = vec![vec![0i32; n + 1]; m + 1];
+    let mut best = (0, 0, 0);
+    for i in 1..=m {
+        for j in 1..=n {
+            let hit = !line[i - 1].is_empty() && line[i - 1] == words[j - 1].2;
+            let v = (h[i - 1][j - 1] + if hit { 2 } else { -1 })
+                .max(h[i - 1][j] - 1)
+                .max(h[i][j - 1] - 1)
+                .max(0);
+            h[i][j] = v;
+            if v > best.0 {
+                best = (v, i, j);
+            }
+        }
+    }
+    let (mut i, mut j) = (best.1, best.2);
+    let mut pairs = Vec::new();
+    while i > 0 && j > 0 && h[i][j] > 0 {
+        let hit = !line[i - 1].is_empty() && line[i - 1] == words[j - 1].2;
+        if h[i][j] == h[i - 1][j - 1] + if hit { 2 } else { -1 } {
+            if hit {
+                pairs.push((i - 1, j - 1));
+            }
+            i -= 1;
+            j -= 1;
+        } else if h[i][j] == h[i - 1][j] - 1 {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    pairs.reverse();
+    (pairs.len() >= 2 && 2 * pairs.len() >= m).then_some(pairs)
 }
 
 /// A line that is nothing but a page number ("31", "- 31 -", "Page 31").
@@ -2446,6 +2608,74 @@ mod tests {
         ];
         let idx: Vec<usize> = (0..toks.len()).collect();
         assert_eq!(lines_to_text(&toks, &idx), "hello world $x^2$\nsecond");
+    }
+
+    /// A page reader's reading: sure of every token except those that
+    /// wrote the `unsure` stretches.
+    fn reading(text: &str, unsure: &[&str]) -> crate::vision::reader::Page {
+        let mut byte_lp = vec![-0.01; text.len()];
+        for u in unsure {
+            let a = text.find(u).expect("unsure text is in the reading");
+            byte_lp[a..a + u.len()].iter_mut().for_each(|v| *v = -1.5);
+        }
+        crate::vision::reader::Page {
+            text: text.to_string(),
+            byte_lp,
+        }
+    }
+
+    /// One OCR line's words.
+    fn ocr_line(text: &str, line: u32) -> Vec<Tok> {
+        text.split(' ')
+            .enumerate()
+            .map(|(i, w)| Tok {
+                line,
+                ..tok(w, 10.0 * i as f32, 0.0, 10.0 * i as f32 + 8.0, 12.0)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unsure_reader_words_give_way_to_a_surely_read_ocr_line() {
+        let text = "For the relief in extending by war, postcards, banns, flood, fires.";
+        let ocr = ocr_line(
+            "For the relief of suffering by war, pestilence, famine, flood, fires.",
+            1,
+        );
+        let page = reading(text, &["extending", "postcards, banns"]);
+        assert_eq!(
+            prefer_sure_ocr(&page, &ocr, &[0.99]),
+            "For the relief of suffering by war, pestilence, famine, flood, fires."
+        );
+        // An unsure OCR line does not overrule the reader.
+        assert_eq!(prefer_sure_ocr(&page, &ocr, &[0.90]), text);
+    }
+
+    #[test]
+    fn a_sure_reader_keeps_its_words_over_worn_print() {
+        // Worn type read as "tho": OCR is confident, the reader is sure.
+        let ocr = ocr_line("and write down tho known conditions", 1);
+        let page = reading("and write down the known conditions", &[]);
+        assert_eq!(
+            prefer_sure_ocr(&page, &ocr, &[0.97]),
+            "and write down the known conditions"
+        );
+    }
+
+    #[test]
+    fn math_and_markdown_around_unsure_words_are_kept() {
+        let ocr = ocr_line("we put CD = h and AB = 2c here", 1);
+        let page = reading("we put $CD = k$ and AB = 2c here", &["k"]);
+        assert_eq!(
+            prefer_sure_ocr(&page, &ocr, &[0.99]),
+            "we put $CD = k$ and AB = 2c here"
+        );
+        let ocr = ocr_line("R. O. POLKINHORN, PRINTER, Washington", 1);
+        let page = reading("R. O. **PULASKI,** PRINTER, Washington", &["PULASKI"]);
+        assert_eq!(
+            prefer_sure_ocr(&page, &ocr, &[0.99]),
+            "R. O. **POLKINHORN,** PRINTER, Washington"
+        );
     }
 
     #[test]

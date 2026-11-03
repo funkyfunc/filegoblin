@@ -105,11 +105,21 @@ pub fn installed() -> bool {
     .all(|f| models::available(f))
 }
 
-/// The page's Markdown, or `None` when the reader is not installed, is
-/// switched off (`FILEGOBLIN_READER=0`), does not fit the memory budget (or
-/// what is left of it), or did not finish the page (a decode that runs to
-/// the token limit is a loop, not a page).
-pub fn read_page(img: &RgbImage) -> Option<String> {
+/// A page as the reader wrote it.
+pub struct Page {
+    /// The reader's Markdown, as it came out (see [`finish`]).
+    pub text: String,
+    /// For each byte of `text`, the log-probability the reader gave the
+    /// token it came from: near 0 where it was sure, well below where it
+    /// chose between readings. Empty if the tokens did not decode to UTF-8.
+    pub byte_lp: Vec<f32>,
+}
+
+/// The page as the reader wrote it, or `None` when the reader is not
+/// installed, is switched off (`FILEGOBLIN_READER=0`), does not fit the
+/// memory budget (or what is left of it), or did not finish the page (a
+/// decode that runs to the token limit is a loop, not a page).
+pub fn read_page(img: &RgbImage) -> Option<Page> {
     if !installed() || !fits() {
         return None;
     }
@@ -119,8 +129,7 @@ pub fn read_page(img: &RgbImage) -> Option<String> {
     let features = encode(r, img, w, h)?;
     crate::parsers::pdf_worker::still_working();
     let t_vision = t.elapsed();
-    let toks = generate(r, &features)?;
-    let text = super::formula::decode(&r.vocab, &toks);
+    let (toks, lps) = generate(r, &features)?;
     if std::env::var_os("FILEGOBLIN_DEBUG").is_some() {
         eprintln!(
             "reader: {w}x{h}, {} blocks, {} tokens, vision {t_vision:?}, total {:?}",
@@ -129,7 +138,27 @@ pub fn read_page(img: &RgbImage) -> Option<String> {
             t.elapsed()
         );
     }
-    let text = without_pictures(&text);
+    let mut bytes = Vec::new();
+    let mut byte_lp = Vec::new();
+    for (&t, &lp) in toks.iter().zip(&lps) {
+        if let Some(b) = r.vocab.get(t as usize) {
+            bytes.extend_from_slice(b);
+            byte_lp.extend(std::iter::repeat_n(lp, b.len()));
+        }
+    }
+    Some(match String::from_utf8(bytes) {
+        Ok(text) => Page { text, byte_lp },
+        Err(e) => Page {
+            text: String::from_utf8_lossy(e.as_bytes()).into_owned(),
+            byte_lp: Vec::new(),
+        },
+    })
+}
+
+/// The page's Markdown from what the reader wrote: without the links to
+/// pictures it does not produce, or `None` if nothing is left.
+pub fn finish(text: &str) -> Option<String> {
+    let text = without_pictures(text);
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
 }
@@ -212,7 +241,8 @@ fn prompt(blocks: usize) -> Vec<i32> {
 
 /// Greedy decoding after the image; the tokens before the stop token, or
 /// `None` if the page never ended.
-fn generate(r: &Reader, features: &NdTensor<f32, 2>) -> Option<Vec<i32>> {
+/// The page's tokens, and the log-probability the reader gave each.
+fn generate(r: &Reader, features: &NdTensor<f32, 2>) -> Option<(Vec<i32>, Vec<f32>)> {
     let ids = prompt(features.size(0));
     let mut x = embed(r, &ids)?;
     for b in 0..features.size(0) {
@@ -240,6 +270,7 @@ fn generate(r: &Reader, features: &NdTensor<f32, 2>) -> Option<Vec<i32>> {
         .collect();
     let mut pos = 0usize;
     let mut out: Vec<i32> = Vec::new();
+    let mut lps: Vec<f32> = Vec::new();
     while out.len() < MAX_TOKENS {
         let start = NdTensor::<i32, 1>::from_data([1], vec![pos as i32]);
         let mut inputs = vec![
@@ -259,9 +290,10 @@ fn generate(r: &Reader, features: &NdTensor<f32, 2>) -> Option<Vec<i32>> {
         past = o.map(|v| v.try_into().ok()).collect::<Option<Vec<_>>>()?;
         let next = argmax(logits.view())?;
         if STOP.contains(&next) {
-            return Some(out);
+            return Some((out, lps));
         }
         out.push(next);
+        lps.push(log_prob(logits.view(), next));
         if looping(&out) {
             return None;
         }
@@ -282,6 +314,14 @@ fn argmax(logits: NdTensorView<f32, 2>) -> Option<i32> {
         }
     }
     best.map(|(_, v)| v as i32)
+}
+
+/// The log-probability of token `t` under the softmax of `logits`.
+fn log_prob(logits: NdTensorView<f32, 2>, t: i32) -> f32 {
+    let n = logits.size(1);
+    let max = (0..n).map(|v| logits[[0, v]]).fold(f32::MIN, f32::max);
+    let sum: f32 = (0..n).map(|v| (logits[[0, v]] - max).exp()).sum();
+    logits[[0, t as usize]] - max - sum.ln()
 }
 
 /// The decode has fallen into a cycle: its last 96 tokens are one run of at

@@ -1678,3 +1678,45 @@ Measuring it showed that the page reader, at three conversions at a time, can st
 numbers above come from runs with `FILEGOBLIN_PDF_TIMEOUT=900`.
 
 **Status:** Accepted.
+
+## 2026-11-02: The page reader's unsure words give way to surely read OCR lines
+
+**Context.** Two research reports (Gemini Deep Research and Claude Research, 2026-11-02) proposed using
+the pipeline's own grounded readings to keep the page reader (LightOnOCR-2-1B) from inventing text, and
+to speed it up. Three ideas were measured on the 15 dev scan pages the reader reads:
+- *OCR text as a speculative-decoding draft:* only 15–23% of the reader's tokens could have been
+  drafted from the page's OCR lines or the pipeline's Markdown (1.2–1.3 tokens per step). Pages reach
+  the reader because their OCR is poor. Decoding is where the time goes (370 s against 105 s for the
+  encoder, about 59 ms a token). Not built.
+- *PP-OCR's CTC likelihood as the judge of the reader's words:* on handwriting it prefers its own
+  misreadings, and on worn print it reads "the" as "tho" at line scores of 0.95 and more. It flagged
+  wrong reader words with a precision of 0.2, against a base rate of 0.16. Not built.
+- *The reader's own token probabilities:* over the words where the reader and OCR disagree, the
+  lowest token log-probability had a median of −0.88 on words not on the page and about 0 on words it
+  read right ("the" for OCR's "tho" included). Below −0.7: precision 0.86, recall 0.67, on 18 wrong
+  and 96 right words, labelled from the bench's tests and on the page images.
+
+On old_scans/74 the reader wrote a printed letterhead as fluent text that is not on it ("relief in
+extending by war, postcards, banns" for "relief of suffering by war, pestilence, famine"; "1884" for
+"1864"; "PULASKI" for "POLKINHORN"). PP-OCR read those lines at 0.99–1.00.
+
+**Decision.**
+- `vision::reader::read_page` returns the reader's text with each byte's token log-probability.
+  The Markdown clean-up is `reader::finish`.
+- `prefer_sure_ocr` (`parsers/pdf_vision.rs`) runs before that clean-up. Each OCR line scored at
+  least 0.95 (`SURE_OCR_LINE`) is matched to the stretch of the reader's words it reads, by a local
+  alignment on folded words; at least half the line's words must match. Between matched words, OCR's
+  words replace the reader's when one of the reader's tokens there is below −0.7
+  (`UNSURE_READER_TOKEN`). Words the reader added, anything in `$…$` and Markdown emphasis around
+  the words are kept.
+- At an OCR line score of 0.90 the rule started putting OCR misreadings in ("Lellu diretery" for
+  "Letter directory"), hence 0.95. Worn print scores that high while misreading single letters, so
+  the reader must also be unsure.
+
+**Consequences:** olmOCR-bench dev scans: two outputs change (the letterhead, and "number-pair" for
+"number-par"), one test gained, none lost. On the scans of the test split (115 PDFs) and of the
+held-out set (21) no output changed. Routed pages rarely have lines OCR reads that surely, and the
+reader must also be unsure on them, so the rule has so far fired only on the page it was found on.
+No gauntlet page reaches the reader. Speed is unchanged (the 19 dev scans took 313 s against 306 s).
+
+**Status:** Accepted.
