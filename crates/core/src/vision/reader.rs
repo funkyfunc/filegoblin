@@ -258,14 +258,18 @@ fn generate(r: &Reader, features: &NdTensor<f32, 2>) -> Option<(Vec<i32>, Vec<f3
         .collect::<Option<Vec<_>>>()?;
     // Per layer, keys stored transposed `[1, KV, 1, HEAD_DIM, t]` and values
     // `[1, KV, 1, t, HEAD_DIM]`: the step attends to them as they are and
-    // only appends, so no token copies the cache more than once.
+    // appends the new token with a Concat. The cache is passed in owned, with
+    // room reserved for the whole decode, so rten appends in place; passed as
+    // a view, every token copied the whole cache (twice as slow, and slower
+    // the longer the page).
+    let cap = ids.len() + MAX_TOKENS + 1;
     let mut past: Vec<NdTensor<f32, 5>> = (0..2 * LAYERS)
         .map(|i| {
-            NdTensor::zeros(if i % 2 == 0 {
-                [1, KV_HEADS, 1, HEAD_DIM, 0]
+            if i % 2 == 0 {
+                NdTensor::with_capacity([1, KV_HEADS, 1, HEAD_DIM, cap], 4)
             } else {
-                [1, KV_HEADS, 1, 0, HEAD_DIM]
-            })
+                NdTensor::with_capacity([1, KV_HEADS, 1, cap, HEAD_DIM], 3)
+            }
         })
         .collect();
     let mut pos = 0usize;
@@ -280,8 +284,8 @@ fn generate(r: &Reader, features: &NdTensor<f32, 2>) -> Option<(Vec<i32>, Vec<f3
         inputs.extend(
             n_past
                 .iter()
-                .zip(&past)
-                .map(|(&id, t)| (id, ValueOrView::from(t.view()))),
+                .zip(past.drain(..))
+                .map(|(&id, t)| (id, ValueOrView::from(t))),
         );
         let o = r.step.run(inputs, r.step.output_ids(), None).ok()?;
         pos += x.size(1);

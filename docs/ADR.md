@@ -1720,3 +1720,30 @@ reader must also be unsure on them, so the rule has so far fired only on the pag
 No gauntlet page reaches the reader. Speed is unchanged (the 19 dev scans took 313 s against 306 s).
 
 **Status:** Accepted.
+
+## 2026-11-03: The page reader's key/value cache grows in place
+
+**Context.** The 2026-11-01 entry on the page reader says its decoder step "never copies the cache". Timing
+every token on the dev scans showed otherwise. Run alone, a token took 24–34 ms, and the time rose in step
+with the context (about 28 ms per 1,000 positions, with almost no fixed cost). The step graph appends each
+token's keys and values with a `Concat`. rten runs a `Concat` in place only when its first input is an
+owned tensor with room reserved along that axis. The cache was passed in as a view, so every token
+copied all 28 layers' keys and values.
+
+**Decision** (`vision/reader.rs`): the cache is created with `NdTensor::with_capacity` for the whole
+decode (the prompt plus `MAX_TOKENS`) and passed to each step owned, so rten appends in place.
+
+**Consequences:** a token takes 13–17 ms instead of 26–32, and no longer slows down as the page grows.
+On the 19 dev scans every output is byte-identical, and the run takes 294 s instead of 392 s (−25%). The
+pages read by the reader are 20–48% faster. Peak memory is unchanged within 0.2 GB.
+
+Measured in the same session and not adopted:
+- Reading the page at 1260 or 1540 px instead of 1008: on dev, one test more on scanned math (3 gained, 1
+  lost). It costs 45–80% more time and a 5.7–7.4 GB peak, over the 4 GB a PDF worker may use.
+- Reading layout regions as crops instead of whole pages. At the page's own scale it was catastrophic
+  (scanned math −50). With text scaled to 48 px lines, dev old_scans rose 2.5. But on the test split's
+  115 scans only handwritten pages were cropped, and old_scans fell 1.3 (26 tests gained, 25 lost) at up
+  to three times the time. Without the rest of the page the reader confuses symbols (x for ω, ξ for Ξ),
+  and isolated formulas come back as code blocks.
+
+**Status:** Accepted.
