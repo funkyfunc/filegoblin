@@ -33,7 +33,8 @@ Conversions:
   `step` (one token with a self-attention cache).
 * Table Transformer is exported with dynamic height/width.
 * LightOnOCR-2-1B (the page reader) is rebuilt like the formula decoder: the
-  Pixtral encoder with its patch grid read from the input shape, and the
+  Pixtral encoder with its patch grid read from the input shape (attention
+  one head at a time: 0.3 GB of scores on a 1540-pixel page, not 5 GB), and the
   Qwen3 decoder as one step with a key/value cache per layer (keys stored
   transposed, grouped-query attention by broadcasting), each checked against
   transformers to 1e-3, then folded and quantized to symmetric 4-bit
@@ -516,7 +517,13 @@ def reader(out, work):
             return (m.lm_head(rms(x[:, -1], lm.norm.weight, eps)), *outs)
 
     class Vision(nn.Module):
-        """pixel_values (1, 3, H, W) -> one feature per 28x28 block (N, D)."""
+        """pixel_values (1, 3, H, W) -> one feature per 28x28 block (N, D).
+
+        Attention runs one head at a time, and each head's queries take a zero
+        term from the previous head's output, so the graph orders the heads and
+        rten (which frees a value after its last use) holds one head's N x N
+        scores at a time, not all 16 at once. At the model's own 1540 pixels a
+        page is about 9,000 patches: 0.3 GB of scores per head, 5 GB for 16."""
 
         def forward(self, px):
             x = ve.patch_conv(px)
@@ -528,14 +535,21 @@ def reader(out, work):
             a = torch.cat([a, a], -1)
             cos, sin = a.cos()[None, None], a.sin()[None, None]
             n = x.shape[1]
+            dep = None
             for layer in ve.transformer.layers:
                 at = layer.attention
                 y = rms(x, layer.attention_norm.weight, 1e-5)
                 q = rope(at.q_proj(y).view(1, n, VNH, VH).transpose(1, 2), cos, sin, VH // 2)
                 k = rope(at.k_proj(y).view(1, n, VNH, VH).transpose(1, 2), cos, sin, VH // 2)
                 v = at.v_proj(y).view(1, n, VNH, VH).transpose(1, 2)
-                att = torch.softmax(q @ k.transpose(-1, -2) * VH ** -0.5, -1)
-                x = x + at.o_proj((att @ v).transpose(1, 2).reshape(1, n, VNH * VH))
+                heads = []
+                for i in range(VNH):
+                    qi = q[:, i:i + 1] if dep is None else q[:, i:i + 1] + dep
+                    att = torch.softmax(qi @ k[:, i:i + 1].transpose(-1, -2) * VH ** -0.5, -1)
+                    heads.append(att @ v[:, i:i + 1])
+                    dep = heads[-1][:, :, :1, :1] * 0.0
+                o = torch.cat(heads, 1)
+                x = x + at.o_proj(o.transpose(1, 2).reshape(1, n, VNH * VH))
                 y = rms(x, layer.ffn_norm.weight, 1e-5)
                 x = x + layer.feed_forward.down_proj(F.silu(layer.feed_forward.gate_proj(y)) * layer.feed_forward.up_proj(y))
             x = rms(x[0], pj.norm.weight, eps)
@@ -583,6 +597,10 @@ def reader(out, work):
         g = q.model.model
         for i, n in enumerate(g.graph.node):
             n.name = f"node{i}"  # rten keeps node and value names in one namespace
+        if name == "vision":
+            # The longest side this encoder reads within the reader's memory need
+            # (crates/core/src/vision/reader.rs); one without it gets 1008.
+            onnx.helper.set_model_props(g, {"filegoblin.max_side": "1540"})
         onnx.save(g, os.path.join(out, dst))
 
     # Token embeddings as int8 rows with one scale each.

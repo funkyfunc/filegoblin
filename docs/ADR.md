@@ -1747,3 +1747,45 @@ Measured in the same session and not adopted:
   and isolated formulas come back as code blocks.
 
 **Status:** Accepted.
+
+## 2026-11-06: The page reader reads at the model's own 1540 px
+
+**Context.** Pages that reach the page reader fail mostly by near misses: on the test split, 168 of the
+264 old_scans tests that neither the reader nor OCR passes are within 15% of the expected text, often one
+to three characters off ("branoh" for "branch"). Routing and combining cannot help: a perfect per-page
+choice between the two adds nothing on old_scans, and on the pages the reader takes OCR passes 2 of 251
+tests. The encoder saw at most 1008 px, against the `longest_edge` of 1540 in LightOnOCR-2's own
+preprocessing. The 2026-11-03 entry measured 1540 on dev alone (3 tests gained, 1 lost; dev scans are too
+few to tell) and turned it down for memory: a 7.4 GB peak, 9.8 GB on some pages. Most of that was the
+encoder holding all 16 heads' attention scores at once, about 0.3 GB each over a 1540 px page's 9,000
+patches. A per-head graph built on 2026-11-01 did not help (8.3 GB): nothing in it ordered the heads, so
+rten computed every head's scores before it freed any.
+
+**Decision.**
+- `scripts/vision_models.py` builds the encoder with attention one head at a time, and each head's queries
+  take a zero term from the previous head's output. That orders the heads, and rten frees one head's
+  scores before the next. The encoder is tagged `filegoblin.max_side = 1540` in its ONNX metadata.
+- `vision/reader.rs` reads at the tagged side when the worker has room for `NEED_NATIVE_MB` (2,560 MB)
+  more, and at 1008 otherwise, or when the encoder has no tag (models installed before this change).
+
+**Consequences.**
+- Peak memory at 1540 is 3.4–4.5 GB, down from 7.4–9.8 GB, and 2.7 GB at 1008, down from 3.1. Outputs are
+  byte-identical to the unchained encoder at the same size. The default worker share on a 24 GB machine
+  (6 GB) takes the 1540 read; at 4 GB (16 GB machines) the reader stays at 1008.
+- Test split, all 73 PDFs the reader takes: old_scans 39.9 → 43.7, old_scans_math 67.2 → 75.7, 62 tests
+  gained and 13 lost, spread over the pages (old_scans 16 better and 5 worse, math 10 better and 3 worse).
+  1260 px gets about half of it (+39 / −20).
+- Dev: +3 / −1. Fresh held-out set: old_scans 95.0 → 94.2 (about one test; few held-out scans reach the
+  reader), math unchanged. Gauntlet scan cases (R1, R2, BOOK_2, RECEIPT_1, NEWS_1): identical, since none
+  reaches the reader.
+- A page the reader takes runs about 2.5 times as long: 31–43 s instead of 13–16 s, run alone. Other pages
+  are unchanged.
+- The new encoder ships in the next release's model archive. A binary with older models keeps reading at
+  1008.
+
+Measured in the same session and not adopted: the reader on every scanned page, not only the ones routed
+to it. It helped the test split (old_scans 39.9 → 43.7, math 67.2 → 72.8), but on the held-out set
+old_scans fell 95.0 → 89.9. The gauntlet's R1 fell 9.9 and R2 2.7, RECEIPT_1 lost a canary, and those
+pages took 3–5 times as long.
+
+**Status:** Accepted.

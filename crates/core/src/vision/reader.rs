@@ -34,10 +34,18 @@ pub const ROUTE_FORMULAS: usize = 3;
 /// better than the reader, and nine times faster.
 pub const ROUTE_FORMULAS_BELOW: f32 = 0.975;
 
-/// Longest side of the image the encoder sees. Attention over the page's
-/// blocks grows with their square: at 1008 pixels a page is about 4,000
-/// blocks and 1 GB of attention; at 1540 it was 9,000 and 5 GB.
+/// Longest side of the image the encoder sees when it can afford no more:
+/// an encoder built before attention ran one head at a time (no
+/// `filegoblin.max_side` in its metadata), or a budget without room for
+/// [`NEED_NATIVE_MB`]. Attention over the page's patches grows with their
+/// square: at 1008 pixels a page is about 4,000 patches, at 1540 about 9,000.
 const MAX_SIDE: u32 = 1008;
+/// The longest side the encoder may declare (`filegoblin.max_side`): the
+/// model's own input size. Read at 1540 rather than 1008, the reader passed
+/// 62 more olmOCR-bench test-split scan tests and failed 13 more (old_scans
+/// 39.9 → 43.7, old_scans_math 67.2 → 75.7), mostly worn letters it had read
+/// one or two characters off (2026-11-06).
+const NATIVE_SIDE: u32 = 1540;
 /// The encoder's patch (14 pixels) times its 2×2 merge.
 const BLOCK: u32 = 28;
 /// Most tokens one page may take. A handwritten letter is 150–300, a dense
@@ -51,6 +59,10 @@ const MIN_BUDGET_MB: u64 = 4096;
 /// reader added 0.7–1.1 GB to the pipeline's peak on a dev math scan and on
 /// a six-page scanned book (the gauntlet's R2).
 const NEED_MB: u64 = 1280;
+/// The same at [`NATIVE_SIDE`], with the encoder's heads one at a time: the
+/// reader added 1.3–1.8 GB to the pipeline's peak (2.1–2.7 GB) on three
+/// test-split scans, a worn letter, a handwritten one and a page of math.
+const NEED_NATIVE_MB: u64 = 2560;
 
 const MEAN: [f32; 3] = [0.481_454_66, 0.457_827_5, 0.408_210_73];
 const STD: [f32; 3] = [0.268_629_54, 0.261_302_6, 0.275_777_1];
@@ -72,6 +84,8 @@ struct Reader {
     step: Model,
     /// token id → decoded bytes
     vocab: Vec<Vec<u8>>,
+    /// The longest side the encoder reads within [`NEED_NATIVE_MB`].
+    max_side: u32,
 }
 
 fn reader() -> Option<&'static Reader> {
@@ -83,8 +97,15 @@ fn reader() -> Option<&'static Reader> {
         {
             return None;
         }
+        let vision = models::load(models::READER_VISION)?;
+        let max_side = vision
+            .metadata()
+            .get("filegoblin.max_side")
+            .and_then(|v| v.parse::<u32>().ok())
+            .map_or(MAX_SIDE, |v| v.clamp(MAX_SIDE, NATIVE_SIDE));
         Some(Reader {
-            vision: models::load(models::READER_VISION)?,
+            vision,
+            max_side,
             embed: models::load(models::READER_EMBED)?,
             step: models::load(models::READER_STEP)?,
             vocab: super::formula::load_vocab(&models::read_text(models::READER_VOCAB)?)?,
@@ -120,12 +141,16 @@ pub struct Page {
 /// memory budget (or what is left of it), or did not finish the page (a
 /// decode that runs to the token limit is a loop, not a page).
 pub fn read_page(img: &RgbImage) -> Option<Page> {
-    if !installed() || !fits() {
+    // Room for the larger read is judged before the weights load, so it
+    // counts them even when they are already in.
+    let roomy = fits(NEED_NATIVE_MB);
+    if !installed() || !(roomy || fits(NEED_MB)) {
         return None;
     }
     let r = reader()?;
     let t = std::time::Instant::now();
-    let (w, h) = encoder_size(img.width(), img.height());
+    let side = if roomy { r.max_side } else { MAX_SIDE };
+    let (w, h) = encoder_size(img.width(), img.height(), side);
     let features = encode(r, img, w, h)?;
     crate::parsers::pdf_worker::still_working();
     let t_vision = t.elapsed();
@@ -178,18 +203,18 @@ fn without_pictures(text: &str) -> String {
         .into_owned()
 }
 
-/// Whether the process can take on a page for the reader without crossing
-/// its budget: a long scan already holds more than a single page, and a PDF
-/// worker past its ceiling is killed with the whole document.
-fn fits() -> bool {
+/// Whether the process can take on `need_mb` more for the reader without
+/// crossing its budget: a long scan already holds more than a single page,
+/// and a PDF worker past its ceiling is killed with the whole document.
+fn fits(need_mb: u64) -> bool {
     crate::memory::footprint()
-        .is_none_or(|held| (held >> 20) + NEED_MB <= crate::memory::budget_mb())
+        .is_none_or(|held| (held >> 20) + need_mb <= crate::memory::budget_mb())
 }
 
-/// The encoder's input size for an image: the longest side at most
-/// [`MAX_SIDE`], both sides whole blocks.
-fn encoder_size(w: u32, h: u32) -> (u32, u32) {
-    let s = (MAX_SIDE as f32 / w.max(h) as f32).min(1.0);
+/// The encoder's input size for an image: the longest side at most `side`,
+/// both sides whole blocks.
+fn encoder_size(w: u32, h: u32, side: u32) -> (u32, u32) {
+    let s = (side as f32 / w.max(h) as f32).min(1.0);
     let fit = |v: u32| (((v as f32 * s) as u32) / BLOCK * BLOCK).max(BLOCK);
     (fit(w), fit(h))
 }
@@ -346,11 +371,12 @@ mod tests {
 
     #[test]
     fn encoder_input_is_whole_blocks_within_the_cap() {
-        assert_eq!(encoder_size(2550, 3300), (756, 1008));
-        assert_eq!(encoder_size(3300, 2550), (1008, 756));
+        assert_eq!(encoder_size(2550, 3300, MAX_SIDE), (756, 1008));
+        assert_eq!(encoder_size(3300, 2550, MAX_SIDE), (1008, 756));
+        assert_eq!(encoder_size(2550, 3300, NATIVE_SIDE), (1176, 1540));
         // Smaller than the cap: not enlarged, only cut to whole blocks.
-        assert_eq!(encoder_size(600, 450), (588, 448));
-        assert_eq!(encoder_size(10, 10), (28, 28));
+        assert_eq!(encoder_size(600, 450, MAX_SIDE), (588, 448));
+        assert_eq!(encoder_size(10, 10, MAX_SIDE), (28, 28));
     }
 
     #[test]
