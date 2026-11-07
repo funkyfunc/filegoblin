@@ -20,7 +20,7 @@ ocr = ["dep:rten", "dep:rten-tensor", "dep:ocrs", "dep:tokio"]
 # all run in-process with pure-Rust inference (rten) and rendering (hayro).
 # Weights are found at runtime; see `vision::models`.
 vision = ["dep:rten", "dep:rten-tensor", "dep:hayro"]
-# Compile the vision weights into the binary (~520 MB). Set
+# Compile the vision weights into the binary (~1.3 GB). Set
 # FILEGOBLIN_MODELS_DIR at build time to the directory made by
 # scripts/vision_models.py.
 bundled-models = ["vision"]
