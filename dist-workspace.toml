@@ -26,3 +26,9 @@ global-artifacts-jobs = ["./vision-models"]
 # PyPI and npm publishing is not a dist job: it runs in publish.yml, a
 # top-level workflow triggered when this one finishes, because PyPI's trusted
 # publishing does not work from reusable workflows (pypa/gh-action-pypi-publish#166).
+
+# GitHub retired the macos-14 image that dist picks for Apple Silicon by
+# default ("The configuration 'macos-14-arm64-us-default' is not supported"),
+# which cancelled the first v1.17.0 Release run.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
