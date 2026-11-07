@@ -496,6 +496,51 @@ What this set says that the bench did not:
   This is the clearest sign that the fast path's recent gains were fitted to
   the bench.
 
+### Library of Congress crowd transcriptions (300 scans, CER)
+
+A page-level scan set scored by character error rate (CER), for the scanned and
+handwritten pages the page reader handles. The olmOCR-bench test split has
+been used for scan decisions, and the held-out set has only a few such pages,
+so neither can measure the next change to scan reading.
+
+**Source:** six campaigns from the Library of Congress "By the People"
+transcription datasets (crowd.loc.gov). The gold is the volunteers' reviewed
+transcription of each page; at least two volunteers worked on every page, and
+Library staff spot-checked each campaign.
+- Fleetwood (70) and Goldsborough (80) are 19th-century handwritten diaries and
+  letters, transcribed in 2025–26, after LightOnOCR-2 was trained.
+- Antrim (40), Wilson (40) and Douglass (30) are handwritten and typed letters
+  and journals, transcribed in 2024–25. The reader may have seen these.
+- Print (40) is printed pamphlets, a control.
+
+**Rules:**
+- Pages marked illegible (`?`) or with struck-through text were left out when
+  sampling.
+- Three pages were excluded after a check of image against gold. Each reason
+  is recorded.
+- Dev and test are split by item (a diary volume or a folder), so the same
+  hand is never on both sides.
+- Dev has 108 scored pages and test 189. Report test scores only.
+
+The data lives at `~/Library/Caches/fgv/loceval/` (README, manifest, FROZEN).
+
+```bash
+scripts/loc_eval.py run NAME --split test --jobs 3
+scripts/loc_eval.py score NAME --split test
+scripts/loc_eval.py compare A B --split test
+```
+
+**Baseline (2026-11-07):** filegoblin 1.17.0 with the release models and a
+6 GB budget.
+
+| test split (189 pages) | CER | WER | bag-of-words F1 | s/page |
+|---|---:|---:|---:|---:|
+| `--vision smart` (page reader on) | **8.69** | **12.41** | **90.40** | 54.1 |
+| page reader off (`FILEGOBLIN_READER=0`) | 23.61 | 44.30 | 58.00 | 7.0 |
+
+The reader improves 124 test pages by more than one CER point and worsens 1.
+Seconds per page are with three conversions at once.
+
 ### New gauntlet cases (11)
 
 These cover document kinds and languages not measured before. Gold excerpts are
