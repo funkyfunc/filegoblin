@@ -181,11 +181,33 @@ pub fn read_page(img: &RgbImage) -> Option<Page> {
 }
 
 /// The page's Markdown from what the reader wrote: without the links to
-/// pictures it does not produce, or `None` if nothing is left.
+/// pictures it does not produce or its closing notes on its own reading,
+/// or `None` if nothing is left.
 pub fn finish(text: &str) -> Option<String> {
     let text = without_pictures(text);
-    let text = text.trim();
+    let text = without_reading_notes(text.trim());
     (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Now and then the reader ends a page with a note on how it read it
+/// ("Note: The handwritten text includes a large stylized "O" …, which is
+/// preserved as-is in the Markdown representation."): drop closing
+/// paragraphs that open with "Note" and name Markdown, the reader's own
+/// output. Pages end with notes of their own often enough ("Note: All
+/// percentages are weighted"), and those are kept.
+fn without_reading_notes(mut text: &str) -> &str {
+    static NOTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^[*_(\[\s]*note\b").expect("valid regex")
+    });
+    static MARKDOWN: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bmarkdown\b").expect("valid regex"));
+    loop {
+        let (head, last) = text.rsplit_once("\n\n").unwrap_or(("", text));
+        if !(NOTE.is_match(last) && MARKDOWN.is_match(last)) {
+            return text;
+        }
+        text = head.trim_end();
+    }
 }
 
 /// The reader marks each picture on the page with a link to an image file
@@ -395,6 +417,21 @@ mod tests {
             without_pictures(md),
             "# Notice\n\nText.\n\nFig. 3 Viscosity"
         );
+    }
+
+    #[test]
+    fn closing_notes_on_the_reading_are_dropped_and_the_page_s_own_kept() {
+        let md = "Very Sincerely\nElizabeth P. Speakman\n\nMAY 1917\n\nNote: The handwritten text includes a large stylized \"O\" in the center, which is preserved as-is in the Markdown representation.\nThe stamp is transcribed as text.";
+        assert_eq!(
+            finish(md).unwrap(),
+            "Very Sincerely\nElizabeth P. Speakman\n\nMAY 1917"
+        );
+        let own = "| a | b |\n\nNote: All percentages are weighted; *N*s are unweighted.";
+        assert_eq!(finish(own).unwrap(), own);
+        // A note that is not the page's last paragraph is the page's own.
+        let inner = "Note: rendered from the Markdown source.\n\nThe page goes on.";
+        assert_eq!(finish(inner).unwrap(), inner);
+        assert_eq!(finish("**Note:** kept as-is in Markdown."), None);
     }
 
     #[test]
