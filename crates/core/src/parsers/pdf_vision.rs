@@ -303,10 +303,11 @@ fn convert_scanned_page_gated(
     }
     let bx = (pb.x0, pb.y0, pb.x1, pb.y1);
     let mut md = assemble(&img, &regions, words.clone(), bx, &|_, _| None, &|_| None);
-    // When the layout model calls all of a page's text furniture (a folder
-    // cover's handwritten label is a "header" over a picture of the
-    // folder), dropping it leaves nothing: that text is the page. A lone
-    // page number stays furniture.
+    // When all of a page's text lies in what the layout model calls
+    // furniture or a picture (a folder cover's handwritten label is a
+    // "header" over a picture of the folder; a sketchbook leaf's caption is
+    // written on the watercolor), dropping it leaves nothing: that text is
+    // the page. A lone page number stays furniture.
     if md.trim().is_empty() && words.iter().any(|w| !is_folio(&w.text)) {
         let regions = as_text(&regions);
         md = assemble(&img, &regions, words, bx, &|_, _| None, &|_| None);
@@ -317,13 +318,13 @@ fn convert_scanned_page_gated(
     Some(md)
 }
 
-/// The regions with running heads and feet (and their art) taken as text;
-/// page numbers stay furniture.
+/// The regions with running heads and feet (and their art) and pictures
+/// taken as text; page numbers stay furniture.
 fn as_text(regions: &[Region]) -> Vec<Region> {
     regions
         .iter()
         .map(|r| Region {
-            label: if r.label.is_furniture() && r.label != Label::Number {
+            label: if (r.label.is_furniture() && r.label != Label::Number) || r.label.is_graphic() {
                 Label::Text
             } else {
                 r.label
@@ -2547,14 +2548,14 @@ mod tests {
     }
 
     #[test]
-    fn running_heads_can_be_taken_as_text_but_page_numbers_stay_furniture() {
+    fn running_heads_and_pictures_can_be_taken_as_text_but_page_numbers_stay_furniture() {
         let regions = [
             region(Label::Header, 0.0, 700.0, 300.0, 720.0),
             region(Label::Image, 0.0, 0.0, 600.0, 690.0),
             region(Label::Number, 290.0, 10.0, 310.0, 20.0),
         ];
         let labels: Vec<Label> = as_text(&regions).iter().map(|r| r.label).collect();
-        assert_eq!(labels, [Label::Text, Label::Image, Label::Number]);
+        assert_eq!(labels, [Label::Text, Label::Text, Label::Number]);
     }
 
     #[test]
