@@ -301,18 +301,36 @@ fn convert_scanned_page_gated(
         );
         return Some(strip_margins(&md, &margin));
     }
-    let md = assemble(
-        &img,
-        &regions,
-        words,
-        (pb.x0, pb.y0, pb.x1, pb.y1),
-        &|_, _| None,
-        &|_| None,
-    );
+    let bx = (pb.x0, pb.y0, pb.x1, pb.y1);
+    let mut md = assemble(&img, &regions, words.clone(), bx, &|_, _| None, &|_| None);
+    // When the layout model calls all of a page's text furniture (a folder
+    // cover's handwritten label is a "header" over a picture of the
+    // folder), dropping it leaves nothing: that text is the page. A lone
+    // page number stays furniture.
+    if md.trim().is_empty() && words.iter().any(|w| !is_folio(&w.text)) {
+        let regions = as_text(&regions);
+        md = assemble(&img, &regions, words, bx, &|_, _| None, &|_| None);
+    }
     // OCR writes the inline formulas the layout model did not box as prose.
     let md = super::pdf_math::wrap_math_runs(&md);
     debug_timing(page, "scan", t_layout, t.elapsed(), regions.len());
     Some(md)
+}
+
+/// The regions with running heads and feet (and their art) taken as text;
+/// page numbers stay furniture.
+fn as_text(regions: &[Region]) -> Vec<Region> {
+    regions
+        .iter()
+        .map(|r| Region {
+            label: if r.label.is_furniture() && r.label != Label::Number {
+                Label::Text
+            } else {
+                r.label
+            },
+            ..r.clone()
+        })
+        .collect()
 }
 
 /// Words of the text layer from glyph positions ([`super::pdf_words`]): word
@@ -2526,6 +2544,17 @@ mod tests {
             bbox: UserBox { x0, y0, x1, y1 },
             order: 0,
         }
+    }
+
+    #[test]
+    fn running_heads_can_be_taken_as_text_but_page_numbers_stay_furniture() {
+        let regions = [
+            region(Label::Header, 0.0, 700.0, 300.0, 720.0),
+            region(Label::Image, 0.0, 0.0, 600.0, 690.0),
+            region(Label::Number, 290.0, 10.0, 310.0, 20.0),
+        ];
+        let labels: Vec<Label> = as_text(&regions).iter().map(|r| r.label).collect();
+        assert_eq!(labels, [Label::Text, Label::Image, Label::Number]);
     }
 
     #[test]
