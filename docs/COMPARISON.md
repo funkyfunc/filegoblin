@@ -541,6 +541,39 @@ scripts/loc_eval.py compare A B --split test
 The reader improves 124 test pages by more than one CER point and worsens 1.
 Seconds per page are with three conversions at once.
 
+#### Against chat apps (30-page sample, 2026-11-14)
+
+The question was whether filegoblin beats attaching the PDF to a chat app out
+of the box. Each page was uploaded through the web app in its own private chat
+(claude.ai incognito, Gemini temporary chat), with the same prompt as
+`loc_eval.py cloud` uses, and the reply was taken from the app's Copy button.
+- **Sample:** 5 test pages per campaign, picked by SHA-1 of `"webcmp:" + id`.
+  The list is `web-sample.json` in the data folder; pass it as `--split`.
+- **claude.ai:** the account's default model when the run started, Fable 5.2
+  at Medium effort. It was pinned after the default changed mid-run; one page
+  that had run on another model was redone.
+- **Gemini:** "4 Carbon", the most capable mode, chosen by the user over the
+  default "4 Hydrogen". Four pages returned nothing on the first try (the chat
+  reset after 3–6 minutes of thinking); each worked on retry, one on its third
+  try.
+
+| sample (30 test pages) | CER | median page | WER | bag-of-words F1 |
+|---|---:|---:|---:|---:|
+| claude.ai, Fable 5.2 | **4.19** | **1.55** | **5.82** | **95.89** |
+| filegoblin 1.17.0, page reader on | 10.16 | 6.88 | 14.65 | 88.83 |
+| gemini.google.com, 4 Carbon | 22.04 | 15.10 | 29.48 | 83.14 |
+| filegoblin 1.17.0, page reader off | 29.54 | 25.01 | 51.14 | 55.51 |
+
+- claude.ai is more than one CER point better than filegoblin on 24 pages and
+  worse on none. filegoblin's worst page is a letter with mirrored
+  bleed-through (85 CER against Claude's 0.4).
+- filegoblin is better than Gemini on 19 pages and worse on 8. Gemini misreads
+  cursive more often. On a printed song page it described the lyrics instead
+  of transcribing them, and one reply included a word in Arabic script.
+- Time per page: claude.ai about 20 s, Gemini Carbon 1–6 minutes, filegoblin
+  with the reader about 55 s locally (three pages at once).
+- 30 pages is a small sample: one bad page moves a CER by about a point.
+
 ### New gauntlet cases (11)
 
 These cover document kinds and languages not measured before. Gold excerpts are

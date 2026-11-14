@@ -11,6 +11,7 @@ trained, so its training data is unlikely to hold these transcriptions.
     scripts/loc_eval.py fetch                  # dataset CSVs into $LOC_EVAL/datasets
     scripts/loc_eval.py build                  # sample pages, download images, write PDFs + gold
     scripts/loc_eval.py run NAME [--split dev|test|all] [--jobs 3] [-- filegoblin args]
+    scripts/loc_eval.py cloud NAME --provider claude|gemini --model M [--split ...]
     scripts/loc_eval.py score NAME [--split ...]
     scripts/loc_eval.py compare A B [--split ...]
 
@@ -215,6 +216,10 @@ def manifest():
 
 
 def pages(which):
+    """Pages of a split ("dev", "test", "all"), or of a JSON list of page ids (a sample)."""
+    if which not in ("dev", "test", "all"):
+        ids = set(json.load(open(which)))
+        return [p for p in manifest()["pages"] if not p.get("excluded") and p["id"] in ids]
     return [p for p in manifest()["pages"] if not p.get("excluded") and (which == "all" or p["split"] == which)]
 
 
@@ -261,6 +266,86 @@ def run(args):
     json.dump(timings, open(tpath, "w"))
     open(os.path.join(out_root, "command.txt"), "w").write(" ".join(cmd) + "\n")
     print(f"converted {len(todo)} pages in {time.time() - t0:.0f}s; {len(errors)} errors")
+    for e in errors[:20]:
+        print("  ", *e)
+
+
+# ---------------------------------------------------------------------- cloud
+
+# What a person would ask a chat model for after attaching the PDF; the same
+# words for every model.
+CLOUD_PROMPT = ("Convert this PDF to Markdown. Transcribe all of its text exactly as written, in reading "
+                "order. Do not summarize, correct, or add any commentary; output only the Markdown.")
+
+
+def cloud_claude(model, pdf):
+    import anthropic
+    import base64
+    client = anthropic.Anthropic(max_retries=6)
+    r = client.messages.create(
+        model=model, max_tokens=16000,
+        messages=[{"role": "user", "content": [
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                            "data": base64.standard_b64encode(pdf).decode()}},
+            {"type": "text", "text": CLOUD_PROMPT}]}])
+    text = "".join(b.text for b in r.content if b.type == "text")
+    err = None if r.stop_reason == "end_turn" else f"stop {r.stop_reason}"
+    return text, err, {"in": r.usage.input_tokens, "out": r.usage.output_tokens}
+
+
+def cloud_gemini(model, pdf):
+    from google import genai
+    from google.genai import types
+    client = genai.Client()
+    r = client.models.generate_content(
+        model=model, contents=[types.Part.from_bytes(data=pdf, mime_type="application/pdf"), CLOUD_PROMPT])
+    text = r.text or ""
+    reason = r.candidates[0].finish_reason if r.candidates else None
+    err = None if reason is None or str(reason).endswith("STOP") else f"finish {reason}"
+    u = r.usage_metadata
+    return text, err, {"in": u.prompt_token_count, "out": (u.candidates_token_count or 0) + (u.thoughts_token_count or 0)}
+
+
+def cloud(args):
+    """Each page's PDF, the file filegoblin reads, sent to a hosted model with CLOUD_PROMPT;
+    written where `score` looks for a run. Keys come from the environment (ANTHROPIC_API_KEY,
+    GEMINI_API_KEY) or the SDKs' own sign-in. Not yet run against the live APIs: the 2026-11-14
+    comparison went through the web apps instead (docs/COMPARISON.md)."""
+    call = {"claude": cloud_claude, "gemini": cloud_gemini}[args.provider]
+    out_root = os.path.join(DATA, "runs", args.name)
+    os.makedirs(out_root, exist_ok=True)
+    todo = pages(args.split)[: args.limit or None]
+    upath = os.path.join(out_root, "usage.json")
+    usage = json.load(open(upath)) if os.path.exists(upath) else {}
+    t0 = time.time()
+
+    def one(p):
+        out = os.path.join(out_root, p["id"] + ".md")
+        if os.path.exists(out) and not args.force:
+            return None
+        pdf = open(os.path.join(DATA, "pdfs", p["id"] + ".pdf"), "rb").read()
+        start = time.time()
+        try:
+            text, err, u = call(args.model, pdf)
+        except Exception as e:  # recorded, not fatal: a refusal or outage is a failed page
+            text, err, u = "", f"{type(e).__name__}: {str(e)[:200]}", {}
+        open(out, "w", encoding="utf-8").write(text)
+        usage[p["id"]] = dict(u, s=round(time.time() - start, 1), **({"error": err} if err else {}))
+        return (p["id"], err) if err else None
+
+    errors = []
+    with cf.ThreadPoolExecutor(args.jobs) as ex:
+        for i, e in enumerate(ex.map(one, todo)):
+            if e:
+                errors.append(e)
+            if i % 25 == 0:
+                print(f"{i}/{len(todo)} {time.time() - t0:.0f}s", flush=True)
+    json.dump(usage, open(upath, "w"), indent=0)
+    open(os.path.join(out_root, "command.txt"), "w").write(
+        f"cloud {args.provider} {args.model}\nprompt: {CLOUD_PROMPT}\n")
+    tin = sum(u.get("in", 0) for u in usage.values())
+    tout = sum(u.get("out", 0) for u in usage.values())
+    print(f"{len(todo)} pages in {time.time() - t0:.0f}s; {len(errors)} errors; tokens in {tin} out {tout}")
     for e in errors[:20]:
         print("  ", *e)
 
@@ -354,7 +439,7 @@ def score(args):
         ids = [k for k, r in s.items() if g == "ALL" or r["campaign"] == g]
         sec = statistics.mean(t[k] for k in ids if k in t) if any(k in t for k in ids) else float("nan")
         print(f"{g:13} {m['pages']:5} {m['cer']:6.2f} {m['cer_ci']:6.2f} {m['median']:6.2f} {m['wer']:6.2f} {m['bow_f1']:6.2f} {sec:6.1f}")
-    json.dump(s, open(os.path.join(DATA, "runs", args.name, f"scores-{args.split}.json"), "w"))
+    json.dump(s, open(os.path.join(DATA, "runs", args.name, f"scores-{os.path.splitext(os.path.basename(args.split))[0]}.json"), "w"))
 
 
 def compare(args):
@@ -379,20 +464,28 @@ def main():
     b.add_argument("--force", action="store_true")
     r = sub.add_parser("run")
     r.add_argument("name")
-    r.add_argument("--split", default="dev", choices=["dev", "test", "all"])
+    r.add_argument("--split", default="dev", help="dev, test, all, or a JSON file of page ids")
     r.add_argument("--jobs", type=int, default=3)
     r.add_argument("--timeout", type=int, default=900)
     r.add_argument("--force", action="store_true")
     r.add_argument("extra", nargs="*")
+    k = sub.add_parser("cloud")
+    k.add_argument("name")
+    k.add_argument("--provider", required=True, choices=["claude", "gemini"])
+    k.add_argument("--model", required=True)
+    k.add_argument("--split", default="dev", help="dev, test, all, or a JSON file of page ids")
+    k.add_argument("--jobs", type=int, default=4)
+    k.add_argument("--limit", type=int, default=0)
+    k.add_argument("--force", action="store_true")
     s = sub.add_parser("score")
     s.add_argument("name")
-    s.add_argument("--split", default="dev", choices=["dev", "test", "all"])
+    s.add_argument("--split", default="dev", help="dev, test, all, or a JSON file of page ids")
     c = sub.add_parser("compare")
     c.add_argument("a")
     c.add_argument("b")
-    c.add_argument("--split", default="dev", choices=["dev", "test", "all"])
+    c.add_argument("--split", default="dev", help="dev, test, all, or a JSON file of page ids")
     args = ap.parse_args()
-    {"fetch": fetch, "build": build, "run": run, "score": score, "compare": compare}[args.cmd](args)
+    {"fetch": fetch, "build": build, "run": run, "cloud": cloud, "score": score, "compare": compare}[args.cmd](args)
 
 
 if __name__ == "__main__":
