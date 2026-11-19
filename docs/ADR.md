@@ -1514,7 +1514,7 @@ Held-out test split, smart, run once at the end: 74.31 → **74.47** (+10/−1).
 
 **Decision.**
 - A new optional model, `vision::reader`: LightOnOCR-2-1B as four rten graphs, 790 MB in all. `scripts/vision_models.py` builds them (new `reader` step). The encoder is rebuilt to take any page size; the decoder is rebuilt as a step with a key/value cache per layer, with keys stored transposed and grouped-query attention by broadcasting, so a step never copies the cache. Both are quantized to symmetric 4-bit `MatMulNBits` with int8 compute. The encoder sees at most 1008 px: attention at 1540 px would need about 5 GB. The script was run from scratch, and its four files compute the same as the ones measured here (largest difference 0.0 on the encoder, decoder and embeddings; the vocabulary is byte-identical). The committed results come from those rebuilt files.
-- (Amended 2026-11-18: the threshold is now 0.98 and the formula rule is gone; see that entry.) In `convert_scanned_page_gated`, after layout and OCR, a scanned page goes to the reader when OCR confidence is at most 0.92, or when the layout model found at least 3 formulas on it (6–22 on the dev math scans, 0 or 1 on every other scanned dev page) and OCR confidence is below 0.975. The dev math scans are old and worn, 0.94–0.97. A clean scan of a printed math book is 0.98–0.99: the gauntlet's R2 (Zeitz), whose six pages all went to the reader under the formula rule alone, came out worse (quality 93.2 → 88.4, a running head leaked) and nine times slower (41 → 360 s). If the reader is missing, does not fit, or does not finish (1,536 tokens or a repeating tail), the page keeps the PP-OCR reading. Text-layer pages and confident scans never reach it.
+- (Amended 2026-11-18: the threshold is now 0.98 and the formula rule is gone; see that entry. Amended again 2026-11-19: it is now 0.99.) In `convert_scanned_page_gated`, after layout and OCR, a scanned page goes to the reader when OCR confidence is at most 0.92, or when the layout model found at least 3 formulas on it (6–22 on the dev math scans, 0 or 1 on every other scanned dev page) and OCR confidence is below 0.975. The dev math scans are old and worn, 0.94–0.97. A clean scan of a printed math book is 0.98–0.99: the gauntlet's R2 (Zeitz), whose six pages all went to the reader under the formula rule alone, came out worse (quality 93.2 → 88.4, a running head leaked) and nine times slower (41 → 360 s). If the reader is missing, does not fit, or does not finish (1,536 tokens or a repeating tail), the page keeps the PP-OCR reading. Text-layer pages and confident scans never reach it.
 - The reader writes out the whole page, running heads and folios included. Among its first and last 8 lines, a line is dropped when OCR read every one of its words inside a furniture region (what `assemble` drops), and among the first and last 3, a bare page number. The test split's first run showed this was needed (headers_footers −1.9).
 - It loads lazily and only when the process may hold 4 GB (a routed page peaked at 3.1 GB with the whole pipeline loaded). Before each page it also checks that what the process holds now, plus 1,280 MB, is within the budget: the reader adds 0.7–1.1 GB to the pipeline's peak, and on R2's six pages a PDF worker held to 4 GB went over and was killed with the whole document. `FILEGOBLIN_READER=0` switches it off.
 - The reader reports progress to the PDF worker's parent after encoding and every 32 tokens. A conversion waiting for a machine-wide vision slot now does too: while a routed page held a slot, an unrelated printed page waiting for one was stopped by the 120 s no-progress timeout.
@@ -1827,5 +1827,65 @@ gone: 0.98 covers every page it took.
 - *Time:* a page that now reaches the reader takes about a minute longer on a CPU. That was 24 of 128
   old-scan pages on the bench and 12 of 189 on LoC test.
 - *Not adopted:* 0.99, until the reader's running heads are dropped as reliably as OCR's.
+- *The LoC test figures* above are not real CERs: the pages outside the band were filled with reader-off
+  output. Only the differences hold. A full run at 0.98 scores 8.31 (see 2026-11-19).
+
+**Status:** Superseded by 2026-11-19 (the threshold is now 0.99).
+
+## 2026-11-19: Scans OCR reads at up to 0.99 go to the page reader, which drops letter-spaced running heads
+
+**Context.** Raising `ROUTE_BELOW` from 0.98 to 0.99 gained on the olmOCR-bench old scans, the fresh held-out
+set and LoC test, but lost on the gauntlet's R2, a clean scan of a printed math book. There the reader
+wrote the running head as one line ("## 34 CHAPTER 2 STRATEGIES FOR INVESTIGATING PROBLEMS"), while OCR
+had read its letter-spaced capitals in pieces ("STRA TE GIE S FOR IN VES TIGATING"). The margin strip
+compares words, so it kept the line. Two more problems showed up at 0.99:
+- **Newspaper pages.** The gauntlet's NEWS_1 has 40,000 characters of OCR text. The reader cannot write
+  that within its 1,536 tokens, so it decoded for a minute or more and the page kept OCR's reading.
+- **The watchdog.** Nothing told the PDF worker's watchdog the page was moving between the end of OCR and
+  the end of encoding. NEWS_1 was stopped after 120 s with no progress. Shipped 0.98 already stopped two
+  olmOCR-bench test PDFs (old_scans 5 and 51) the same way at the default timeout.
+
+**Decision.**
+- `ROUTE_BELOW` is 0.99.
+- Among a page's first and last 8 lines, the margin strip also drops a line when its letters and digits,
+  with the spaces gone, match one furniture line of OCR's. The line must cover four fifths of that
+  furniture line, or be all of it plus a page number. It must have at least 12 letters and digits. A
+  section heading that repeats part of a running head is shorter than the head, so it stays.
+- A page with more OCR text than `LONGEST_PAGE_CHARS` (5 × 1,536 = 7,680) does not go to the reader. The
+  longest page the reader finished on the bench scans had 5,400.
+- `read_page` ticks the watchdog before it encodes.
+
+**Consequences.**
+- *Full runs against shipped 0.98.* In the olmOCR test column, 0.98 has the two stopped PDFs rerun with
+  a longer timeout, so the column shows what the strip and threshold do:
+
+  | Set | 0.98 | 0.99 + fixes |
+  |---|---|---|
+  | olmOCR-bench test, old scans | 75.05 | 76.92 |
+  | olmOCR-bench dev, old scans | 76.25 | 76.25 |
+  | Fresh held-out set, old scans | 83.99 | 91.63 |
+  | LoC test, CER | 8.31 | 8.06 |
+
+  - olmOCR test gained 25 tests and lost 1, a page-number absence.
+  - Held-out's gain is mostly old_scans_math, 55.6 → 77.8.
+  - LoC test had 8 pages better and 3 worse.
+  - These gains match the 2026-11-18 band-only estimates within 0.02, so the strip change costs nothing
+    on these sets.
+- *Gauntlet scan cases:*
+
+  | Case | 0.98 (the reader reads none) | 0.99 + fixes |
+  |---|---|---|
+  | R1 | 97.2 | 97.2 |
+  | R2 | 94.5 | 96.1 |
+  | RECEIPT_1 | 94.7 | 96.7 |
+  | NEWS_1 | 89.9 | 89.9 |
+
+  - BOOK_2 passes, and all 5 canaries pass.
+  - The quality mean is 95.0, against 94.1 reader-off.
+- *Time:*
+  - More pages reach the reader: 41 of 128 old-scan pages on the bench (24 at 0.98) and 23 of 189 on LoC
+    test (12).
+  - Median time per held-out PDF rose from 41 s to 78 s.
+  - R2 takes about 410 s against 51 s.
 
 **Status:** Accepted.

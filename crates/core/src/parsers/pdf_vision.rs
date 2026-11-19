@@ -267,7 +267,9 @@ fn convert_scanned_page_gated(
     // whole, when installed.
     let (w, h) = (img.rgb.width() as f32, img.rgb.height() as f32);
     let pb = img.to_user(0.0, 0.0, w, h);
-    let route = confidence.is_some_and(|c| c <= crate::vision::reader::ROUTE_BELOW);
+    let ocr_chars: usize = words.iter().map(|w| w.text.len() + 1).sum();
+    let route = confidence.is_some_and(|c| c <= crate::vision::reader::ROUTE_BELOW)
+        && ocr_chars <= crate::vision::reader::LONGEST_PAGE_CHARS;
     if route
         && let Some(reading) = crate::vision::reader::read_page(&img.rgb)
         && let Some(md) =
@@ -276,14 +278,23 @@ fn convert_scanned_page_gated(
         // The reader writes out the whole page, running heads and folios
         // too; drop what the layout model and OCR call furniture.
         let (furniture, _, _) = furniture(&regions, &words, (pb.x0, pb.y0, pb.x1, pb.y1));
-        let margin: std::collections::HashSet<String> = words
+        let in_margin: Vec<&Tok> = words
             .iter()
             .filter(|w| {
                 let (cx, cy) = ((w.b.x0 + w.b.x1) / 2.0, (w.b.y0 + w.b.y1) / 2.0);
                 furniture.iter().any(|r| r.bbox.contains_point(cx, cy))
             })
-            .flat_map(|w| folded_words(&w.text))
             .collect();
+        let mut margin = Margin::default();
+        for w in in_margin {
+            let folded = folded_words(&w.text);
+            margin
+                .runs
+                .entry(w.line)
+                .or_default()
+                .push_str(&folded.concat());
+            margin.words.extend(folded);
+        }
         debug_timing(
             page,
             "scan, page reader",
@@ -748,11 +759,44 @@ fn folded_words(text: &str) -> Vec<String> {
 /// running heads or footers.
 const MARGIN_LINES: usize = 8;
 
+/// What OCR read inside a page's furniture regions.
+#[derive(Default)]
+struct Margin {
+    /// Its words, folded.
+    words: std::collections::HashSet<String>,
+    /// Its letters and digits, folded, one run per OCR line. OCR reads the
+    /// letter-spaced capitals of a running head in pieces ("STRA TE GIE S FOR
+    /// IN VES TIGATING"), which the reader writes whole ("STRATEGIES FOR
+    /// INVESTIGATING"): the two agree once the spaces are gone.
+    runs: std::collections::BTreeMap<u32, String>,
+}
+
+impl Margin {
+    /// Whether a line's letters and digits (`compact`) are what OCR read on
+    /// one furniture line (all but a fifth of it: OCR may have the folio the
+    /// reader left out), or that and a page number. A section heading that
+    /// repeats part of a running head is a smaller part of it.
+    fn has_run(&self, compact: &str) -> bool {
+        compact.len() >= MIN_RUN
+            && self.runs.values().any(|r| {
+                (r.contains(compact) && compact.len() * 5 >= r.len() * 4)
+                    || (r.len() >= MIN_RUN
+                        && compact.split_once(r.as_str()).is_some_and(|(a, b)| {
+                            (a.to_string() + b).bytes().all(|c| c.is_ascii_digit())
+                        }))
+            })
+    }
+}
+
+/// The fewest letters and digits a line matched to a furniture line by its
+/// letters alone may have: shorter ones ("of the") match too much.
+const MIN_RUN: usize = 12;
+
 /// Drops the page furniture from a page reader's Markdown: among the first
 /// and last [`MARGIN_LINES`] lines, a line whose every word OCR read inside
-/// a furniture region (`margin`), and among the first and last three, a bare
-/// page number.
-fn strip_margins(md: &str, margin: &std::collections::HashSet<String>) -> String {
+/// a furniture region, or whose letters OCR read on one furniture line
+/// ([`Margin`]), and among the first and last three, a bare page number.
+fn strip_margins(md: &str, margin: &Margin) -> String {
     let lines: Vec<&str> = md.lines().collect();
     let filled: Vec<usize> = (0..lines.len())
         .filter(|&i| !lines[i].trim().is_empty())
@@ -770,7 +814,8 @@ fn strip_margins(md: &str, margin: &std::collections::HashSet<String>) -> String
             (from_end < 3 && is_folio(text))
                 || (from_end < MARGIN_LINES
                     && !words.is_empty()
-                    && words.iter().all(|w| margin.contains(w)))
+                    && (words.iter().all(|w| margin.words.contains(w))
+                        || margin.has_run(&words.concat())))
         })
         .map(|(_, &i)| i)
         .collect();
@@ -2329,22 +2374,45 @@ mod tests {
 
     #[test]
     fn a_page_readers_running_heads_and_folio_are_dropped() {
-        let margin: std::collections::HashSet<String> = [
-            "bulletin",
-            "of",
-            "the",
-            "american",
-            "mathematical",
-            "society",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect();
+        let margin = Margin {
+            words: [
+                "bulletin",
+                "of",
+                "the",
+                "american",
+                "mathematical",
+                "society",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            ..Default::default()
+        };
         let md = "BULLETIN OF THE\nAMERICAN MATHEMATICAL SOCIETY\n\n# The theorem\n\nOf the society \
                   we say nothing.\n\n1106";
         assert_eq!(
             strip_margins(md, &margin),
             "# The theorem\n\nOf the society we say nothing."
+        );
+    }
+
+    #[test]
+    fn a_letter_spaced_running_head_is_dropped_by_its_letters() {
+        // OCR's words for the head ("stra", "te", "gie") are not the reader's.
+        let margin = Margin {
+            words: [
+                "34", "chap", "ter", "2", "stra", "te", "gie", "s", "for", "in", "ves", "tigating",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            runs: [(1, "chapter2strategiesforinvestigatingproblems".to_string())].into(),
+        };
+        let md = "## 34 CHAPTER 2 STRATEGIES FOR INVESTIGATING PROBLEMS\n\nIn this chapter we \
+                  investigate.\n\n## Strategies for investigating";
+        assert_eq!(
+            strip_margins(md, &margin),
+            "In this chapter we investigate.\n\n## Strategies for investigating"
         );
     }
 

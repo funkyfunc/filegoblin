@@ -22,11 +22,12 @@ use std::sync::OnceLock;
 /// A scanned page goes to the reader when PP-OCR's confidence in it,
 /// averaged over its characters, is at most this. Handwriting scores
 /// 0.61–0.85, but typed and handwritten letters, worn print and worn math
-/// score up to 0.98, and the reader reads them better than OCR does: raising
-/// this from 0.92 gained on every scan set (2026-11-18, see the ADR). A
-/// clean scan of a printed math book scores 0.984 or more (the gauntlet's R2),
-/// and there the reader keeps the running heads and takes far longer.
-pub const ROUTE_BELOW: f32 = 0.98;
+/// score up to 0.99, and the reader reads them better than OCR does: raising
+/// this from 0.92 gained on every scan set (2026-11-18 and 2026-11-19, see
+/// the ADR). Cleaner scans score above it, and there OCR is as good and far
+/// faster. A clean scan of a printed math book (the gauntlet's R2, 0.984–0.993)
+/// now goes to the reader, which takes several times longer on it.
+pub const ROUTE_BELOW: f32 = 0.99;
 
 /// Longest side of the image the encoder sees when it can afford no more:
 /// an encoder built before attention ran one head at a time (no
@@ -45,6 +46,12 @@ const BLOCK: u32 = 28;
 /// Most tokens one page may take. A handwritten letter is 150–300, a dense
 /// page of math 700.
 const MAX_TOKENS: usize = 1536;
+/// A page whose OCR text is longer than this does not go to the reader: it
+/// would run out of tokens before the end, and the page keeps OCR's reading
+/// after a minute or more of decoding (a newspaper page, the gauntlet's
+/// NEWS_1, is 40,000 characters). The reader writes about 3.5 characters a
+/// token; the longest page it finished on olmOCR-bench's scans had 5,400.
+pub const LONGEST_PAGE_CHARS: usize = 5 * MAX_TOKENS;
 /// Below this budget the reader is not loaded at all: a handwritten page
 /// peaked at 3.1 GB with the reader and the rest of the pipeline loaded.
 const MIN_BUDGET_MB: u64 = 4096;
@@ -141,6 +148,9 @@ pub fn read_page(img: &RgbImage) -> Option<Page> {
     if !installed() || !(roomy || fits(NEED_MB)) {
         return None;
     }
+    // OCR and layout came before this, and encoding a page takes a while:
+    // tell the PDF worker's watchdog the page is moving.
+    crate::parsers::pdf_worker::still_working();
     let r = reader()?;
     let t = std::time::Instant::now();
     let side = if roomy { r.max_side } else { MAX_SIDE };
