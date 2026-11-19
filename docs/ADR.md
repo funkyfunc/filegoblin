@@ -1514,7 +1514,7 @@ Held-out test split, smart, run once at the end: 74.31 → **74.47** (+10/−1).
 
 **Decision.**
 - A new optional model, `vision::reader`: LightOnOCR-2-1B as four rten graphs, 790 MB in all. `scripts/vision_models.py` builds them (new `reader` step). The encoder is rebuilt to take any page size; the decoder is rebuilt as a step with a key/value cache per layer, with keys stored transposed and grouped-query attention by broadcasting, so a step never copies the cache. Both are quantized to symmetric 4-bit `MatMulNBits` with int8 compute. The encoder sees at most 1008 px: attention at 1540 px would need about 5 GB. The script was run from scratch, and its four files compute the same as the ones measured here (largest difference 0.0 on the encoder, decoder and embeddings; the vocabulary is byte-identical). The committed results come from those rebuilt files.
-- In `convert_scanned_page_gated`, after layout and OCR, a scanned page goes to the reader when OCR confidence is at most 0.92, or when the layout model found at least 3 formulas on it (6–22 on the dev math scans, 0 or 1 on every other scanned dev page) and OCR confidence is below 0.975. The dev math scans are old and worn, 0.94–0.97. A clean scan of a printed math book is 0.98–0.99: the gauntlet's R2 (Zeitz), whose six pages all went to the reader under the formula rule alone, came out worse (quality 93.2 → 88.4, a running head leaked) and nine times slower (41 → 360 s). If the reader is missing, does not fit, or does not finish (1,536 tokens or a repeating tail), the page keeps the PP-OCR reading. Text-layer pages and confident scans never reach it.
+- (Amended 2026-11-18: the threshold is now 0.98 and the formula rule is gone; see that entry.) In `convert_scanned_page_gated`, after layout and OCR, a scanned page goes to the reader when OCR confidence is at most 0.92, or when the layout model found at least 3 formulas on it (6–22 on the dev math scans, 0 or 1 on every other scanned dev page) and OCR confidence is below 0.975. The dev math scans are old and worn, 0.94–0.97. A clean scan of a printed math book is 0.98–0.99: the gauntlet's R2 (Zeitz), whose six pages all went to the reader under the formula rule alone, came out worse (quality 93.2 → 88.4, a running head leaked) and nine times slower (41 → 360 s). If the reader is missing, does not fit, or does not finish (1,536 tokens or a repeating tail), the page keeps the PP-OCR reading. Text-layer pages and confident scans never reach it.
 - The reader writes out the whole page, running heads and folios included. Among its first and last 8 lines, a line is dropped when OCR read every one of its words inside a furniture region (what `assemble` drops), and among the first and last 3, a bare page number. The test split's first run showed this was needed (headers_footers −1.9).
 - It loads lazily and only when the process may hold 4 GB (a routed page peaked at 3.1 GB with the whole pipeline loaded). Before each page it also checks that what the process holds now, plus 1,280 MB, is within the budget: the reader adds 0.7–1.1 GB to the pipeline's peak, and on R2's six pages a PDF worker held to 4 GB went over and was killed with the whole document. `FILEGOBLIN_READER=0` switches it off.
 - The reader reports progress to the PDF worker's parent after encoding and every 32 tokens. A conversion waiting for a machine-wide vision slot now does too: while a routed page held a slot, an unrelated printed page waiting for one was stopped by the 120 s no-progress timeout.
@@ -1787,5 +1787,45 @@ Measured in the same session and not adopted: the reader on every scanned page, 
 to it. It helped the test split (old_scans 39.9 → 43.7, math 67.2 → 72.8), but on the held-out set
 old_scans fell 95.0 → 89.9. The gauntlet's R1 fell 9.9 and R2 2.7, RECEIPT_1 lost a canary, and those
 pages took 3–5 times as long.
+
+**Status:** Accepted.
+
+## 2026-11-18: Scans OCR reads at up to 0.98 confidence go to the page reader
+
+**Context.** On the Library of Congress crowd-transcription set (dev, 108 pages), the shipped pipeline
+scored 7.72 CER. LightOnOCR-2 run raw on every page, in full precision, scored 7.02. Splitting the gap
+showed where it came from:
+- **Routing cost about 1.0 CER.** 36 pages scored above the 0.92 threshold and stayed with OCR. They read at
+  10.1 CER with OCR and 7.6 with the reader.
+- **The margin strip cost about 0.5.** It drops letterheads, which this set's transcriptions keep.
+- **The 4-bit graph cost about 0.2** on the pages it reads.
+- **The OCR merge cost nothing.**
+
+The pages between 0.92 and 0.98 are mostly typed and handwritten letters, worn print and worn math. The
+2026-11-05 measurement that turned down the reader on every scan lost on the held-out set and the
+gauntlet. Those losses came from pages above 0.99.
+
+**Decision.** `ROUTE_BELOW` is 0.98. The formula rule (3 or more formulas and confidence below 0.975) is
+gone: 0.98 covers every page it took.
+
+**Consequences.**
+- *Method:* every scan page's confidence was recorded, and only the pages between 0.92 and 0.99 were run
+  both ways, so the differences below are exact:
+
+  | Set | 0.92 | 0.95 | 0.98 | 0.985 | 0.99 |
+  |---|---|---|---|---|---|
+  | olmOCR-bench test, old scans | 63.08 | 63.23 | 65.00 | 66.13 | 66.88 |
+  | Fresh held-out set, old scans | 80.39 | 80.39 | 81.11 | 88.52 | 88.76 |
+  | LoC test, CER | 23.54 | 23.31 | 23.17 | 23.17 | 22.90 |
+  | LoC dev, CER | 7.72 | 7.10 | 6.70 | 6.46 | 6.41 |
+
+  - The old-scans rows are the overall of the old_scans and old_scans_math categories.
+  - olmOCR-bench dev is unchanged, since its scans were already routed.
+- *Gauntlet:* its scan pages in that band score 0.984–0.989, so at 0.98 every case is unchanged. At 0.985
+  R2 (a clean math book) falls 94.5 → 91.9, and at 0.99 it falls to 86.8. The reader keeps its running
+  head, and R2 takes 2.5–5 times as long.
+- *Time:* a page that now reaches the reader takes about a minute longer on a CPU. That was 24 of 128
+  old-scan pages on the bench and 12 of 189 on LoC test.
+- *Not adopted:* 0.99, until the reader's running heads are dropped as reliably as OCR's.
 
 **Status:** Accepted.

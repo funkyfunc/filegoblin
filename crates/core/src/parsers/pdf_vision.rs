@@ -261,21 +261,13 @@ fn convert_scanned_page_gated(
     debug_regions(page, &regions);
     let t_layout = t.elapsed();
     let (words, confidence, line_scores) = ocr_words_scored(&img, true);
-    // A page PP-OCR is unsure of is handwriting (or something else it cannot
-    // read line by line), and on a worn scan full of formulas OCR and the
-    // formula model each read pieces of what is one derivation: the page
-    // reader reads either whole, when installed.
-    let formulas = regions
-        .iter()
-        .filter(|r| matches!(r.label, Label::DisplayFormula | Label::InlineFormula))
-        .count();
+    // A page PP-OCR is unsure of is handwriting, a typed or handwritten
+    // letter, or worn print or math (where OCR and the formula model each
+    // read pieces of what is one derivation): the page reader reads it
+    // whole, when installed.
     let (w, h) = (img.rgb.width() as f32, img.rgb.height() as f32);
     let pb = img.to_user(0.0, 0.0, w, h);
-    let route = confidence.is_some_and(|c| {
-        c <= crate::vision::reader::ROUTE_BELOW
-            || (c < crate::vision::reader::ROUTE_FORMULAS_BELOW
-                && formulas >= crate::vision::reader::ROUTE_FORMULAS)
-    });
+    let route = confidence.is_some_and(|c| c <= crate::vision::reader::ROUTE_BELOW);
     if route
         && let Some(reading) = crate::vision::reader::read_page(&img.rgb)
         && let Some(md) =

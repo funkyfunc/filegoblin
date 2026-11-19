@@ -10,7 +10,7 @@
 //!
 //! It is a heavy model (about 0.8 GB of weights, 1–2 GB while it runs, and
 //! tens of seconds a page on a CPU), so it reads only the scanned pages the
-//! pipeline hands it; see [`ROUTE_BELOW`] and [`ROUTE_FORMULAS`].
+//! pipeline hands it; see [`ROUTE_BELOW`].
 
 use super::models;
 use image::RgbImage;
@@ -20,19 +20,13 @@ use rten_tensor::{NdTensor, NdTensorView};
 use std::sync::OnceLock;
 
 /// A scanned page goes to the reader when PP-OCR's confidence in it,
-/// averaged over its characters, is at most this. On the olmOCR-bench dev
-/// split handwritten pages score 0.61–0.85 and printed ones 0.94 or more
-/// (2026-11-01 scan-model study).
-pub const ROUTE_BELOW: f32 = 0.92;
-/// A scanned page also goes to the reader when the layout model finds at
-/// least this many formulas on it. On the dev split's scans of printed math
-/// it found 6–22; on every other scanned page, 0 or 1.
-pub const ROUTE_FORMULAS: usize = 3;
-/// …but only when OCR is below this confidence in it. The dev split's math
-/// scans, old and worn, score 0.94–0.97; a clean scan of a printed math book
-/// scores 0.98–0.99 (the gauntlet's R2), and the pipeline already reads it
-/// better than the reader, and nine times faster.
-pub const ROUTE_FORMULAS_BELOW: f32 = 0.975;
+/// averaged over its characters, is at most this. Handwriting scores
+/// 0.61–0.85, but typed and handwritten letters, worn print and worn math
+/// score up to 0.98, and the reader reads them better than OCR does: raising
+/// this from 0.92 gained on every scan set (2026-11-18, see the ADR). A
+/// clean scan of a printed math book scores 0.984 or more (the gauntlet's R2),
+/// and there the reader keeps the running heads and takes far longer.
+pub const ROUTE_BELOW: f32 = 0.98;
 
 /// Longest side of the image the encoder sees when it can afford no more:
 /// an encoder built before attention ran one head at a time (no
