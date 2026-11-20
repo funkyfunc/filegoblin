@@ -9,7 +9,7 @@ for this machine, and was graded by the same two harnesses as filegoblin:
 - **olmOCR-bench, dev split** (180 one-page PDFs, 7 categories, 1,121 tests,
   allenai's official scorer): `scripts/olmocr_bench.py run NAME --split dev
   --engine TOOL`, then `score`/`table`.
-- **The gauntlet** (29 cases, 17 of them PDFs, graded against hand-checked gold
+- **The gauntlet** (40 cases, 28 of them PDFs, graded against hand-checked gold
   excerpts by `scripts/gauntlet_grade.py`): `scripts/run_gauntlet.py --engine
   TOOL`, then `--table`.
 - **New material, 2026-11-01** (see the last section): a fresh held-out set
@@ -33,7 +33,7 @@ tools on olmOCR-bench's 1,223-PDF test split and read two fresh sets written aft
   - The test split put MinerU 4.7 points ahead of filegoblin smart. With the page reader (9db61d6) the gap
     is 0.7, inside the noise.
   - The fresh held-out pages put marker's fast mode narrowly ahead.
-  - docling leads the fresh gauntlet cases.
+  - docling led the fresh gauntlet cases. It still leads the 7 of them that no fix was made for.
   - The fast path trails pymupdf4llm everywhere but dev.
 
   See "olmOCR-bench (test split)" and "Off the tuning sets".
@@ -154,6 +154,14 @@ that.
 
 ## The gauntlet
 
+Updated 2026-11-19.
+- **filegoblin** ran at `4816489` (`--features vision`, with the page reader on scans OCR is less than 0.99
+  sure of) on all 40 cases.
+- **The other tools** are the same versions as above. Their outputs on the 29 original cases are the
+  2026-10-31 runs. The 11 cases added on 2026-11-01 were run again on 2026-11-19. markitdown ran on all 40.
+- **Every output** was graded by the current grader against the current gold, which the 2026-11-01 gold
+  audit and the expanded NEWS_1 gold changed.
+
 Quality 0–100 against the hand-checked gold excerpts (`scripts/gauntlet_grade.py`),
 one case at a time. "fail" is a conversion that did not finish: an error, or a
 memory limit (filegoblin's own: 6 GB for the process, 4 GB for its PDF worker;
@@ -171,15 +179,15 @@ scores high there.
 | D1 | DOCX Tables | 100.0 | 100.0 | 100.0 | n/a | 0.0 | n/a | 100.0 |
 | D3 | DOCX Floating Text Boxes | 100.0 | 100.0 | 100.0 | n/a | 100.0 | n/a | 85.5 |
 | D4 | DOCX Equations | 92.8 | 92.8 | 92.6 | n/a | 92.6 | n/a | 91.6 |
-| R1 | PDF Layout | fail | 61.8 | 87.3 | 97.4 | 85.2 | 80.6 | 0.0 |
-| R2 | PDF Math | fail | 70.9 | 93.6 | 90.8 | 72.1 | 75.6 | 58.1 |
+| R1 | PDF Layout | 97.2 | 61.8 | 87.3 | 97.4 | 85.2 | 80.6 | 0.0 |
+| R2 | PDF Math | 96.0 | 70.9 | 93.6 | 90.8 | 72.1 | 75.6 | 58.1 |
 | SCI_1 | Scientific Paper (arXiv) | 92.0 | 74.4 | 88.9 | 79.7 | 78.4 | 79.8 | 37.6 |
-| SCI_2 | Scientific Paper (arXiv) | 96.8 | 65.8 | 90.9 | 76.8 | 90.7 | 86.8 | 55.2 |
+| SCI_2 | Scientific Paper (arXiv) | 96.8 | 72.4 | 90.9 | 76.8 | 90.7 | 86.8 | 55.2 |
 | BOOK_1 | Full Book (300pp) | 75.0 | 75.0 | fail | 100.0 | 100.0 | 50.0 | 50.0 |
-| BOOK_2 | Full Book (Scan) | fail | — | — | — | — | — | — |
+| BOOK_2 | Full Book (Scan) | — | — | — | — | — | — | — |
 | TBL_1 | PDF Tables | 100.0 | 98.7 | 100.0 | 74.6 | 86.7 | 93.8 | 56.7 |
 | WEB_1 | HTML Web Articles | 99.6 | 99.6 | 99.9 | n/a | 29.9 | n/a | 0.0 |
-| FIN_1 | Corporate Financial 10-K | fail | 77.8 | fail | 92.5 | 85.8 | 87.5 | 54.7 |
+| FIN_1 | Corporate Financial 10-K | 90.4 | 81.4 | fail | 92.5 | 85.8 | 87.5 | 54.7 |
 | FIN_2 | SEC EDGAR iXBRL HTML | 88.2 | 88.2 | 69.2 | n/a | 69.2 | n/a | 69.2 |
 | FORM_1 | Government Tax Forms | 71.3 | 71.3 | 61.7 | 37.0 | 62.2 | 46.5 | 50.8 |
 | TECH_1 | Hardware Datasheets | 90.1 | 65.7 | fail | 84.4 | 91.7 | 79.4 | 54.3 |
@@ -188,45 +196,96 @@ scores high there.
 | SEC_CREDIT | Debt Credit Agreements | 85.1 | 85.1 | 74.9 | n/a | 79.9 | n/a | 79.9 |
 | SEC_PROXY | SEC DEF 14A Proxy | 94.4 | 94.4 | 77.8 | n/a | 82.8 | n/a | 72.7 |
 | LEGAL_VIE | Cross-Border VIE Contracts | 93.5 | 93.5 | 74.5 | n/a | 79.5 | n/a | 79.5 |
-| SCOTUS_1 | Supreme Court Slip Opinion | 77.2 | 77.2 | 94.9 | 95.6 | 93.9 | 79.5 | 64.9 |
+| SCOTUS_1 | Supreme Court Slip Opinion | 87.2 | 87.2 | 94.9 | 95.6 | 93.9 | 79.5 | 64.9 |
 | PATENT_1 | USPTO Patents | 79.5 | 65.5 | 87.3 | 77.4 | 82.1 | 54.2 | 64.0 |
-| CLIN_1 | Clinical Study Protocols | fail | 80.3 | fail | 68.4 | 80.3 | 89.5 | 64.9 |
-| FDA_1 | FDA Drug Safety Labels | fail | 77.6 | fail | 78.3 | 70.6 | 81.0 | 71.2 |
+| CLIN_1 | Clinical Study Protocols | 93.6 | 80.3 | fail | 68.4 | 80.3 | 89.5 | 64.9 |
+| FDA_1 | FDA Drug Safety Labels | 88.2 | 77.5 | fail | 78.3 | 70.6 | 81.0 | 71.2 |
 | TI_REG | Hardware Register Maps | 94.4 | 88.6 | 94.6 | 78.9 | 93.2 | 75.9 | 57.4 |
-| CSI_SPEC | CSI MasterFormat Specs | 76.2 | 76.2 | 95.0 | 94.6 | 96.2 | 63.9 | 61.1 |
-| **mean, graded PDF cases** | | **58.7** (16) | **75.2** (16) | **61.5** (16) | **81.4** (16) | **85.0** (16) | **76.0** (16) | **54.8** (16) |
-| **mean, graded cases it reads** | | **74.2** (28) | **83.6** (28) | **65.1** (28) | **81.4** (16) | **69.9** (28) | **76.0** (16) | **54.7** (28) |
-| failed conversions | | 6 | 0 | 7 | 0 | 3 | 0 | 3 |
+| CSI_SPEC | CSI MasterFormat Specs | 91.2 | 91.2 | 95.0 | 94.6 | 96.2 | 63.9 | 61.1 |
+| CJK_ZH | Multilingual CJK (Traditional Chinese) | 89.3 | 70.3 | 87.4 | 88.0 | 91.5 | 87.8 | 70.7 |
+| CJK_JA | Multilingual CJK (Japanese) | 90.8 | 82.1 | 89.9 | 85.8 | 87.4 | 91.6 | 78.5 |
+| RTL_AR | Multilingual RTL (Arabic) | 81.5 | 68.3 | 55.6 | 73.4 | 68.8 | 74.3 | 31.9 |
+| RTL_HE | Multilingual RTL (Hebrew) | 84.2 | 73.8 | 62.7 | 65.2 | 89.7 | 79.2 | 18.5 |
+| EU_ACCENT | Multilingual Accented European (French) | 80.8 | 84.2 | 93.4 | 71.9 | 82.6 | 83.3 | 68.3 |
+| RECEIPT_1 | Scanned Receipts | 97.4 | 82.4 | 94.1 | 92.5 | 85.6 | 93.7 | 0.0 |
+| INVOICE_1 | Invoices | 92.7 | 92.5 | 94.5 | 94.8 | 93.4 | 84.2 | 68.6 |
+| FORM_FILLED | Filled PDF Forms | 81.1 | 81.2 | 78.4 | 85.1 | 91.6 | 78.7 | 71.0 |
+| NEWS_1 | Historic Newspaper Scans | 89.9 | 28.9 | 87.8 | 59.6 | 49.3 | 34.0 | 0.0 |
+| NEWS_2 | Newsletters (born-digital) | 95.7 | 81.5 | 73.4 | 94.2 | 96.5 | 75.4 | 71.2 |
+| SLIDES_2 | Slide Decks (PDF) | 87.6 | 87.3 | 73.3 | 82.3 | 97.0 | 88.1 | 61.4 |
+| **mean, graded PDF cases** | | **88.9** (27) | **76.7** (27) | **69.4** (27) | **81.3** (27) | **85.0** (27) | **77.3** (27) | **52.5** (27) |
+| **mean, graded cases it reads** | | **90.7** (39) | **82.3** (39) | **69.6** (39) | **81.3** (27) | **74.1** (39) | **77.3** (27) | **53.1** (39) |
+| failed conversions | | 0 | 0 | 7 | 0 | 3 | 0 | 3 |
 
-PDF wall time for the 17 PDF cases (1,118 pages), one case at a time: filegoblin
-smart 205 s (with six cases stopped early), off 7 s, MinerU 421 s (five stopped;
-a few minutes of it overlapped a compile), marker 660 s, docling 688 s,
-pymupdf4llm 434 s, markitdown 71 s.
+**On the 23 PDF cases every tool finished:**
 
-Before its memory ceiling existed, the same filegoblin smart build converted
-all of these: 90.5 over the 28 graded cases on 2026-10-23 (`GAUNTLET_SCORECARD.md`),
-with BOOK_2, FIN_1, R1, R2, CLIN_1 and FDA_1 peaking above 4 GB. With a 4 GB
-worker (the default on an 8 GB machine) they stopped.
+| | mean | filegoblin smart minus it (95 % interval) |
+|---|---:|---|
+| filegoblin smart | **88.6** | |
+| MinerU | 85.9 | +2.8 (−1.9 to +7.3) |
+| docling | 85.5 | +3.2 (−2.0 to +8.8) |
+| marker (fast) | 81.4 | +7.3 (+1.9 to +12.7) |
+| filegoblin off | 76.8 | |
+| pymupdf4llm | 76.0 | |
+| markitdown | 51.0 | |
 
-Two smaller harness facts: the gauntlet's grader now reads HTML tables (MinerU
+The intervals are a bootstrap over cases. filegoblin smart cannot be told apart from MinerU or docling here,
+and is ahead of marker's fast mode.
+
+PDF wall time for the 28 PDF cases, summed over cases:
+
+| tool | seconds |
+|---|---:|
+| filegoblin smart | 1,057 |
+| docling | 932 |
+| marker | 907 |
+| MinerU | 691, with five cases stopped |
+| pymupdf4llm | 467 |
+| markitdown | 58 |
+| filegoblin off | 7 |
+
+- filegoblin's time is mostly the page reader, which reads scans on the CPU. R2 alone takes 183 s.
+- The 2026-11-19 runs shared the machine: filegoblin ran beside each other tool in turn. Read these times
+  as ±30 %.
+
+Two smaller harness facts: the gauntlet's grader reads HTML tables (MinerU
 and marker write them; olmOCR's scorer reads them too) and ignores inline
-`<br>`/`<sup>` tags, which moved filegoblin's own HTML cases up by 0.3–1.2
-(its `<br/>` inside table cells had counted as words) and nothing else; and
-the canaries are filegoblin's own expectations, so only quality compares tools.
+`<br>`/`<sup>` tags; and the canaries are filegoblin's own expectations, so
+only quality compares tools.
 
 What the gauntlet can and cannot show against other tools:
-- **It is filegoblin's own acceptance test.** Every change since 2026-10-14 had to keep every case, and the
+- **It is filegoblin's own acceptance test.** Every change since 2026-10-14 had to keep every case. The
   2026-10-30 pass fixed SCOTUS_1 and CSI_SPEC after this comparison showed the others winning there. The
   other tools ran once, untuned.
-- **The "cases it reads" mean mixes formats.** 12 of the 28 graded cases are not PDFs, which marker and
+- **The 11 cases added on 2026-11-01 are no longer fresh for filegoblin.**
+  - The right-to-left fix was made for RTL_AR and RTL_HE.
+  - RECEIPT_1 and NEWS_1 checked the page reader's routing.
+  - When they were fresh, docling led them (see "Off the tuning sets").
+  - On the other 7, which no fix was made for, docling still leads: 91.4 against filegoblin smart's 88.3,
+    marker's 86.0 and MinerU's 84.3.
+- **The "cases it reads" mean mixes formats.** 12 of the 39 graded cases are not PDFs, which marker and
   pymupdf4llm do not read.
 - **P1–P3 are synthetic.** They are small PPTX files built to reproduce known markitdown bugs, and they lack
   a `<p:spPr>` element the schema requires. Their crashes count as 0 for three tools.
-- **MinerU's five failures are the harness's 8 GB cap**, not a crash. It was not tested whether MinerU
+- **MinerU's five PDF failures are the harness's 8 GB cap**, not a crash. It was not tested whether MinerU
   finishes them with more memory.
-- **On the 11 PDF cases every tool finished**, filegoblin smart scores 89.8, MinerU 88.7, docling 84.6,
-  marker 79.5 and pymupdf4llm 74.1.
-- **On 11 fresh gauntlet cases written after the tuning**, docling leads; see "Off the tuning sets" below.
+- **Where filegoblin smart leads most:**
+  - The 1922 newspaper scan NEWS_1: 89.9, against MinerU's 87.8 and 34–60 for the rest.
+  - The scanned receipt RECEIPT_1: 97.4.
+  - The printed math book R2: 96.0.
+  - Arabic and Hebrew.
+  - The SEC and legal cases, where only MinerU, docling and markitdown read the format.
+- **Where it trails the best tool by 5 or more:**
+
+  | Case | filegoblin smart | Best other |
+  |---|---:|---|
+  | SLIDES_2 | 87.6 | docling 97.0 |
+  | FORM_FILLED | 81.1 | docling 91.6 |
+  | EU_ACCENT | 80.8 | MinerU 93.4 |
+  | SCOTUS_1 | 87.2 | marker 95.6 |
+  | PATENT_1 | 79.5 | MinerU 87.3 |
+  | BOOK_1 | 75.0 | marker and docling 100 |
+  | CSI_SPEC | 91.2 | docling 96.2 |
 
 ## Where each tool beats filegoblin, and why
 
@@ -238,12 +297,13 @@ What the gauntlet can and cannot show against other tools:
 - **Dev split:** filegoblin and MinerU cannot be told apart (0.7 apart, ±5).
 - **133 fresh pages:** marker's fast mode is ahead of filegoblin and MinerU
   is behind it, neither significantly.
-- **The gauntlet:** it leads on the PDF cases each tool finished (90.1 vs
-  MinerU 89.5), on its own tuning suite. On 11 fresh cases docling led
-  (84.9), with marker (81.2), MinerU (81.0) and filegoblin (80.7) level
-  behind it. The right-to-left fix of 2026-11-01 takes filegoblin to 87.9,
-  but it was made for those two cases, so they are no longer fresh: without
-  them filegoblin is first (89.1 against docling's 86.1 and MinerU's 85.8).
+- **The gauntlet** (updated 2026-11-19, `4816489`), on filegoblin's own tuning suite:
+  - On the 23 PDF cases every tool finished, filegoblin smart scores 88.6, MinerU 85.9, docling 85.5 and
+    marker 81.4. It cannot be told apart from MinerU or docling, and is ahead of marker's fast mode.
+  - When the 11 newer cases were fresh, docling led them (84.9), with marker (81.2), MinerU (81.0) and
+    filegoblin (80.7) level behind it.
+  - filegoblin now scores 88.3 on them, but fixes or checks were made on four of them.
+  - On the other 7, docling leads, 91.4 to 88.3.
 - **`--vision off`:** trails pymupdf4llm everywhere except the dev split.
 
 The rest of this section was written from the dev split and the gauntlet on
